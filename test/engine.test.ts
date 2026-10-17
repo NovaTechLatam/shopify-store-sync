@@ -354,4 +354,57 @@ describe('sync engine', () => {
     expect(await h.shared(item2)).toBe(2);
     expect(h.stores[1]!.shop.level(item.inventoryItemIds.get(h.stores[1]!.id)!, locs[1]!)).toBe(2);
   });
+
+  it('never raises a store that is below zero (continue selling) up to zero', async () => {
+    h = await Harness.create(2);
+    const item = await h.addItem('SKU', [1, 1]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    const writesBefore = h.stores[1]!.shop.calls.filter((c) => c.op === 'setAvailable').length;
+    await h.externalChange(h.stores[1]!, item, -3); // store 1 keeps selling: 1 -> -2
+    await h.drain();
+    expect(await h.shared(item)).toBe(-2);
+    expect(h.levels(item)).toEqual([0, -2]);
+    const writesAfter = h.stores[1]!.shop.calls.filter((c) => c.op === 'setAvailable').length;
+    expect(writesAfter).toBe(writesBefore);
+    // A restock of 5 in store 0 leaves 3 to sell everywhere.
+    await h.externalChange(h.stores[0]!, item, +5);
+    await h.drain();
+    expect(await h.shared(item)).toBe(3);
+    expect(h.levels(item)).toEqual([3, 3]);
+  });
+
+  it('warns when the same restock is entered in several stores', async () => {
+    h = await Harness.create(3);
+    const item = await h.addItem('SKU', [10, 10, 10]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    await h.externalChange(h.stores[0]!, item, +12);
+    await h.drain();
+    await h.externalChange(h.stores[1]!, item, +12);
+    await h.drain();
+    expect(await h.shared(item)).toBe(34); // applied, but flagged
+    const { rows } = await h.db.query(
+      `SELECT message FROM alerts WHERE kind = 'possible_double_count' AND resolved_at IS NULL`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].message).toContain('brand0 and brand1');
+  });
+
+  it('settles a pending write older than 24h conservatively when the store matches neither value', async () => {
+    h = await Harness.create(2);
+    const item = await h.addItem('SKU', [10, 10]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    h.stores[1]!.shop.failNext('setAvailable', 'throw_before'); // never reached Shopify
+    await h.externalChange(h.stores[0]!, item, +4); // 10 -> 14, write 10 -> 14 to store 1 lost
+    await h.drain({ releaseBackoff: false });
+    await h.db.query(`UPDATE pending_writes SET created_at = now() - interval '25 hours'`);
+    await h.externalChange(h.stores[1]!, item, -1, { webhook: false }); // store 1: 10 -> 9
+    await h.drain();
+    // Store 1 shows 9: neither 10 nor 14. Assuming the +4 landed (baseline 14) counts a -5 change,
+    // which leaves less stock than assuming it didn't (-1). We take the lower one.
+    expect(await h.shared(item)).toBe(9);
+    expect(h.levels(item)).toEqual([9, 9]);
+  });
 });

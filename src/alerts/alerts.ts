@@ -39,6 +39,42 @@ export async function evaluateStockAlerts(db: Queryable, state: StockState): Pro
   });
 }
 
+/**
+ * Re-evaluates low-stock and oversold alerts of every initialised pool level from the stored
+ * shared quantities (no Shopify calls), e.g. after the default threshold changed.
+ */
+export async function reevaluateStockAlerts(db: Queryable): Promise<void> {
+  const threshold = await getDefaultThreshold(db);
+  const levels = `
+    SELECT pl.id AS pool_level_id, pl.item_id, i.sku, pl.quantity,
+           COALESCE(i.low_stock_threshold, $1::integer) AS threshold
+      FROM pool_levels pl JOIN items i ON i.id = pl.item_id
+     WHERE pl.quantity IS NOT NULL`;
+  for (const kind of ['low_stock', 'oversold'] as const) {
+    const condition =
+      kind === 'oversold' ? 'l.quantity < 0' : 'l.quantity >= 0 AND l.quantity <= l.threshold';
+    await db.query(
+      `UPDATE alerts a SET resolved_at = now()
+         FROM (${levels}) l
+        WHERE a.dedupe_key = '${kind}:' || l.pool_level_id AND a.resolved_at IS NULL AND NOT (${condition})`,
+      [threshold],
+    );
+    const message =
+      kind === 'oversold'
+        ? `l.sku || ' is oversold: shared quantity is ' || l.quantity || '.'`
+        : `l.sku || ' is low on stock: ' || l.quantity || ' left (threshold ' || l.threshold || ').'`;
+    await db.query(
+      `INSERT INTO alerts (kind, dedupe_key, item_id, message, details)
+       SELECT '${kind}', '${kind}:' || l.pool_level_id, l.item_id, ${message},
+              json_build_object('quantity', l.quantity, 'threshold', l.threshold)
+         FROM (${levels}) l
+        WHERE ${condition}
+       ON CONFLICT (dedupe_key) WHERE resolved_at IS NULL DO NOTHING`,
+      [threshold],
+    );
+  }
+}
+
 export async function setAlert(
   db: Queryable,
   a: {

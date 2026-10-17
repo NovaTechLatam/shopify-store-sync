@@ -185,7 +185,8 @@ export class SyncEngine {
             member.inventoryItemId === p.inventoryItemId &&
             member.locationId === p.locationId;
           if (r.kind === 'unknown') {
-            if (current) frozen.add(p.storeId);
+            // Hands off this store until the write is settled (one write-ahead record per store).
+            frozen.add(p.storeId);
             problems.push({ storeId: p.storeId, message: r.message, storeLevel: r.storeLevel });
             await client.query(
               `UPDATE pending_writes SET attempts = attempts + 1, last_error = $3
@@ -358,7 +359,10 @@ export class SyncEngine {
         to: displayQuantity(next, m.buffer),
         key: randomUUID(),
       }))
-      .filter((w) => w.from !== w.to);
+      // A store below zero ("continue selling when out of stock") already shows nothing for sale;
+      // raising it to 0 would only invent stock in that store's books.
+      .filter((w) => w.from !== w.to && !(w.to === 0 && w.from < 0));
+    const duplicates = await this.findDuplicateRestocks(ctx, events);
 
     await lease(async (client) => {
       if (next !== ctx.quantity) {
@@ -385,6 +389,20 @@ export class SyncEngine {
             w.to,
           ],
         );
+      }
+      for (const d of duplicates) {
+        await setAlert(client, {
+          open: true,
+          kind: 'possible_double_count',
+          dedupeKey: `possible_double_count:${ctx.poolLevelId}`,
+          itemId: ctx.itemId,
+          storeId: d.storeId,
+          message:
+            `${d.storeNames.join(' and ')} each added ${d.delta} units of ${ctx.sku} within 10 minutes. ` +
+            `If this was the same delivery entered in each store, the shared stock now counts it twice: ` +
+            `remove ${d.delta} units from the product page. Tip: enter deliveries in one store (or here) only.`,
+          details: { delta: d.delta, storeIds: d.storeIds },
+        });
       }
       if (applied.length) {
         await client.query(
@@ -454,6 +472,12 @@ export class SyncEngine {
         switch (result.status) {
           case 'applied':
             await upsertBaseline(client, ctx.poolLevelId, w.member, w.to);
+            await setAlert(client, {
+              open: false,
+              kind: 'write_rejected',
+              dedupeKey: `write_rejected:${ctx.poolLevelId}:${storeId}`,
+              message: '',
+            });
             break;
           case 'stale':
           case 'not_applied':
@@ -469,6 +493,14 @@ export class SyncEngine {
               message: `Shopify rejected the update: ${result.message}`,
               storeLevel: false,
             });
+            await setAlert(client, {
+              open: true,
+              kind: 'write_rejected',
+              dedupeKey: `write_rejected:${ctx.poolLevelId}:${storeId}`,
+              itemId: ctx.itemId,
+              storeId,
+              message: `${w.member.storeName} refused the stock update for ${ctx.sku}: ${result.message}`,
+            });
             break;
         }
       }
@@ -478,7 +510,7 @@ export class SyncEngine {
           {
             kind: 'propagated',
             after: next,
-            message: `Updated ${ok} of ${pushed.length} store${pushed.length === 1 ? '' : 's'} to ${next}`,
+            message: `Shared stock ${next}: updated ${ok} of ${pushed.length} store${pushed.length === 1 ? '' : 's'}`,
             details: { stores: pushed },
           },
         ]);
@@ -499,11 +531,13 @@ export class SyncEngine {
     try {
       const shop = await this.shopify.forStore(p.storeId);
       if (this.now() - p.createdAt.getTime() > IDEMPOTENCY_WINDOW_MS) {
-        // Too old to replay safely. Best effort: if the store shows our target, assume it landed.
+        // Too old to replay: Shopify has forgotten the key. Judge by what the store shows; if it
+        // matches neither value, assume whichever outcome leaves less stock (never oversell).
         const live = (await shop.readAvailable(p.locationId, [p.inventoryItemId])).get(
           p.inventoryItemId,
         );
-        const landed = live === p.target;
+        const landed =
+          live === p.target ? true : live === p.changeFrom ? false : p.target > p.changeFrom;
         return {
           kind: landed ? 'applied' : 'not_applied',
           note:
@@ -597,6 +631,51 @@ export class SyncEngine {
     });
     this.logger.error({ sku: ctx.sku }, 'circuit breaker tripped; sync paused');
     return true;
+  }
+
+  /**
+   * Restocks of the same size made in different stores within 10 minutes are usually one delivery
+   * typed into every store (the habit from before syncing), which counts it several times. We
+   * can't know for sure, so we apply it and raise an alert with the fix.
+   */
+  private async findDuplicateRestocks(
+    ctx: LevelContext,
+    events: EventRow[],
+  ): Promise<{ delta: number; storeId: number; storeIds: number[]; storeNames: string[] }[]> {
+    const restocks = events.filter((e) => e.kind === 'external_change' && (e.delta ?? 0) > 0);
+    if (restocks.length === 0) return [];
+    const { rows } = await this.db.query<{ store_id: number; delta: number; store_name: string }>(
+      `SELECT e.store_id, e.delta, s.name AS store_name FROM inventory_events e JOIN stores s ON s.id = e.store_id
+        WHERE e.pool_level_id = $1 AND e.kind = 'external_change' AND e.delta > 0
+          AND e.created_at > now() - interval '10 minutes'`,
+      [ctx.poolLevelId],
+    );
+    const nameOf = (storeId: number) =>
+      ctx.members.find((m) => m.storeId === storeId)?.storeName ??
+      rows.find((r) => r.store_id === storeId)?.store_name ??
+      `store ${storeId}`;
+    const found: { delta: number; storeId: number; storeIds: number[]; storeNames: string[] }[] =
+      [];
+    for (const r of restocks) {
+      const others = [
+        ...rows
+          .filter((p) => p.delta === r.delta && p.store_id !== r.storeId)
+          .map((p) => p.store_id),
+        ...restocks
+          .filter((o) => o !== r && o.delta === r.delta && o.storeId !== r.storeId)
+          .map((o) => o.storeId!),
+      ];
+      if (others.length === 0) continue;
+      const storeIds = [...new Set([...others, r.storeId!])].sort((a, b) => a - b);
+      if (found.some((f) => f.delta === r.delta)) continue;
+      found.push({
+        delta: r.delta!,
+        storeId: r.storeId!,
+        storeIds,
+        storeNames: storeIds.map(nameOf),
+      });
+    }
+    return found;
   }
 
   /** Credential / availability failures put the store in `error` until a health check clears it. */

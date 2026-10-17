@@ -145,6 +145,7 @@ export class ShopifyGraphqlClient {
   private readonly timeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private bucket?: ThrottleStatus & { at: number };
+  private versionWarned = false;
 
   constructor(private readonly opts: ShopifyGraphqlClientOptions) {
     this.shopDomain = opts.shopDomain;
@@ -223,6 +224,16 @@ export class ShopifyGraphqlClient {
           `Shopify returned HTTP ${res.status}: ${body.slice(0, 300)}`,
           'invalid',
           res.status,
+        );
+      }
+
+      // Shopify silently serves a newer version once ours is retired; mutation semantics may differ.
+      const served = res.headers.get('x-shopify-api-version');
+      if (served && served !== this.opts.apiVersion && !this.versionWarned) {
+        this.versionWarned = true;
+        this.opts.logger?.warn(
+          { requested: this.opts.apiVersion, served },
+          'Shopify served a different API version; update SHOPIFY_API_VERSION',
         );
       }
 
