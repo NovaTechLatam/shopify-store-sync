@@ -1,0 +1,17 @@
+# Only package files, tsconfig*, src/, migrations/ and public/ are needed to build the image.
+.git
+.github
+node_modules
+dist
+coverage
+test
+docs
+*.md
+.env
+.env.*
+docker-compose.yml
+render.yaml
+Dockerfile
+.dockerignore
+*.log
+.DS_Store

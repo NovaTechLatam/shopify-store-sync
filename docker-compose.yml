@@ -1,0 +1,66 @@
+# Runs Store Sync with its own Postgres database.
+#
+#   cp .env.example .env      # then fill it in
+#   docker compose up -d      # dashboard on http://localhost:3000
+#
+# On a server, add free automatic HTTPS (Caddy) for the domain in PUBLIC_URL:
+#
+#   docker compose --profile https up -d
+#
+# See docs/operations.md.
+
+name: storesync
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: storesync
+      POSTGRES_DB: storesync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U storesync -d storesync']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    image: storesync:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides any DATABASE_URL in .env: inside Compose the database is the `db` service.
+      DATABASE_URL: postgres://storesync:${POSTGRES_PASSWORD}@db:5432/storesync
+    depends_on:
+      db:
+        condition: service_healthy
+    # Only reachable from this machine. On a server, Caddy (below) is the public entrance, so the
+    # dashboard password never travels over plain HTTP.
+    ports:
+      - '127.0.0.1:3000:3000'
+    # Lets in-flight stock updates finish on shutdown (the app waits up to 30s).
+    stop_grace_period: 35s
+
+  caddy:
+    image: caddy:2
+    profiles: [https]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${PUBLIC_URL:?Set PUBLIC_URL in .env} --to app:3000
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

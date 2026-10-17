@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: storesync_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/storesync_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: storesync
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t storesync:ci .
+      # Starts the image against a real database: catches files missing from the image
+      # (migrations, dashboard) and startup errors that a successful build would not show.
+      - name: Smoke test
+        run: |
+          docker run -d --name storesync --network host \
+            -e DATABASE_URL=postgres://postgres:postgres@localhost:5432/storesync \
+            -e PUBLIC_URL=https://ci.example.com \
+            -e ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            -e ADMIN_PASSWORD=ci-password-not-secret \
+            storesync:ci
+          healthy=false
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/healthz; then healthy=true; break; fi
+            sleep 1
+          done
+          if [ "$healthy" != true ] ||
+            ! curl -fsS -o /dev/null -u admin:ci-password-not-secret http://127.0.0.1:3000/; then
+            docker logs storesync
+            exit 1
+          fi
