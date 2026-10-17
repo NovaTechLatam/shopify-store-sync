@@ -1,5 +1,20 @@
 import { z } from 'zod';
 import type { Queryable } from './db/pool.js';
+import { CURRENCY_CODE } from './util/money.js';
+
+/**
+ * An IANA time zone name ('America/Bogota', 'UTC') that both Intl and Postgres understand. Offsets
+ * like '+05:00' are refused: Postgres reads them as POSIX zones, with the sign reversed.
+ */
+export function isTimeZone(value: string): boolean {
+  if (!/^[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z0-9_+-]+)*$/.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Runtime settings, editable from the dashboard and stored in the `settings` table (one row per
@@ -32,6 +47,28 @@ export const SettingsSchema = z.object({
   eventRetentionDays: z.number().int().min(7),
   /** Circuit-breaker hits before this time (ISO) are ignored; set when sync is resumed. */
   breakerResetAt: z.string().nullable(),
+  /** Currency of base prices and unit costs. Stores convert from it with their exchange rate. */
+  baseCurrency: CURRENCY_CODE,
+  /** Raise an alert when an item will run out before a new delivery could arrive. */
+  reorderAlertsEnabled: z.boolean(),
+  /** Sales pace is measured over this many past days. */
+  reorderLookbackDays: z.number().int().min(7).max(365),
+  /** Extra days of stock kept as a margin on top of the lead time. */
+  reorderSafetyDays: z.number().int().min(0).max(365),
+  /** A suggested order covers this many days of sales after it arrives (items can override it). */
+  reorderCoverDays: z.number().int().min(1).max(365),
+  /** Order-to-delivery days when neither the item nor its supplier says. */
+  reorderDefaultLeadTimeDays: z.number().int().min(0).max(365),
+  /** How far back sales history is read from the stores when a store is connected. */
+  salesHistoryDays: z.number().int().min(1).max(3650),
+  /** How a delivery changes an item's cost: weighted average with the stock on hand, or last price. */
+  costMethod: z.enum(['average', 'last']),
+  /** Copy item costs to each store's "Cost per item" in Shopify when they change. */
+  pushCostsToShopify: z.boolean(),
+  /** Days in reports start and end in this time zone; '' = the first store's time zone. */
+  reportTimezone: z
+    .string()
+    .refine((v) => v === '' || isTimeZone(v), 'Use a time zone name like America/Bogota'),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -48,6 +85,16 @@ export const DEFAULT_SETTINGS: Settings = {
   massZeroLimit: 15,
   eventRetentionDays: 180,
   breakerResetAt: null,
+  baseCurrency: 'USD',
+  reorderAlertsEnabled: true,
+  reorderLookbackDays: 30,
+  reorderSafetyDays: 7,
+  reorderCoverDays: 30,
+  reorderDefaultLeadTimeDays: 14,
+  salesHistoryDays: 60,
+  costMethod: 'average',
+  pushCostsToShopify: false,
+  reportTimezone: '',
 };
 
 /** Maps setting names to the `settings.key` column. */
@@ -63,6 +110,16 @@ const KEYS: Record<keyof Settings, string> = {
   massZeroLimit: 'mass_zero_limit',
   eventRetentionDays: 'event_retention_days',
   breakerResetAt: 'breaker_reset_at',
+  baseCurrency: 'base_currency',
+  reorderAlertsEnabled: 'reorder_alerts_enabled',
+  reorderLookbackDays: 'reorder_lookback_days',
+  reorderSafetyDays: 'reorder_safety_days',
+  reorderCoverDays: 'reorder_cover_days',
+  reorderDefaultLeadTimeDays: 'reorder_default_lead_time_days',
+  salesHistoryDays: 'sales_history_days',
+  costMethod: 'cost_method',
+  pushCostsToShopify: 'push_costs_to_shopify',
+  reportTimezone: 'report_timezone',
 };
 
 export async function getSettings(db: Queryable): Promise<Settings> {

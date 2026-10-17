@@ -1,0 +1,3 @@
+/* Purchasing: purchase orders, receiving, suppliers and reorder suggestions.
+   Loaded after styles.css: use its tokens (colours, spacing) and shared pieces (.thumb, .num,
+   .table-totals, .chart and --series-N, print rules). */

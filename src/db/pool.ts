@@ -14,6 +14,14 @@ const parseBigintArray = pg.types.getTypeParser(INT8_ARRAY);
 pg.types.setTypeParser(INT8_ARRAY, (value: string) =>
   (parseBigintArray(value) as (string | null)[]).map((v) => (v === null ? null : Number(v))),
 );
+// NUMERIC as JS numbers. Money columns are numeric(18,4) and exchange rates numeric(18,8): far
+// inside a double's 15-16 significant digits, and every amount is rounded to the currency's
+// decimals (src/util/money.ts) before it is sent to Shopify or shown. Also applies to sum() and
+// avg() results, which Postgres returns as numeric.
+pg.types.setTypeParser(pg.types.builtins.NUMERIC, (value) => Number(value));
+// DATE as the 'YYYY-MM-DD' text Postgres sends. The default parser builds a Date at local
+// midnight, which shifts the day for anyone reading it in UTC (or another time zone).
+pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value);
 
 export function createDb(connectionString: string, max = 10): Db {
   return new pg.Pool({ connectionString, max });

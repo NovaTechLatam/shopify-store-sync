@@ -1,4 +1,3 @@
-import type { Logger } from 'pino';
 import { z } from 'zod';
 import { setAlert } from '../alerts/alerts.js';
 import type { CatalogDeps } from '../catalog/catalog.js';
@@ -9,37 +8,25 @@ import {
   syncStoreCatalog,
   syncStoreLocations,
 } from '../catalog/catalog.js';
-import type { Db } from '../db/pool.js';
+import { CATALOG_TASKS } from '../products/tasks.js';
+import { PRICING_TASKS } from '../pricing/tasks.js';
+import { PURCHASING_TASKS } from '../purchasing/tasks.js';
+import { SALES_TASKS } from '../sales/tasks.js';
 import { driftScan } from '../sync/drift.js';
-import type { ShopifyRegistry } from '../sync/engine.js';
 import { checkStoreHealth } from '../sync/health.js';
 import { ensureWebhooks } from '../webhooks/subscriptions.js';
 import { webhookUrl } from '../webhooks/topics.js';
-import type { TaskKind, TaskPayloads } from './queue.js';
+import type { CoreTaskPayloads, TaskKind, TaskPayloads } from './queue.js';
 import { enqueueTask } from './queue.js';
+import type { TaskDeps, TaskHandler, TaskStore } from './types.js';
+import { forStore, positiveId as storeId, shopifyGid as gid } from './types.js';
 
-export interface TaskDeps {
-  db: Db;
-  shopify: ShopifyRegistry;
-  logger: Logger;
-  /** Public base URL of this service; webhook subscriptions point at it. */
-  publicUrl: string;
-  fetchFn?: typeof fetch;
-}
-
-export type TaskHandler<K extends TaskKind> = (
-  deps: TaskDeps,
-  payload: TaskPayloads[K],
-) => Promise<void>;
-
-/** Statuses in which a store takes no background work (until the merchant changes it). */
-const IDLE_STATUSES = new Set(['paused', 'disconnected']);
-
-const storeId = z.number().int().positive();
-const gid = z.string().regex(/^gid:\/\/shopify\/\w+\/\S+$/);
+// Moved to ./types.js so feature modules can use them without importing this registry.
+export type { TaskDeps, TaskHandler } from './types.js';
+export { forStore } from './types.js';
 
 /** Task payloads are stored as JSON and may come from an older or newer release: check them. */
-export const TASK_PAYLOAD_SCHEMAS: { [K in TaskKind]: z.ZodType<TaskPayloads[K]> } = {
+const CORE_SCHEMAS: { [K in keyof CoreTaskPayloads]: z.ZodType<CoreTaskPayloads[K]> } = {
   catalog_sync: z.object({ storeId }),
   sync_locations: z.object({ storeId }),
   refresh_inventory_item: z.object({ storeId, inventoryItemId: gid }),
@@ -50,7 +37,7 @@ export const TASK_PAYLOAD_SCHEMAS: { [K in TaskKind]: z.ZodType<TaskPayloads[K]>
   store_health: z.object({ storeId }),
 };
 
-export const TASK_HANDLERS: { [K in TaskKind]: TaskHandler<K> } = {
+const CORE_HANDLERS: { [K in keyof CoreTaskPayloads]: TaskHandler<K> } = {
   catalog_sync: forStore(async (deps, { storeId }) => {
     await syncStoreCatalog(catalogDeps(deps), storeId);
   }),
@@ -75,38 +62,28 @@ export const TASK_HANDLERS: { [K in TaskKind]: TaskHandler<K> } = {
   }),
 };
 
-interface StoreRow {
-  name: string;
-  status: string;
-  webhooks_registered_at: Date | null;
-}
+// Features register their task kinds in their own modules (src/<feature>/tasks.ts).
+export const TASK_PAYLOAD_SCHEMAS: { [K in TaskKind]: z.ZodType<TaskPayloads[K]> } = {
+  ...CORE_SCHEMAS,
+  ...CATALOG_TASKS.schemas,
+  ...PRICING_TASKS.schemas,
+  ...SALES_TASKS.schemas,
+  ...PURCHASING_TASKS.schemas,
+};
 
-/** Runs the handler only if the store still exists and is not paused or disconnected. */
-function forStore<K extends TaskKind>(
-  handler: (deps: TaskDeps, payload: TaskPayloads[K], store: StoreRow) => Promise<void>,
-): TaskHandler<K> {
-  return async (deps, payload) => {
-    const { rows } = await deps.db.query<StoreRow>(
-      'SELECT name, status, webhooks_registered_at FROM stores WHERE id = $1',
-      [payload.storeId],
-    );
-    const store = rows[0];
-    if (!store || IDLE_STATUSES.has(store.status)) {
-      deps.logger.debug(
-        { storeId: payload.storeId, status: store?.status ?? 'deleted' },
-        'skipping task for inactive store',
-      );
-      return;
-    }
-    await handler(deps, payload, store);
-  };
-}
+export const TASK_HANDLERS: { [K in TaskKind]: TaskHandler<K> } = {
+  ...CORE_HANDLERS,
+  ...CATALOG_TASKS.handlers,
+  ...PRICING_TASKS.handlers,
+  ...SALES_TASKS.handlers,
+  ...PURCHASING_TASKS.handlers,
+};
 
 function catalogDeps(deps: TaskDeps): CatalogDeps {
   return { db: deps.db, shopify: deps.shopify, logger: deps.logger };
 }
 
-async function registerWebhooks(deps: TaskDeps, storeId: number, store: StoreRow): Promise<void> {
+async function registerWebhooks(deps: TaskDeps, storeId: number, store: TaskStore): Promise<void> {
   const admin = await deps.shopify.forStore(storeId);
   const { created, deleted } = await ensureWebhooks(admin, webhookUrl(deps.publicUrl));
   await deps.db.query(

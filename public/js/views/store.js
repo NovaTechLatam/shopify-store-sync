@@ -2,7 +2,14 @@ import { ApiError, api, latestOnly } from '../api.js';
 import { confirmDialog } from '../dialog.js';
 import { h, icon, replace, uid } from '../dom.js';
 import { num, plural, timeAgo } from '../format.js';
-import { AUTH_MODES, connectionError, credentialFields, readCredentials } from '../credentials.js';
+import {
+  AUTH_MODES,
+  FEATURE_PERMISSIONS,
+  connectionError,
+  credentialFields,
+  readCredentials,
+  scopeList,
+} from '../credentials.js';
 import { storeProblem, storeStatusBadge } from '../labels.js';
 import { refreshStatus } from '../shell.js';
 import { toast } from '../toast.js';
@@ -35,18 +42,19 @@ export async function render({ root, params, signal, setTitle }) {
       signal: reqSignal,
       keepContent: true,
       load: async () => {
-        const [stores, warehouses] = await Promise.all([
+        const [stores, warehouses, settings] = await Promise.all([
           api('/api/stores', { signal: reqSignal }),
           api('/api/warehouses', { signal: reqSignal }),
+          api('/api/settings', { signal: reqSignal }),
         ]);
         const store = stores.find((s) => s.id === storeId);
         if (!store) throw new ApiError(404, 'This store doesn’t exist. It may have been removed.');
-        return { store, warehouses };
+        return { store, warehouses, settings };
       },
-      render: ({ store, warehouses }) => {
+      render: ({ store, warehouses, settings }) => {
         setTitle(store.name);
         header = replaceHeader(header, storeHeader(store, back, reload));
-        return storeBody(store, warehouses, reload);
+        return storeBody(store, warehouses, settings, reload);
       },
     }),
   );
@@ -83,7 +91,7 @@ function storeHeader(store, back, reload) {
   });
 }
 
-function storeBody(store, warehouses, reload) {
+function storeBody(store, warehouses, settings, reload) {
   const problem = storeProblem(store);
   return [
     problem &&
@@ -102,6 +110,12 @@ function storeBody(store, warehouses, reload) {
         ),
       ),
     h('div', { class: 'grid-2' }, detailsCard(store), basicsCard(store, reload)),
+    h(
+      'div',
+      { class: 'grid-2' },
+      currencyCard(store, settings, reload),
+      store.features && permissionsCard(store),
+    ),
     locationsCard(store, warehouses, reload),
     maintenanceCard(store),
     credentialsCard(store, reload),
@@ -179,6 +193,159 @@ function basicsCard(store, reload) {
     }
   });
   return card({ title: 'Name and safety buffer' }, form);
+}
+
+const rateFormat = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 8,
+});
+
+/** "1 USD = 4,100.00 COP" */
+const rateText = (rate, base, currency) => `1 ${base} = ${rateFormat.format(rate)} ${currency}`;
+
+function currencyCard(store, settings, reload) {
+  const base = settings.baseCurrency;
+  const converts = store.currencyCode !== null && store.currencyCode !== base;
+  return card(
+    {
+      title: 'Currency and time zone',
+      description: 'Read from the store’s settings in Shopify.',
+    },
+    h(
+      'div',
+      { class: 'stack' },
+      facts([
+        ['Currency', store.currencyCode ?? muted('Not read yet')],
+        ['Time zone', store.timezone ?? muted('Not read yet')],
+        converts && ['Exchange rate', rateText(store.exchangeRate, base, store.currencyCode)],
+      ]),
+      converts && exchangeRateForm(store, base, reload),
+    ),
+  );
+}
+
+function exchangeRateForm(store, base, reload) {
+  const rate = input({
+    type: 'number',
+    name: 'exchangeRate',
+    value: store.exchangeRate,
+    min: 0.00000001,
+    max: 1000000000,
+    step: 'any',
+    required: true,
+    inputmode: 'decimal',
+    class: 'input input-short',
+  });
+  const preview = h('span', { class: 'preview-line', 'aria-live': 'polite' });
+  const error = h('p', { class: 'field-error', role: 'alert', hidden: true });
+  const showPreview = () => {
+    const value = Number(rate.value);
+    const changed = rate.value !== '' && value > 0 && value !== store.exchangeRate;
+    preview.textContent = changed ? `New rate: ${rateText(value, base, store.currencyCode)}` : '';
+  };
+  rate.addEventListener('input', showPreview);
+  showPreview();
+  const save = button('Save rate', { type: 'submit', size: 'small' });
+  const form = h(
+    'form',
+    { class: 'stack', novalidate: true },
+    field({
+      label: `${store.currencyCode} for 1 ${base}`,
+      control: rate,
+      hint: `Base prices and costs (in ${base}) are converted with this rate. Prices in ${store.name} change only when you update prices or publish products.`,
+    }),
+    error,
+    h('div', { class: 'form-actions' }, save, preview),
+  );
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const value = Number(rate.value);
+    error.hidden = true;
+    if (rate.value.trim() === '' || !Number.isFinite(value) || value <= 0 || value > 1e9) {
+      error.textContent = `Enter how many ${store.currencyCode} one ${base} is worth, a number above 0.`;
+      error.hidden = false;
+      rate.focus();
+      return;
+    }
+    if (value === store.exchangeRate) {
+      toast('Nothing to save: no changes.', { tone: 'info' });
+      return;
+    }
+    const saved = await withBusy(save, () =>
+      api(`/api/stores/${store.id}`, { method: 'PATCH', body: { exchangeRate: value } }),
+    ).catch(() => null);
+    if (saved) {
+      toast(`Exchange rate saved: ${rateText(value, base, store.currencyCode)}.`);
+      reload();
+    }
+  });
+  return form;
+}
+
+/** Which features the app's permissions on this store allow. */
+function permissionsCard(store) {
+  const checked = store.scopesCheckedAt !== null;
+  const missing = [
+    ...new Set(Object.values(store.features).flatMap((f) => (f.available ? [] : f.missingScopes))),
+  ];
+  return card(
+    {
+      title: 'Permissions for extra features',
+      description: 'Syncing stock works without these. Each feature needs its own permission.',
+    },
+    h(
+      'div',
+      { class: 'stack' },
+      permissionList(store, checked),
+      !checked &&
+        h(
+          'p',
+          { class: 'muted small' },
+          'We haven’t read this store’s permissions yet. Click “Test connection” to check them now.',
+        ),
+      checked &&
+        missing.length > 0 &&
+        h(
+          'div',
+          { class: 'stack' },
+          h('p', {}, 'To turn these on, add these permissions to the app:'),
+          scopeList(missing),
+          h(
+            'p',
+            { class: 'muted small' },
+            store.authMode === 'client_credentials'
+              ? 'In the Dev Dashboard, release a new app version with them and approve the update in this store’s Shopify admin. Then click “Test connection”.'
+              : 'In the store’s admin, open the app under Develop apps, add them to the Admin API scopes and save. Then click “Test connection”.',
+          ),
+        ),
+      checked && h('p', { class: 'muted small' }, 'Checked ', timeAgo(store.scopesCheckedAt), '.'),
+    ),
+  );
+}
+
+function permissionList(store, checked) {
+  return h(
+    'ul',
+    { class: 'compact-list' },
+    Object.entries(FEATURE_PERMISSIONS).map(([key, feature]) => {
+      const status = store.features[key];
+      return h(
+        'li',
+        { class: 'variant-row' },
+        h(
+          'div',
+          {},
+          h('p', { class: 'strong' }, feature.label),
+          h('p', { class: 'muted small' }, feature.enables),
+        ),
+        !checked || !status
+          ? badge('Not checked yet', 'neutral')
+          : status.available
+            ? badge('Allowed', 'success', 'check')
+            : badge('Needs permission', 'warning', 'alert'),
+      );
+    }),
+  );
 }
 
 function locationsCard(store, warehouses, reload) {

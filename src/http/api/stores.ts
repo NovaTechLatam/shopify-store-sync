@@ -63,6 +63,8 @@ const UpdateStoreBody = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   safetyBuffer: z.number().int().min(0).max(100_000).optional(),
   status: z.enum(['active', 'paused']).optional(),
+  /** Units of the store's currency per 1 unit of the base currency. */
+  exchangeRate: z.number().positive().max(1_000_000_000).optional(),
   accessToken: Secret.optional(),
   clientId: z.string().trim().min(1).max(200).optional(),
   clientSecret: Secret.optional(),
@@ -87,15 +89,30 @@ interface StoreRow {
   last_drift_scan_at: Date | null;
   last_drift_count: number | null;
   created_at: Date;
+  currency_code: string | null;
+  iana_timezone: string | null;
+  exchange_rate: number;
+  granted_scopes: string[] | null;
+  scopes_checked_at: Date | null;
   variant_count: number;
   linked_count: number;
+}
+
+interface LocationRow {
+  id: number;
+  store_id: number;
+  shopify_location_id: string;
+  name: string;
+  is_active: boolean;
+  warehouse_id: number | null;
 }
 
 const STORE_SELECT = `
   SELECT s.id, s.name, s.shop_domain, s.auth_mode, s.status, s.last_error, s.safety_buffer,
          (s.webhook_secret_enc IS NOT NULL OR s.client_secret_enc IS NOT NULL) AS has_webhook_secret,
          s.client_id, s.last_webhook_at, s.webhooks_registered_at, s.catalog_synced_at,
-         s.last_drift_scan_at, s.last_drift_count, s.created_at,
+         s.last_drift_scan_at, s.last_drift_count, s.created_at, s.currency_code, s.iana_timezone,
+         s.exchange_rate, s.granted_scopes, s.scopes_checked_at,
          (SELECT count(*)::int FROM variants v WHERE v.store_id = s.id AND v.deleted_at IS NULL) AS variant_count,
          (SELECT count(*)::int FROM variants v
            WHERE v.store_id = s.id AND v.deleted_at IS NULL AND v.item_id IS NOT NULL) AS linked_count
@@ -106,19 +123,22 @@ export async function loadStores(db: Queryable, storeId?: number) {
     `${STORE_SELECT} ${storeId === undefined ? '' : 'WHERE s.id = $1'} ORDER BY s.id`,
     storeId === undefined ? [] : [storeId],
   );
-  const locations = await db.query<{
-    id: number;
-    store_id: number;
-    shopify_location_id: string;
-    name: string;
-    is_active: boolean;
-    warehouse_id: number | null;
-  }>(
+  const locations = await db.query<LocationRow>(
     `SELECT id, store_id, shopify_location_id, name, is_active, warehouse_id FROM store_locations
       ${storeId === undefined ? '' : 'WHERE store_id = $1'} ORDER BY is_active DESC, name`,
     storeId === undefined ? [] : [storeId],
   );
-  return rows.map((s) => ({
+  return rows.map((s) =>
+    storeView(
+      s,
+      locations.rows.filter((l) => l.store_id === s.id),
+    ),
+  );
+}
+
+/** A store as every store route returns it. */
+function storeView(s: StoreRow, locations: LocationRow[]) {
+  return {
     id: s.id,
     name: s.name,
     shopDomain: s.shop_domain,
@@ -136,16 +156,21 @@ export async function loadStores(db: Queryable, storeId?: number) {
     createdAt: s.created_at,
     variantCount: s.variant_count,
     linkedCount: s.linked_count,
-    locations: locations.rows
-      .filter((l) => l.store_id === s.id)
-      .map((l) => ({
-        id: l.id,
-        shopifyLocationId: l.shopify_location_id,
-        name: l.name,
-        isActive: l.is_active,
-        warehouseId: l.warehouse_id,
-      })),
-  }));
+    /** Read from Shopify; null until the store was checked once. */
+    currencyCode: s.currency_code,
+    timezone: s.iana_timezone,
+    /** Units of the store's currency per 1 unit of the base currency (settings.baseCurrency). */
+    exchangeRate: s.exchange_rate,
+    /** When the app's permissions on the store were last read (null = never). */
+    scopesCheckedAt: s.scopes_checked_at,
+    locations: locations.map((l) => ({
+      id: l.id,
+      shopifyLocationId: l.shopify_location_id,
+      name: l.name,
+      isActive: l.is_active,
+      warehouseId: l.warehouse_id,
+    })),
+  };
 }
 
 async function loadStore(db: Queryable, storeId: number) {
@@ -308,6 +333,14 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
       await db.query('UPDATE stores SET name = $2, updated_at = now() WHERE id = $1', [
         storeId,
         body.name,
+      ]);
+    }
+    // Only changes what prices are computed from: nothing is sent to Shopify until prices are
+    // applied or a product is published.
+    if (body.exchangeRate !== undefined) {
+      await db.query('UPDATE stores SET exchange_rate = $2, updated_at = now() WHERE id = $1', [
+        storeId,
+        body.exchangeRate,
       ]);
     }
     if (body.safetyBuffer !== undefined && body.safetyBuffer !== current.safety_buffer) {

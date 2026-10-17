@@ -1,5 +1,21 @@
 import { badge } from './ui.js';
 import { signed } from './format.js';
+import * as catalog from './labels/catalog.js';
+import * as pricing from './labels/pricing.js';
+import * as purchasing from './labels/purchasing.js';
+import * as sales from './labels/sales.js';
+
+/** Labels the features add (labels/*.js). */
+const FEATURES = [catalog, pricing, sales, purchasing];
+
+/** The core entries first, then the kinds the features add (a core kind keeps its label). */
+function withFeatures(core, key) {
+  const merged = { ...core };
+  for (const feature of FEATURES) {
+    for (const [kind, value] of Object.entries(feature[key])) merged[kind] ??= value;
+  }
+  return merged;
+}
 
 /** Plain-language names for the codes the API returns. */
 
@@ -51,19 +67,22 @@ export function storeProblem(store) {
   return null;
 }
 
-const ALERT_KINDS = {
-  low_stock: { label: 'Low stock', tone: 'warning' },
-  oversold: { label: 'Oversold', tone: 'critical' },
-  store_error: { label: 'Store problem', tone: 'critical' },
-  store_unmapped: { label: 'Location not chosen', tone: 'warning' },
-  webhook_gap: { label: 'Missed updates', tone: 'warning' },
-  webhooks_recreated: { label: 'Updates reconnected', tone: 'info' },
-  circuit_breaker: { label: 'Sync paused automatically', tone: 'critical' },
-  possible_double_count: { label: 'Possible double count', tone: 'warning' },
-  write_rejected: { label: 'Store refused an update', tone: 'critical' },
-  stock_count_cancelled: { label: 'Stock count not applied', tone: 'warning' },
-  test: { label: 'Test', tone: 'info' },
-};
+const ALERT_KINDS = withFeatures(
+  {
+    low_stock: { label: 'Low stock', tone: 'warning' },
+    oversold: { label: 'Oversold', tone: 'critical' },
+    store_error: { label: 'Store problem', tone: 'critical' },
+    store_unmapped: { label: 'Location not chosen', tone: 'warning' },
+    webhook_gap: { label: 'Missed updates', tone: 'warning' },
+    webhooks_recreated: { label: 'Updates reconnected', tone: 'info' },
+    circuit_breaker: { label: 'Sync paused automatically', tone: 'critical' },
+    possible_double_count: { label: 'Possible double count', tone: 'warning' },
+    write_rejected: { label: 'Store refused an update', tone: 'critical' },
+    stock_count_cancelled: { label: 'Stock count not applied', tone: 'warning' },
+    test: { label: 'Test', tone: 'info' },
+  },
+  'ALERT_KINDS',
+);
 
 export function alertBadge(kind) {
   const a = ALERT_KINDS[kind] ?? { label: humanize(kind), tone: 'neutral' };
@@ -74,19 +93,22 @@ export function alertBadge(kind) {
   );
 }
 
-export const EVENT_KINDS = {
-  external_change: 'Change in a store',
-  propagated: 'Stores updated',
-  manual_set: 'Stock set',
-  stock_count: 'Stock counted',
-  stock_count_cancelled: 'Stock count cancelled',
-  manual_adjust: 'Stock added or removed',
-  initialized: 'Started syncing',
-  initialize_failed: 'Could not start syncing',
-  store_joined: 'Store joined',
-  write_recovered: 'Update confirmed',
-  drift_detected: 'Missed changes found',
-};
+export const EVENT_KINDS = withFeatures(
+  {
+    external_change: 'Change in a store',
+    propagated: 'Stores updated',
+    manual_set: 'Stock set',
+    stock_count: 'Stock counted',
+    stock_count_cancelled: 'Stock count cancelled',
+    manual_adjust: 'Stock added or removed',
+    initialized: 'Started syncing',
+    initialize_failed: 'Could not start syncing',
+    store_joined: 'Store joined',
+    write_recovered: 'Update confirmed',
+    drift_detected: 'Missed changes found',
+  },
+  'EVENT_KINDS',
+);
 
 /** Title, tone and icon of an activity entry; the API's own message adds the details. */
 export function describeEvent(e) {
@@ -119,6 +141,10 @@ export function describeEvent(e) {
     case 'drift_detected':
       return { title: `Missed changes found in ${store}`, tone: 'warning', icon: 'alert' };
     default:
+      for (const feature of FEATURES) {
+        const described = feature.describeEvent(e);
+        if (described) return described;
+      }
       return { title: humanize(e.kind), tone: 'neutral', icon: 'info' };
   }
 }

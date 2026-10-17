@@ -18,17 +18,33 @@ export const isAbort = (err) => err?.name === 'AbortError';
  * (forms that show the error inline); failed reads are rendered by the view that asked.
  */
 export async function api(path, { method = 'GET', body, signal, toastErrors } = {}) {
-  // The server refuses changes without this header: another website can't add it to a form
-  // post, so it can't act with the merchant's saved login (CSRF).
-  const headers = { Accept: 'application/json', 'X-Requested-With': 'store-sync' };
-  const init = { method, headers, signal, credentials: 'same-origin', cache: 'no-store' };
+  const headers = {};
+  const init = { method, headers, signal };
   // Only send a JSON content type with a body: Fastify rejects an empty JSON body.
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  return request(path, init, toastErrors ?? method !== 'GET');
+}
+
+/**
+ * Uploads a file (e.g. an image from an <input type=file>) as the raw request body, with its own
+ * content type (no multipart). Put anything else the server needs, like the file name, in the
+ * query: `apiUpload(`/api/catalog/media${qs({ filename: file.name })}`, file)`. Returns the parsed
+ * JSON response; errors as for `api` (a toast unless `toastErrors: false`).
+ */
+export async function apiUpload(path, file, { signal, toastErrors = true } = {}) {
+  const headers = { 'Content-Type': file.type || 'application/octet-stream' };
+  return request(path, { method: 'POST', headers, body: file, signal }, toastErrors);
+}
+
+async function request(path, init, toastErrors) {
+  // The server refuses changes without this header: another website can't add it to a form
+  // post, so it can't act with the merchant's saved login (CSRF).
+  init.headers = { Accept: 'application/json', 'X-Requested-With': 'store-sync', ...init.headers };
   try {
-    const res = await fetch(path, init);
+    const res = await fetch(path, { ...init, credentials: 'same-origin', cache: 'no-store' });
     if (res.status === 401) {
       showSignedOut();
       throw new ApiError(401, 'You are signed out. Reload the page to sign in again.');
@@ -42,9 +58,7 @@ export async function api(path, { method = 'GET', body, signal, toastErrors } = 
       err instanceof ApiError
         ? err
         : new ApiError(0, 'Can’t reach the server. Check your internet connection and try again.');
-    if ((toastErrors ?? method !== 'GET') && error.status !== 401) {
-      toast(error.message, { tone: 'error' });
-    }
+    if (toastErrors && error.status !== 401) toast(error.message, { tone: 'error' });
     throw error;
   }
 }
@@ -93,6 +107,7 @@ async function readJson(res) {
 
 function errorMessage(status, data) {
   if (typeof data?.error === 'string' && data.error) return data.error;
+  if (status === 413) return 'This file is too big to upload.';
   if (status === 429) return 'Too many requests. Wait a minute and try again.';
   if (status >= 500) return 'Something went wrong on the server. Try again in a moment.';
   return `The request failed (error ${status}).`;

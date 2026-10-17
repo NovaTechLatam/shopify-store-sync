@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CatalogError,
   type CatalogDeps,
+  ensureItemsLocked,
   refreshInventoryItem,
   relink,
   removeInventoryItem,
@@ -11,6 +12,7 @@ import {
   setManualLink,
   syncStoreCatalog,
   syncStoreLocations,
+  withCatalogLock,
 } from '../src/catalog/catalog.js';
 import { createDb, type Db } from '../src/db/pool.js';
 import { updateSettings } from '../src/settings.js';
@@ -473,6 +475,71 @@ describe('auto-initialisation', () => {
     a.shop.addVariant('BY-HAND');
     await syncAll(a);
     expect(await initializations()).toHaveLength(2);
+  });
+});
+
+describe('items created by features', () => {
+  it('creates missing items with pool levels under the catalog lock, without starting them', async () => {
+    await updateSettings(db, { onboardingCompleted: true });
+    const a = await addStore('a');
+    const sold = a.shop.addVariant('OLD-1');
+    await syncAll(a);
+    const oldId = await itemId('OLD-1');
+    await db.query('INSERT INTO warehouses (name) VALUES ($1)', ['Second warehouse']);
+
+    const other = await db.connect();
+    const items = await withCatalogLock(db, async (client) => {
+      const result = await ensureItemsLocked(client, [
+        { sku: ' new-1 ', title: ' New one ' },
+        { sku: 'NEW-1', title: 'Duplicate, ignored' },
+        { sku: 'old-1', title: 'Not renamed' },
+      ]);
+      // The lock is held until the transaction ends.
+      const { rows } = await other.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_xact_lock(727002) AS locked',
+      );
+      expect(rows[0]!.locked).toBe(false);
+      return result;
+    });
+    other.release();
+
+    expect([...items.entries()].sort()).toEqual([
+      ['NEW-1', { itemId: await itemId('NEW-1'), created: true }],
+      ['OLD-1', { itemId: oldId, created: false }],
+    ]);
+    const { rows } = await db.query<{ sku: string; title: string; levels: number }>(
+      `SELECT i.sku, i.title, count(pl.id)::int AS levels
+         FROM items i JOIN pool_levels pl ON pl.item_id = i.id
+        GROUP BY i.id ORDER BY i.sku`,
+    );
+    expect(rows).toEqual([
+      { sku: 'NEW-1', title: 'New one', levels: 2 },
+      { sku: 'OLD-1', title: expect.any(String), levels: 2 },
+    ]);
+    // Not initialised: the feature decides how the new item starts.
+    const inits = await db.query(
+      `SELECT 1 FROM pool_adjustments a JOIN pool_levels pl ON pl.id = a.pool_level_id
+        WHERE pl.item_id = $1`,
+      [items.get('NEW-1')!.itemId],
+    );
+    expect(inits.rowCount).toBe(0);
+
+    // A store that starts selling the SKU later links to that item.
+    const published = a.shop.addVariant('new-1');
+    await syncAll(a);
+    expect(await linkOf(published)).toBe('NEW-1');
+    expect(await linkOf(sold)).toBe('OLD-1');
+  });
+
+  it('refuses an empty SKU and accepts an empty list', async () => {
+    await withCatalogLock(db, async (client) => {
+      expect((await ensureItemsLocked(client, [])).size).toBe(0);
+      await expect(ensureItemsLocked(client, [{ sku: '  ', title: 'x' }])).rejects.toBeInstanceOf(
+        CatalogError,
+      );
+    });
+    const { rows } = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM items');
+    expect(rows[0]!.n).toBe(0);
   });
 });
 

@@ -5,13 +5,17 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as catalogMock from './mock/catalog.mjs';
+import * as pricingMock from './mock/pricing.mjs';
+import * as purchasingMock from './mock/purchasing.mjs';
+import * as salesMock from './mock/sales.mjs';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 // Same headers as src/http/server.ts, so a CSP violation shows up here too.
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Content-Security-Policy':
-    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+    "default-src 'self'; img-src 'self' data: https://cdn.shopify.com; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
 };
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -37,11 +41,32 @@ function random(seed) {
   };
 }
 
-/** A response with a status other than 200 (handlers return plain bodies for 200). */
+/**
+ * A response with a status other than 200 (handlers return plain bodies for 200). With `headers`
+ * (e.g. { 'Content-Type': 'image/png' }), `body` is sent as is (a Buffer or a string) instead of
+ * as JSON: images, CSV downloads.
+ */
 const REPLY = Symbol('reply');
-const reply = (status, body) => ({ [REPLY]: true, status, body });
+const reply = (status, body, headers) => ({ [REPLY]: true, status, body, headers });
 
 const minutesAgo = (n) => new Date(Date.now() - n * 60_000).toISOString();
+
+/**
+ * Each feature's mock (scripts/mock/*.mjs): `seed(state, tools)` adds its data at the end of
+ * createMockState(), and `handle(req, tools)` answers its routes (undefined = not mine). See
+ * handle() below for `req`.
+ */
+const FEATURES = [catalogMock, pricingMock, salesMock, purchasingMock];
+
+/** `store.features` as the API returns it; `missing` = { feature: [scopes] } not granted. */
+function features(missing = {}) {
+  return Object.fromEntries(
+    ['catalog', 'publishing', 'pricing', 'sales'].map((f) => [
+      f,
+      { available: !missing[f], missingScopes: missing[f] ?? [] },
+    ]),
+  );
+}
 
 export function createMockState() {
   const rand = random(42);
@@ -64,6 +89,11 @@ export function createMockState() {
       createdAt: minutesAgo(60 * 24 * 40),
       variantCount: 0,
       linkedCount: 0,
+      currencyCode: 'USD',
+      timezone: 'America/New_York',
+      exchangeRate: 1,
+      features: features(),
+      scopesCheckedAt: minutesAgo(60 * 24 * 2),
       locations: [
         {
           id: 1,
@@ -99,6 +129,11 @@ export function createMockState() {
       createdAt: minutesAgo(60 * 24 * 38),
       variantCount: 0,
       linkedCount: 0,
+      currencyCode: 'COP',
+      timezone: 'America/Bogota',
+      exchangeRate: 4100,
+      features: features({ sales: ['read_orders'] }),
+      scopesCheckedAt: minutesAgo(60 * 24 * 2),
       locations: [
         {
           id: 3,
@@ -134,6 +169,12 @@ export function createMockState() {
       createdAt: minutesAgo(60 * 24 * 12),
       variantCount: 0,
       linkedCount: 0,
+      currencyCode: 'CLP',
+      timezone: 'America/Santiago',
+      exchangeRate: 950,
+      // Never checked: the API reports every feature as available (Shopify decides).
+      features: features(),
+      scopesCheckedAt: null,
       locations: [
         {
           id: 5,
@@ -426,7 +467,7 @@ export function createMockState() {
     events.push(base);
   }
 
-  return {
+  const state = {
     stores,
     warehouses,
     items,
@@ -446,8 +487,20 @@ export function createMockState() {
       massZeroLimit: 15,
       eventRetentionDays: 180,
       breakerResetAt: null,
+      baseCurrency: 'USD',
+      reorderAlertsEnabled: true,
+      reorderLookbackDays: 30,
+      reorderSafetyDays: 7,
+      reorderCoverDays: 30,
+      reorderDefaultLeadTimeDays: 14,
+      salesHistoryDays: 60,
+      costMethod: 'average',
+      pushCostsToShopify: false,
+      reportTimezone: '',
     },
   };
+  for (const feature of FEATURES) feature.seed(state, TOOLS);
+  return state;
 }
 
 // ---------- read models (mirror src/http/api) ----------
@@ -688,10 +741,15 @@ function findOr404(list, id, what) {
   return found;
 }
 
-function handle(state, method, pathname, query, body) {
+/** Helpers for the feature mocks (scripts/mock/*.mjs). */
+const TOOLS = { reply, HttpError, paginate, matches, findOr404, minutesAgo, random };
+
+function handle(state, method, pathname, query, body, contentType) {
   const parts = pathname.split('/').filter(Boolean).slice(1); // drop "api"
+  // Numeric segments, wherever they are, become ":id": /purchasing/orders/:id/receipts/:id/reverse.
   const route = `${method} /${parts.map((p) => (/^\d+$/.test(p) ? ':id' : p)).join('/')}`;
-  const [, id, , subId] = parts;
+  const ids = parts.filter((p) => /^\d+$/.test(p));
+  const [id, subId] = ids;
 
   switch (route) {
     case 'GET /status':
@@ -731,6 +789,11 @@ function handle(state, method, pathname, query, body) {
         lastDriftScanAt: null,
         lastDriftCount: null,
         createdAt: new Date().toISOString(),
+        currencyCode: 'USD',
+        timezone: 'America/New_York',
+        exchangeRate: 1,
+        features: features(),
+        scopesCheckedAt: new Date().toISOString(),
         locations: [],
       };
       state.stores.push(store);
@@ -745,7 +808,13 @@ function handle(state, method, pathname, query, body) {
           { missingScopes: [] },
         );
       }
-      for (const key of ['name', 'safetyBuffer', 'status'])
+      if (
+        body.exchangeRate !== undefined &&
+        !(typeof body.exchangeRate === 'number' && body.exchangeRate > 0)
+      ) {
+        throw new HttpError(400, 'exchangeRate: Too small: expected number to be >0');
+      }
+      for (const key of ['name', 'safetyBuffer', 'status', 'exchangeRate'])
         if (body[key] !== undefined) store[key] = body[key];
       if (body.status === 'active') store.lastError = null;
       return storeView(state, store);
@@ -996,8 +1065,16 @@ function handle(state, method, pathname, query, body) {
     case 'POST /settings/test-alert':
       return { ok: true };
 
-    default:
+    default: {
+      // req: the request, for the feature mocks. `body` is the parsed JSON, or a Buffer for an
+      // upload (image/* content types); `ids` are all numeric segments in order.
+      const req = { method, route, parts, id, subId, ids, query, body, contentType, state };
+      for (const feature of FEATURES) {
+        const result = feature.handle(req, TOOLS);
+        if (result !== undefined) return result;
+      }
       throw new HttpError(404, `No mock for ${route}`);
+    }
   }
 }
 
@@ -1018,29 +1095,39 @@ export async function startMockServer({ port = 0, state = createMockState() } = 
         if (server.state.delayMs) {
           await new Promise((resolve) => setTimeout(resolve, server.state.delayMs));
         }
-        const raw = await new Promise((resolve) => {
-          let data = '';
-          req.on('data', (chunk) => (data += chunk));
-          req.on('end', () => resolve(data));
+        const raw = await new Promise((resolve, reject) => {
+          const chunks = [];
+          req.on('data', (chunk) => chunks.push(chunk));
+          req.on('end', () => resolve(Buffer.concat(chunks)));
+          req.on('error', reject);
         });
-        if (raw && !req.headers['content-type']?.startsWith('application/json')) {
-          throw new HttpError(415, 'Send JSON');
-        }
-        if (!raw && req.headers['content-type']?.startsWith('application/json')) {
+        const contentType = req.headers['content-type'] ?? '';
+        const json = contentType.startsWith('application/json');
+        // Uploads (images) come as the raw body, like the real server's image parser.
+        const upload = contentType.startsWith('image/');
+        if (raw.length && !json && !upload) throw new HttpError(415, 'Send JSON');
+        if (!raw.length && json) {
           // Fastify rejects this too; the dashboard must not send it.
           throw new HttpError(
             400,
             "Body cannot be empty when content-type is set to 'application/json'",
           );
         }
+        const body = upload ? raw : raw.length ? JSON.parse(raw.toString('utf8')) : {};
         const result = handle(
           server.state,
           req.method,
           url.pathname,
           url.searchParams,
-          raw ? JSON.parse(raw) : {},
+          body,
+          contentType,
         );
         const wrapped = result?.[REPLY] ? result : reply(200, result);
+        if (wrapped.headers) {
+          res.writeHead(wrapped.status, { ...SECURITY_HEADERS, ...wrapped.headers });
+          res.end(wrapped.body);
+          return;
+        }
         res.writeHead(wrapped.status, {
           ...SECURITY_HEADERS,
           ...(wrapped.status === 204 ? {} : { 'Content-Type': 'application/json' }),

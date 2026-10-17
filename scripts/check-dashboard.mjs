@@ -9,6 +9,10 @@ import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import * as catalogChecks from './checks/catalog.mjs';
+import * as pricingChecks from './checks/pricing.mjs';
+import * as purchasingChecks from './checks/purchasing.mjs';
+import * as salesChecks from './checks/sales.mjs';
 import { createMockState, startMockServer } from './dashboard-mock-api.mjs';
 
 const SCREENSHOT_DIR = path.resolve(
@@ -16,6 +20,8 @@ const SCREENSHOT_DIR = path.resolve(
 );
 const WIDTHS = [390, 1280];
 const SCHEMES = ['light', 'dark'];
+/** Each feature's pages and flows (scripts/checks/*.mjs). */
+const FEATURES = [catalogChecks, pricingChecks, salesChecks, purchasingChecks];
 const PAGES = [
   ['overview', '#/'],
   ['products', '#/items'],
@@ -29,12 +35,17 @@ const PAGES = [
   ['store-new', '#/stores/new'],
   ['store-error', '#/stores/3'],
   ['store', '#/stores/1'],
+  ['store-currency', '#/stores/2'],
   ['onboarding', '#/onboarding'],
   ['activity', '#/activity'],
   ['alerts', '#/alerts'],
   ['settings', '#/settings'],
   ['not-found', '#/no-such-page'],
+  ...FEATURES.flatMap((feature) => feature.PAGES),
 ];
+// Stands in for Shopify's image CDN (product images): the sandboxed browser can't reach it.
+const CDN_IMAGE =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#c9ced6"/></svg>';
 
 // Browser-side checks, as strings so this Node script needs no DOM globals.
 const READY = `!document.querySelector('.state-loading, [aria-busy="true"]') && !!document.querySelector('main h1')`;
@@ -69,6 +80,9 @@ async function newPage(browser, baseUrl, { width = 1280, scheme = 'light' } = {}
     colorScheme: scheme,
     reducedMotion: 'reduce',
   });
+  await context.route('https://cdn.shopify.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'image/svg+xml', body: CDN_IMAGE }),
+  );
   const page = await context.newPage();
   const label = `${width}px ${scheme}`;
   page.on('console', (msg) => {
@@ -91,7 +105,20 @@ async function newPage(browser, baseUrl, { width = 1280, scheme = 'light' } = {}
 }
 
 async function open(page, baseUrl, hash) {
+  // When only the hash changes, goto() returns before the router has swapped the page: mark the
+  // old view and wait for it to go, or the checks below would look at the previous page.
+  const leaving = await page
+    .evaluate(
+      `(() => {
+        const view = document.querySelector('#main > .view');
+        if (!view || !location.hash || location.hash === ${JSON.stringify(hash)}) return false;
+        view.dataset.leaving = '';
+        return true;
+      })()`,
+    )
+    .catch(() => false);
   await page.goto(`${baseUrl}/${hash}`);
+  if (leaving) await waitUntil(page, `!document.querySelector('#main > .view[data-leaving]')`);
   await settle(page);
 }
 
@@ -157,6 +184,26 @@ async function step(name, fn) {
 }
 
 const toastText = (page) => page.locator('.toast').last().textContent();
+
+/** What feature checks get (scripts/checks/*.mjs). */
+function featureContext(page, go, server) {
+  return {
+    page,
+    go,
+    step,
+    expect,
+    shoot,
+    toastText,
+    waitUntil,
+    settle,
+    server,
+    createMockState,
+    /** Expected 4xx/5xx responses (e.g. a validation error) don't fail the check meanwhile. */
+    setAllowHttpErrors: (allow) => {
+      allowHttpErrors = allow;
+    },
+  };
+}
 
 async function flows(browser, baseUrl, server) {
   server.state = createMockState();
@@ -363,6 +410,100 @@ async function flows(browser, baseUrl, server) {
     await page.locator('.global-notice').waitFor({ state: 'detached' });
   });
 
+  await step('store: exchange rate shown for another currency, validated and saved', async () => {
+    await go('#/stores/1');
+    expect(
+      (await page.getByLabel(/for 1 USD/).count()) === 0,
+      'no exchange rate for a store in the base currency',
+    );
+    await go('#/stores/2');
+    expect(
+      (await page.locator('.fact', { hasText: 'Exchange rate' }).textContent()).includes(
+        '1 USD = 4,100.00 COP',
+      ),
+      'exchange rate shown as 1 USD = 4,100.00 COP',
+    );
+    const rate = page.getByLabel('COP for 1 USD');
+    await rate.fill('0');
+    await page.getByRole('button', { name: 'Save rate' }).click();
+    expect(
+      (await page.locator('.field-error:not([hidden])').textContent()).includes('above 0'),
+      'a zero rate is refused inline',
+    );
+    await rate.fill('4250.5');
+    expect(
+      (await page.locator('.preview-line').textContent()) === 'New rate: 1 USD = 4,250.50 COP',
+      'live preview of the rate',
+    );
+    await page.getByRole('button', { name: 'Save rate' }).click();
+    await page.locator('.toast', { hasText: 'Exchange rate saved' }).waitFor();
+    await settle(page);
+    expect(server.state.stores[1].exchangeRate === 4250.5, 'rate saved');
+    expect(
+      (
+        await page.locator('.card', { hasText: 'Permissions for extra features' }).textContent()
+      ).includes('read_orders'),
+      'missing permission listed',
+    );
+  });
+
+  await step('settings: currency, reorder, sales history and cost settings', async () => {
+    await go('#/settings');
+    await page.getByLabel('Base currency').fill('eur');
+    await page.getByLabel('Safety margin (days)').fill('10');
+    await page.getByLabel('Report days follow the time zone').selectOption('America/Bogota');
+    await page.getByLabel('When a delivery arrives, a product’s cost becomes').selectOption('last');
+    await page.getByLabel('Copy costs to Shopify').check();
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await page.locator('.toast', { hasText: 'Settings saved.' }).waitFor();
+    expect(
+      server.state.settings.baseCurrency === 'EUR' &&
+        server.state.settings.reorderSafetyDays === 10 &&
+        server.state.settings.reportTimezone === 'America/Bogota' &&
+        server.state.settings.costMethod === 'last' &&
+        server.state.settings.pushCostsToShopify === true,
+      `new settings saved (${JSON.stringify(server.state.settings)})`,
+    );
+    await settle(page);
+    await page.getByLabel('Order enough for (days)').fill('0');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    expect(
+      await page.getByLabel('Order enough for (days)').evaluate((el) => !el.validity.valid),
+      'cover days below 1 refused by the form',
+    );
+  });
+
+  await step('new sections are in the menu', async () => {
+    await go('#/');
+    const nav = await page.locator('#sidebar .nav-list a').allTextContents();
+    const expected = ['Overview', 'Products', 'Catalog', 'Prices', 'Purchasing', 'Reports'];
+    expect(
+      expected.every((label, i) => nav[i]?.trim() === label),
+      `menu order (${nav.join(', ')})`,
+    );
+    await page.locator('#sidebar').getByRole('link', { name: 'Reports' }).click();
+    // The address changes before the router has handled it: wait for the new page.
+    await waitUntil(page, `document.querySelector('main h1')?.textContent === 'Reports'`);
+    await settle(page);
+    const current = await page.locator('#sidebar a[aria-current="page"]').allTextContents();
+    expect(
+      current.length === 1 && current[0].includes('Reports'),
+      `Reports is highlighted (${current.join(', ')}, ${page.url()})`,
+    );
+    await go('#/purchasing/orders/12');
+    expect(
+      (await page.locator('main h1').textContent()) === 'Purchase order',
+      'purchase order page',
+    );
+    expect(
+      (await page.locator('#sidebar a[aria-current="page"]').textContent()).includes('Purchasing'),
+      'a purchase order highlights Purchasing',
+    );
+  });
+
+  for (const feature of FEATURES) await feature.flows(featureContext(page, go, server));
+  server.state = createMockState();
+
   await step('signed out: every request fails with 401', async () => {
     server.state.signedOut = true;
     allowHttpErrors = true;
@@ -433,6 +574,7 @@ async function phoneFlows(browser, baseUrl, server) {
     expect(box.x >= 0 && box.x + box.width <= 390, 'dialog within the viewport');
     await page.keyboard.press('Escape');
   });
+  for (const feature of FEATURES) await feature.phoneFlows(featureContext(page, go, server));
   await context.close();
 }
 

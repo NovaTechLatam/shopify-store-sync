@@ -112,6 +112,33 @@ const ICONS = {
   external: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v6H4V6h6'],
   plus: ['M12 5v14', 'M5 12h14'],
   arrowRight: ['M5 12h14', 'M13 6l6 6-6 6'],
+  tag: ['M3 3h8.5l9.5 9.5-8.5 8.5L3 11.5z', 'M7.5 7.5h.01'],
+  chart: ['M3 3v18h18', 'M8 17v-4', 'M13 17V7', 'M18 17v-7'],
+  truck: [
+    'M14 17V5H2v12h2.5',
+    'M14 8h4l4 5v4h-2.5',
+    'M8.5 17h7',
+    'M6.5 15a2 2 0 1 1 0 4a2 2 0 1 1 0-4',
+    'M17.5 15a2 2 0 1 1 0 4a2 2 0 1 1 0-4',
+  ],
+  image: ['M3 3h18v18H3z', 'M9 7a2 2 0 1 1 0 4a2 2 0 1 1 0-4', 'M21 15l-5-5L5 21'],
+  trash: ['M3 6h18', 'M8 6V3h8v3', 'M5.5 6l1 15h11l1-15', 'M10 11v6', 'M14 11v6'],
+  edit: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
+  download: ['M12 4v12', 'M7 11l5 5 5-5', 'M4 20h16'],
+  upload: ['M12 16V4', 'M7 9l5-5 5 5', 'M4 20h16'],
+  calendar: ['M4 5h16v16H4z', 'M4 10h16', 'M8 3v4', 'M16 3v4'],
+  users: [
+    'M9 3a4 4 0 1 1 0 8a4 4 0 1 1 0-8',
+    'M2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2',
+    'M16 3.13a4 4 0 0 1 0 7.75',
+    'M22 21v-2a4 4 0 0 0-3-3.87',
+  ],
+  clipboard: ['M9 2h6v4H9z', 'M9 4H5v18h14V4h-4', 'M9 12h6', 'M9 16h4'],
+  printer: ['M6 9V3h12v6', 'M6 18H3V9h18v9h-3', 'M6 14h12v7H6z'],
+  grip: [5, 11, 17].flatMap((y) => [
+    `M9 ${y}a1 1 0 1 1 0 2a1 1 0 1 1 0-2`,
+    `M15 ${y}a1 1 0 1 1 0 2a1 1 0 1 1 0-2`,
+  ]),
 };
 
 /** A decorative stroke icon; the text next to it carries the meaning. */

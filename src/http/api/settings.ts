@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { reevaluateStockAlerts } from '../../alerts/alerts.js';
 import { sendTestAlert } from '../../alerts/notifier.js';
 import { SettingsPatchSchema, getSettings, resumeSync, updateSettings } from '../../settings.js';
+import { enqueueTask } from '../../tasks/queue.js';
 import type { AppDeps } from '../server.js';
 
 /** Settings the dashboard may change directly (pause state goes through pause/resume). */
@@ -15,6 +16,15 @@ const EditableSettings = SettingsPatchSchema.omit({
 
 const PauseBody = z.object({ reason: z.string().trim().max(500).optional() }).default({});
 
+/** Settings that change which items need reordering: re-check them all when one changes. */
+const REORDER_SETTINGS = [
+  'reorderAlertsEnabled',
+  'reorderLookbackDays',
+  'reorderSafetyDays',
+  'reorderCoverDays',
+  'reorderDefaultLeadTimeDays',
+] as const;
+
 export async function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps): Promise<void> {
   const { db } = deps;
 
@@ -24,6 +34,10 @@ export async function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps
     const patch = EditableSettings.parse(request.body);
     const settings = await updateSettings(db, patch);
     if (patch.lowStockThreshold !== undefined) await reevaluateStockAlerts(db);
+    if (REORDER_SETTINGS.some((key) => patch[key] !== undefined)) {
+      await enqueueTask(db, 'reorder_check', {});
+      deps.onWork?.();
+    }
     return settings;
   });
 

@@ -192,6 +192,50 @@ describe('sync engine', () => {
     expect(h.levels(item)).toEqual([35, 35]);
   });
 
+  it('logs the event kind and details a feature gives an adjustment', async () => {
+    h = await Harness.create(2);
+    const item = await h.addItem('SKU', [10, 10]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    const details = { purchaseOrderId: 7, number: 'PO-0007', supplierName: 'Acme', receiptId: 3 };
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, value, note, event_kind, details)
+       VALUES ($1, 'adjust', 120, 'Received 120 on PO-0007 from Acme', 'po_received', $2)`,
+      [item.poolLevelId, JSON.stringify(details)],
+    );
+    // A plain adjustment right after it keeps the default kind.
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, value) VALUES ($1, 'adjust', -2)`,
+      [item.poolLevelId],
+    );
+    await h.enqueue(item);
+    await h.drain();
+    expect(h.levels(item)).toEqual([128, 128]);
+    const { rows } = await h.db.query(
+      `SELECT kind, delta, quantity_before, quantity_after, message, details FROM inventory_events
+        WHERE item_id = $1 AND kind IN ('po_received', 'manual_adjust') ORDER BY id`,
+      [item.itemId],
+    );
+    expect(rows).toEqual([
+      {
+        kind: 'po_received',
+        delta: 120,
+        quantity_before: 10,
+        quantity_after: 130,
+        message: 'Received 120 on PO-0007 from Acme',
+        details,
+      },
+      {
+        kind: 'manual_adjust',
+        delta: -2,
+        quantity_before: 130,
+        quantity_after: 128,
+        message: 'Adjusted by -2',
+        details: null,
+      },
+    ]);
+  });
+
   it('keeps syncing the other stores when one store is down, and catches up later', async () => {
     h = await Harness.create(3);
     const item = await h.addItem('SKU', [10, 10, 10]);

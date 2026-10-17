@@ -1,9 +1,28 @@
 import type { Logger } from 'pino';
 import { dispatchAlerts } from './alerts/notifier.js';
 import type { Db } from './db/pool.js';
+import { PRICING_HOUSEKEEPING, PRICING_JOBS } from './pricing/jobs.js';
+import { CATALOG_HOUSEKEEPING, CATALOG_JOBS } from './products/jobs.js';
+import { PURCHASING_HOUSEKEEPING, PURCHASING_JOBS } from './purchasing/jobs.js';
+import { SALES_HOUSEKEEPING, SALES_JOBS } from './sales/jobs.js';
+import type { FeatureHousekeepingStep, FeatureJob } from './scheduler-types.js';
 import { getSettings } from './settings.js';
 import type { TaskKind } from './tasks/queue.js';
 import { enqueueTask } from './tasks/queue.js';
+
+/** Recurring work of the features (src/<feature>/jobs.ts). */
+export const FEATURE_JOBS: FeatureJob[] = [
+  ...CATALOG_JOBS,
+  ...PRICING_JOBS,
+  ...SALES_JOBS,
+  ...PURCHASING_JOBS,
+];
+export const FEATURE_HOUSEKEEPING: FeatureHousekeepingStep[] = [
+  ...CATALOG_HOUSEKEEPING,
+  ...PRICING_HOUSEKEEPING,
+  ...SALES_HOUSEKEEPING,
+  ...PURCHASING_HOUSEKEEPING,
+];
 
 export interface SchedulerOptions {
   db: Db;
@@ -22,6 +41,10 @@ export interface SchedulerOptions {
   onWork?: () => void;
   /** Used to deliver alerts. */
   fetchFn?: typeof fetch;
+  /** Default FEATURE_JOBS; tests pass their own. */
+  featureJobs?: FeatureJob[];
+  /** Default FEATURE_HOUSEKEEPING; tests pass their own. */
+  featureHousekeeping?: FeatureHousekeepingStep[];
 }
 
 /**
@@ -82,8 +105,15 @@ export class Scheduler {
       storeJob('catalog_sync', opts.catalogIntervalMs),
       storeJob('ensure_webhooks', opts.webhookCheckIntervalMs ?? 15 * 60_000),
       job('store_health', opts.healthIntervalMs ?? 5 * 60_000, () => this.enqueueHealthChecks()),
-      job('housekeeping', opts.housekeepingIntervalMs ?? 60_000, () => this.housekeeping()),
+      job('housekeeping', opts.housekeepingIntervalMs ?? 60_000, (now) => this.housekeeping(now)),
+      ...(opts.featureJobs ?? FEATURE_JOBS).map((feature) =>
+        job(feature.name, feature.everyMs, (now) => feature.run(this.context(now))),
+      ),
     ];
+  }
+
+  private context(now: number) {
+    return { db: this.opts.db, logger: this.opts.logger, onWork: this.opts.onWork, now };
   }
 
   start(): void {
@@ -163,7 +193,7 @@ export class Scheduler {
     this.opts.onWork?.();
   }
 
-  private async housekeeping(): Promise<void> {
+  private async housekeeping(now: number): Promise<void> {
     const { db, logger, fetchFn } = this.opts;
     const steps: [string, () => Promise<unknown>][] = [
       [
@@ -204,6 +234,10 @@ export class Scheduler {
         () =>
           db.query(`DELETE FROM circuit_breaker_hits WHERE created_at < now() - interval '1 day'`),
       ],
+      ...(this.opts.featureHousekeeping ?? FEATURE_HOUSEKEEPING).map(
+        ([name, run]): [string, () => Promise<unknown>] => [name, () => run(this.context(now))],
+      ),
+      // Last, so alerts raised by the steps above go out in this run.
       ['deliver alerts', () => dispatchAlerts({ db, logger, fetchFn })],
     ];
     for (const [name, step] of steps) {

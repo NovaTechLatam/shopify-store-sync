@@ -109,6 +109,10 @@ interface Adjustment {
   storeIds: number[] | null;
   value: number | null;
   note: string | null;
+  /** Logged instead of the default event kind (a feature's own, e.g. 'po_received'). */
+  eventKind: string | null;
+  /** With `eventKind`: the event's details. */
+  details: unknown;
   createdAt: Date;
 }
 
@@ -430,13 +434,16 @@ export class SyncEngine {
           adj.note ??
           (adj.kind === 'set' ? `Set to ${adj.value}` : `Adjusted by ${signed(adj.value!)}`);
       }
+      // Adjustments made by a feature (a delivery received...) say what they were.
       events.push({
-        kind: { set: 'manual_set', adjust: 'manual_adjust', count: 'stock_count' }[adj.kind],
+        kind:
+          adj.eventKind ??
+          { set: 'manual_set', adjust: 'manual_adjust', count: 'stock_count' }[adj.kind],
         delta: after - next,
         before: next,
         after,
         message,
-        details,
+        details: adj.eventKind ? (adj.details ?? details) : details,
       });
       next = after;
     }
@@ -1024,9 +1031,12 @@ export class SyncEngine {
         store_ids: number[] | null;
         value: number | null;
         note: string | null;
+        event_kind: string | null;
+        details: unknown;
         created_at: Date;
       }>(
-        `SELECT id, kind, strategy, source_store_id, store_ids, value, note, created_at
+        `SELECT id, kind, strategy, source_store_id, store_ids, value, note, event_kind, details,
+                created_at
            FROM pool_adjustments WHERE pool_level_id = $1 AND applied_at IS NULL ORDER BY id`,
         [poolLevelId],
       ),
@@ -1075,6 +1085,8 @@ export class SyncEngine {
         storeIds: a.store_ids,
         value: a.value,
         note: a.note,
+        eventKind: a.event_kind,
+        details: a.details,
         createdAt: a.created_at,
       })),
     };

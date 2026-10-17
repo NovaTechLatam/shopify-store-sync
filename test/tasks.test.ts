@@ -4,11 +4,14 @@ import { setAlert } from '../src/alerts/alerts.js';
 import * as catalog from '../src/catalog/catalog.js';
 import type { Db } from '../src/db/pool.js';
 import { Scheduler } from '../src/scheduler.js';
+import type { FeatureJobContext } from '../src/scheduler-types.js';
 import { updateSettings } from '../src/settings.js';
 import { ShopifyApiError } from '../src/shopify/client.js';
 import { checkConnection, checkStoreHealth } from '../src/sync/health.js';
 import type { TaskDeps } from '../src/tasks/handlers.js';
-import { enqueueTask } from '../src/tasks/queue.js';
+import { TASK_HANDLERS, TASK_PAYLOAD_SCHEMAS } from '../src/tasks/handlers.js';
+import type { TaskKind } from '../src/tasks/queue.js';
+import { defaultDedupeKey, enqueueTask } from '../src/tasks/queue.js';
 import { TaskRunner, runTasksOnce } from '../src/tasks/runner.js';
 import { WEBHOOK_TOPICS } from '../src/webhooks/topics.js';
 import { FakeShop } from './fakes/fake-shopify.js';
@@ -522,5 +525,124 @@ describe('scheduler', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('runs feature jobs on their own schedule, and their housekeeping before alerts go out', async () => {
+    h = await harness(1);
+    const { logger, lines } = captureLogger();
+    const onWork = vi.fn();
+    const contexts: FeatureJobContext[] = [];
+    const job = vi.fn(async (ctx: FeatureJobContext) => {
+      contexts.push(ctx);
+    });
+    const broken = vi.fn(async () => {
+      throw new Error('feature job broke');
+    });
+    const step = vi.fn(async (ctx: FeatureJobContext) => {
+      await setAlert(ctx.db, {
+        open: true,
+        kind: 'reorder',
+        dedupeKey: 'reorder:1',
+        message: 'SKU X will run out in about 9 days.',
+      });
+    });
+    const brokenStep = vi.fn(async () => {
+      throw new Error('feature step broke');
+    });
+    await updateSettings(h.db, { alertSlackWebhookUrl: 'https://hooks.slack.com/services/T/B/X' });
+    const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
+    const scheduler = new Scheduler({
+      db: h.db,
+      logger,
+      ...intervals,
+      onWork,
+      fetchFn,
+      featureJobs: [
+        { name: 'test_job', everyMs: 5 * MINUTE, run: job },
+        { name: 'broken_job', everyMs: MINUTE, run: broken },
+      ],
+      featureHousekeeping: [
+        ['broken step', brokenStep],
+        ['test step', step],
+      ],
+    });
+
+    const now = Date.now();
+    await scheduler.tick(now);
+    expect(job).toHaveBeenCalledTimes(1);
+    expect(contexts[0]).toEqual({ db: h.db, logger, onWork, now });
+    expect(step).toHaveBeenCalledWith({ db: h.db, logger, onWork, now });
+    // The alert raised by the step was delivered in the same run.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(fetchFn.mock.calls[0])).toContain('will run out');
+    const errors = lines.filter((l) => l.level === 50) as unknown as Record<string, unknown>[];
+    expect(errors.some((l) => l.job === 'broken_job' && l.msg === 'scheduled job failed')).toBe(
+      true,
+    );
+    expect(
+      errors.some((l) => l.step === 'broken step' && l.msg === 'housekeeping step failed'),
+    ).toBe(true);
+
+    await scheduler.tick(now + MINUTE);
+    expect(job).toHaveBeenCalledTimes(1);
+    expect(broken).toHaveBeenCalledTimes(2);
+    await scheduler.tick(now + 5 * MINUTE);
+    expect(job).toHaveBeenCalledTimes(2);
+    expect(contexts[1]!.now).toBe(now + 5 * MINUTE);
+  });
+});
+
+describe('feature task registry', () => {
+  const examples: Record<string, { valid: object; invalid: object }> = {
+    publish_product: {
+      valid: { masterProductId: 1, storeId: 2 },
+      invalid: { masterProductId: 0, storeId: 2 },
+    },
+    apply_prices: { valid: { runId: 3, storeId: 2 }, invalid: { runId: '3', storeId: 2 } },
+    refresh_order: {
+      valid: { storeId: 1, orderId: 'gid://shopify/Order/123456789012345678' },
+      invalid: { storeId: 1, orderId: '123456789012345678' },
+    },
+    remove_order: {
+      valid: { storeId: 1, orderId: 'gid://shopify/Order/1' },
+      invalid: { storeId: 1 },
+    },
+    sync_orders: { valid: { storeId: 1 }, invalid: {} },
+    sales_backfill: { valid: { storeId: 1 }, invalid: { storeId: -1 } },
+    reorder_check: { valid: {}, invalid: [] },
+    push_item_costs: {
+      valid: { storeId: 1, itemIds: [1, 2] },
+      invalid: { storeId: 1, itemIds: [0] },
+    },
+  };
+
+  it('registers a payload schema and a handler for every feature task kind', () => {
+    for (const [kind, { valid, invalid }] of Object.entries(examples)) {
+      expect(typeof TASK_HANDLERS[kind as TaskKind], kind).toBe('function');
+      const schema = TASK_PAYLOAD_SCHEMAS[kind as TaskKind];
+      expect(schema.safeParse(valid).success, kind).toBe(true);
+      expect(schema.safeParse(invalid).success, kind).toBe(false);
+    }
+    expect(Object.keys(TASK_HANDLERS).sort()).toEqual(Object.keys(TASK_PAYLOAD_SCHEMAS).sort());
+  });
+
+  it('needs an explicit de-duplication key for payloads with lists', async () => {
+    expect(() => defaultDedupeKey('push_item_costs', { storeId: 1, itemIds: [1, 2] })).toThrow(
+      /explicit dedupeKey/,
+    );
+    expect(defaultDedupeKey('reorder_check', {})).toBe('reorder_check');
+    h = await harness(1);
+    await expect(
+      enqueueTask(h.db, 'push_item_costs', { storeId: 1, itemIds: [1] }),
+    ).rejects.toThrow(/explicit dedupeKey/);
+    await enqueueTask(
+      h.db,
+      'push_item_costs',
+      { storeId: 1, itemIds: [1, 2] },
+      { dedupeKey: 'push_item_costs:1:7' },
+    );
+    expect(await tasks()).toMatchObject([
+      { kind: 'push_item_costs', payload: { storeId: 1, itemIds: [1, 2] } },
+    ]);
   });
 });

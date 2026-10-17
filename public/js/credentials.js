@@ -10,6 +10,20 @@ export const REQUIRED_SCOPES = [
   'read_locations',
 ];
 
+/**
+ * Features that need more permissions than syncing stock (the store page shows which are
+ * allowed). Keys match the API's `store.features`.
+ */
+export const FEATURE_PERMISSIONS = {
+  catalog: { label: 'Catalog', enables: 'Create and update products from the catalog.' },
+  publishing: {
+    label: 'Online Store',
+    enables: 'Show the products you publish in the Online Store sales channel.',
+  },
+  pricing: { label: 'Prices', enables: 'Update prices from Store Sync.' },
+  sales: { label: 'Reports', enables: 'Read orders for sales reports and reorder suggestions.' },
+};
+
 export const AUTH_MODES = {
   client_credentials: {
     label: 'Dev Dashboard app',

@@ -363,6 +363,60 @@ export async function ensureItem(db: Queryable, sku: string, title?: string): Pr
   return id;
 }
 
+export interface EnsuredItem {
+  itemId: number;
+  /** Created by this call: no store sells it yet, and its stock hasn't started (quantity NULL). */
+  created: boolean;
+}
+
+/**
+ * Creates the items of SKUs that don't exist yet, with their pool levels, for features that make
+ * products or order stock before any store sells them (catalog, purchase orders). Holds the
+ * catalog lock for the caller's transaction, so catalog matching can't create the same items at
+ * the same time (it would auto-initialise them from the stores' numbers).
+ *
+ * Items created here are not initialised: the caller decides how they start (an `initialize`
+ * adjustment with strategy 'value', for instance). Existing items are returned unchanged. SKUs
+ * are normalised; the map is keyed by the normalised SKU. A SKU that normalises to nothing is a
+ * CatalogError ('invalid').
+ */
+export async function ensureItemsLocked(
+  client: DbClient,
+  skus: { sku: string; title: string }[],
+): Promise<Map<string, EnsuredItem>> {
+  const titles = new Map<string, string>();
+  for (const { sku, title } of skus) {
+    const normalized = normalizeSku(sku);
+    if (!normalized) throw new CatalogError('A SKU is required', 'invalid');
+    if (!titles.has(normalized)) titles.set(normalized, title.trim());
+  }
+  const result = new Map<string, EnsuredItem>();
+  if (titles.size === 0) return result;
+  await lockCatalog(client);
+  const wanted = [...titles.keys()];
+  const inserted = await client.query<{ id: number; sku: string }>(
+    `INSERT INTO items (sku, title)
+     SELECT * FROM unnest($1::text[], $2::text[])
+     ON CONFLICT (sku) DO NOTHING
+     RETURNING id, sku`,
+    [wanted, [...titles.values()]],
+  );
+  const created = new Set(inserted.rows.map((r) => r.sku));
+  const { rows } = await client.query<{ id: number; sku: string }>(
+    'SELECT id, sku FROM items WHERE sku = ANY($1::text[])',
+    [wanted],
+  );
+  for (const row of rows) result.set(row.sku, { itemId: row.id, created: created.has(row.sku) });
+  await ensurePoolLevels(
+    client,
+    rows.map((r) => r.id),
+  );
+  // Matching links a store's variant as soon as the SKU's item exists. Relinking the new SKUs
+  // keeps that true if some store already has a variant with one of them (usually a no-op).
+  if (created.size) await relinkSkus(client, [...created]);
+  return result;
+}
+
 // ---- variants ---------------------------------------------------------------------------------
 
 /**
@@ -734,14 +788,19 @@ function syncedWarehouses(locations: LocationRow[]): Set<number> {
 
 // ---- helpers ----------------------------------------------------------------------------------
 
-async function withCatalogLock<T>(db: Db, fn: (client: DbClient) => Promise<T>): Promise<T> {
+/** Runs `fn` in a transaction that holds the catalog lock (see "Concurrency" at the top). */
+export async function withCatalogLock<T>(db: Db, fn: (client: DbClient) => Promise<T>): Promise<T> {
   return withTransaction(db, async (client) => {
     await lockCatalog(client);
     return fn(client);
   });
 }
 
-async function lockCatalog(db: Queryable): Promise<void> {
+/**
+ * Takes the catalog lock until the caller's transaction ends. Taking it again in the same
+ * transaction is fine. Outside a transaction it would be released at once: pass a client.
+ */
+export async function lockCatalog(db: Queryable): Promise<void> {
   await db.query('SELECT pg_advisory_xact_lock($1)', [CATALOG_LOCK_ID]);
 }
 

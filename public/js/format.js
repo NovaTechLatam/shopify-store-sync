@@ -15,6 +15,86 @@ export const signed = (n) => (n > 0 ? `+${num(n)}` : n < 0 ? `−${num(-n)}` : '
 
 export const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 
+const moneyFormats = new Map();
+
+/**
+ * "$12.90", "COP 41,900.00", "CLP 41,900": the currency's own decimals, en-US like `num`. An
+ * unknown currency (a store not read yet) shows the plain number with 2 decimals. `signDisplay`
+ * as in Intl ('exceptZero' for changes: "+$2.00").
+ */
+export function money(amount, currencyCode, { signDisplay = 'auto' } = {}) {
+  if (amount === null || amount === undefined || amount === '') return '—';
+  const key = `${currencyCode}|${signDisplay}`;
+  let format = moneyFormats.get(key);
+  if (!format) {
+    try {
+      format = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: currencyCode,
+        signDisplay,
+      });
+    } catch {
+      format = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+        signDisplay,
+      });
+    }
+    moneyFormats.set(key, format);
+  }
+  return format.format(Number(amount));
+}
+
+const percentFormats = new Map();
+
+/** 0.125 → "13%" (digits 0) or "12.5%" (digits 1). */
+export function percent(fraction, digits = 0) {
+  if (fraction === null || fraction === undefined || !Number.isFinite(Number(fraction))) {
+    return '—';
+  }
+  let format = percentFormats.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat('en-US', {
+      style: 'percent',
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    percentFormats.set(digits, format);
+  }
+  return format.format(Number(fraction));
+}
+
+const dateOnlyFormat = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
+/**
+ * A calendar date: '2026-10-17' (as the API sends dates) → "Oct 17, 2026", the same day wherever
+ * the browser is. A Date shows its local calendar day.
+ */
+export function dateOnly(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  let utc;
+  if (value instanceof Date) {
+    utc = Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
+  } else {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+    if (!match) return '—';
+    utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  return dateOnlyFormat.format(new Date(utc));
+}
+
+/** A duration in whole days, rounded down: "4 days", "1 day", "less than a day". */
+export function days(n) {
+  if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
+  if (n < 1) return 'less than a day';
+  return plural(Math.floor(n), 'day');
+}
+
 export function relativeTime(value, now = Date.now()) {
   const date = new Date(value);
   const seconds = Math.round((now - date.getTime()) / 1000);

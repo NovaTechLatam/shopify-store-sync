@@ -78,9 +78,10 @@ export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Referrer-Policy', 'no-referrer');
+    // Product images are shown from Shopify's CDN (catalog, imported products).
     reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+      "default-src 'self'; img-src 'self' data: https://cdn.shopify.com; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
     );
     return payload;
   });

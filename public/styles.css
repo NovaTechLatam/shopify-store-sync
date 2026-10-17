@@ -62,6 +62,15 @@
   --toast-success: #6fdc9c;
   --toast-error: #ff9b92;
   --toast-info: #a9b9ff;
+
+  /* Chart series (brands, stores...), in this order. Distinct in hue and lightness, so neighbours
+     stay apart for colour-blind readers too; always paired with a legend or a label. */
+  --series-1: #3157d5;
+  --series-2: #c26a00;
+  --series-3: #00876a;
+  --series-4: #c0392b;
+  --series-5: #a3488e;
+  --series-6: #2a86b9;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -105,6 +114,13 @@
     --backdrop: rgba(0, 0, 0, 0.65);
     --toast-bg: #2b3038;
     --toast-text: #f3f4f6;
+
+    --series-1: #7b9cff;
+    --series-2: #f0a640;
+    --series-3: #3fc79f;
+    --series-4: #ff7f6e;
+    --series-5: #e08ad0;
+    --series-6: #6cc4f0;
   }
 }
 
@@ -2571,6 +2587,206 @@ legend {
 @media (max-width: 479px) {
   .dialog-footer .button {
     flex: 1 1 auto;
+  }
+}
+
+/* ---------- Shared by the catalog, prices, reports and purchasing pages ---------- */
+
+/* Product image thumbnails: a fixed box, the image cropped to fill it. */
+.thumb {
+  display: block;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  object-fit: cover;
+}
+
+.thumb-sm {
+  width: 32px;
+  height: 32px;
+}
+
+.thumb-lg {
+  width: 96px;
+  height: 96px;
+  border-radius: var(--radius);
+}
+
+/* No image: the same box with an icon in it. */
+.thumb-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+/* Numbers in columns: same-width digits, right aligned, kept on one line. */
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* A totals row at the end of a table (a tr in the tbody, so phones show it as a card too). */
+.table .table-totals > * {
+  border-top: 2px solid var(--border-strong);
+  background: var(--surface-2);
+  font-weight: 650;
+}
+
+@media (max-width: 639px) {
+  .table tbody tr.table-totals {
+    background: var(--surface-2);
+  }
+
+  .table .table-totals > * {
+    border-top: 0;
+  }
+}
+
+/* Inline SVG charts: series colours from the --series-N tokens. */
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chart text {
+  fill: var(--text-muted);
+  font-size: 12px;
+}
+
+.chart .chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart .chart-axis {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.series-1 {
+  --series: var(--series-1);
+}
+.series-2 {
+  --series: var(--series-2);
+}
+.series-3 {
+  --series: var(--series-3);
+}
+.series-4 {
+  --series: var(--series-4);
+}
+.series-5 {
+  --series: var(--series-5);
+}
+.series-6 {
+  --series: var(--series-6);
+}
+
+.chart [class*='series-'] {
+  fill: var(--series);
+}
+
+/* A legend entry's colour square, e.g. <span class="swatch series-2"></span>. */
+.swatch {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--series, var(--series-1));
+  vertical-align: -1px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  list-style: none;
+  font-size: 14px;
+}
+
+.chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A product page section that failed to load (the rest of the page still works). */
+.section-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--critical-border);
+  border-radius: var(--radius-lg);
+  background: var(--critical-bg);
+  color: var(--critical);
+  font-size: 14px;
+}
+
+.section-error p {
+  flex: 1 1 200px;
+  color: var(--text);
+}
+
+/* ---------- Print (purchase orders, reports) ---------- */
+
+@media print {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .app {
+    display: block;
+    background: none;
+  }
+
+  .topbar,
+  .sidebar,
+  .skip-link,
+  .toasts,
+  #global-notice,
+  .back-link,
+  .page-actions,
+  .card-actions,
+  .row-actions,
+  .form-actions,
+  .pagination,
+  .chips,
+  .toolbar,
+  .no-print {
+    display: none !important;
+  }
+
+  main {
+    max-width: none;
+    padding: 0;
+  }
+
+  .card,
+  .table-wrap {
+    border-color: #bbb;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
   }
 }
 

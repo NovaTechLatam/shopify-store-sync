@@ -1,11 +1,24 @@
 import type { Queryable } from '../db/pool.js';
+import type { PricingTaskPayloads } from '../pricing/task-types.js';
+import type { CatalogTaskPayloads } from '../products/task-types.js';
+import type { PurchasingTaskPayloads } from '../purchasing/task-types.js';
+import type { SalesTaskPayloads } from '../sales/task-types.js';
 
 /**
  * Background tasks other than reconciling pool levels. Each task has a de-duplication key, so
  * asking for the same work many times (e.g. 50 webhooks for one product) runs it once; asking
  * while it runs makes it run once more afterwards.
+ *
+ * Features declare their kinds in src/<feature>/task-types.ts and register schemas and handlers
+ * in src/<feature>/tasks.ts.
  */
-export type TaskPayloads = {
+export type TaskPayloads = CoreTaskPayloads &
+  CatalogTaskPayloads &
+  PricingTaskPayloads &
+  SalesTaskPayloads &
+  PurchasingTaskPayloads;
+
+export type CoreTaskPayloads = {
   /** Full re-read of a store's locations and variants, then SKU matching. */
   catalog_sync: { storeId: number };
   /** Re-read a store's locations (location webhooks). */
@@ -35,10 +48,20 @@ export interface ClaimedTask<K extends TaskKind = TaskKind> {
   attempts: number;
 }
 
+/**
+ * `kind:key=value:...` from a flat payload. A payload holding a list or an object has no natural
+ * key (the same work asked twice may list things in another order): enqueue it with an explicit
+ * `dedupeKey` instead.
+ */
 export function defaultDedupeKey(kind: TaskKind, payload: Record<string, unknown>): string {
   const parts = Object.keys(payload)
     .sort()
-    .map((k) => `${k}=${String(payload[k])}`);
+    .map((k) => {
+      const value = payload[k];
+      if (typeof value === 'object' && value !== null)
+        throw new Error(`Task ${kind} needs an explicit dedupeKey: its ${k} is not a plain value`);
+      return `${k}=${String(value)}`;
+    });
   return [kind, ...parts].join(':');
 }
 

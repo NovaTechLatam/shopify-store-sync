@@ -145,6 +145,52 @@ function settingsForm(settings, reload) {
   );
   const massZero = numberInput('massZeroLimit', settings.massZeroLimit, 0);
   const retention = numberInput('eventRetentionDays', settings.eventRetentionDays, 7);
+  const currency = input({
+    name: 'baseCurrency',
+    value: settings.baseCurrency,
+    required: true,
+    minlength: 3,
+    maxlength: 3,
+    pattern: '[A-Za-z]{3}',
+    title: 'A 3-letter currency code, like USD',
+    autocapitalize: 'characters',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    class: 'input input-short',
+  });
+  const reorderAlerts = input({
+    type: 'checkbox',
+    name: 'reorderAlertsEnabled',
+    checked: settings.reorderAlertsEnabled,
+    class: 'checkbox-input',
+  });
+  const lookback = numberInput('reorderLookbackDays', settings.reorderLookbackDays, 7, 365);
+  const safetyDays = numberInput('reorderSafetyDays', settings.reorderSafetyDays, 0, 365);
+  const coverDays = numberInput('reorderCoverDays', settings.reorderCoverDays, 1, 365);
+  const leadTime = numberInput(
+    'reorderDefaultLeadTimeDays',
+    settings.reorderDefaultLeadTimeDays,
+    0,
+    365,
+  );
+  const historyDays = numberInput('salesHistoryDays', settings.salesHistoryDays, 1, 3650);
+  const timezone = select(timeZoneOptions(settings.reportTimezone), {
+    name: 'reportTimezone',
+    value: settings.reportTimezone,
+  });
+  const costMethod = select(
+    [
+      { value: 'average', label: 'Average cost of the stock you have' },
+      { value: 'last', label: 'Price of the last delivery' },
+    ],
+    { name: 'costMethod', value: settings.costMethod },
+  );
+  const pushCosts = input({
+    type: 'checkbox',
+    name: 'pushCostsToShopify',
+    checked: settings.pushCostsToShopify,
+    class: 'checkbox-input',
+  });
 
   const read = () => ({
     lowStockThreshold: Number(threshold.value),
@@ -154,6 +200,16 @@ function settingsForm(settings, reload) {
     autoInitializeStrategy: strategy.value,
     massZeroLimit: Number(massZero.value),
     eventRetentionDays: Number(retention.value),
+    baseCurrency: currency.value.trim().toUpperCase(),
+    reorderAlertsEnabled: reorderAlerts.checked,
+    reorderLookbackDays: Number(lookback.value),
+    reorderSafetyDays: Number(safetyDays.value),
+    reorderCoverDays: Number(coverDays.value),
+    reorderDefaultLeadTimeDays: Number(leadTime.value),
+    salesHistoryDays: Number(historyDays.value),
+    reportTimezone: timezone.value,
+    costMethod: costMethod.value,
+    pushCostsToShopify: pushCosts.checked,
   });
   const changes = () =>
     Object.fromEntries(Object.entries(read()).filter(([key, value]) => value !== settings[key]));
@@ -246,6 +302,100 @@ function settingsForm(settings, reload) {
         hint: 'At least 7 days.',
       }),
     ),
+    card(
+      { title: 'Currency' },
+      field({
+        label: 'Base currency',
+        control: currency,
+        hint: 'Base prices and costs are in this currency, and each store converts from it with the exchange rate on its page. Changing it doesn’t convert amounts you already entered.',
+      }),
+    ),
+    card(
+      { title: 'Reorder planning' },
+      h(
+        'div',
+        { class: 'stack' },
+        h(
+          'label',
+          { class: 'checkbox' },
+          reorderAlerts,
+          h(
+            'span',
+            {},
+            'Alert me when a product needs reordering',
+            h(
+              'span',
+              { class: 'field-hint block' },
+              'You get an alert when a product would run out before a new delivery could arrive.',
+            ),
+          ),
+        ),
+        field({
+          label: 'Measure the sales pace over (days)',
+          control: lookback,
+          hint: 'We look at this many past days of sales in all your stores. Between 7 and 365.',
+        }),
+        field({
+          label: 'Safety margin (days)',
+          control: safetyDays,
+          hint: 'Reorder this many days earlier than the delivery time alone needs, in case sales pick up or the delivery is late.',
+        }),
+        field({
+          label: 'Order enough for (days)',
+          control: coverDays,
+          hint: 'A suggested order covers this many days of sales after it arrives. You can change it per product.',
+        }),
+        field({
+          label: 'Usual delivery time (days)',
+          control: leadTime,
+          hint: 'Used when neither the product nor its supplier has a delivery time.',
+        }),
+      ),
+    ),
+    card(
+      { title: 'Sales history' },
+      h(
+        'div',
+        { class: 'stack' },
+        field({
+          label: 'Read sales from the last (days)',
+          control: historyDays,
+          hint: 'When a store is connected, we read its orders this far back. Shopify only gives the last 60 days unless the app may read all orders.',
+        }),
+        field({
+          label: 'Report days follow the time zone',
+          control: timezone,
+          hint: 'Decides when a day starts and ends in reports.',
+        }),
+      ),
+    ),
+    card(
+      { title: 'Costs' },
+      h(
+        'div',
+        { class: 'stack' },
+        field({
+          label: 'When a delivery arrives, a product’s cost becomes',
+          control: costMethod,
+          hint: 'The average mixes the new price with what the stock you already have cost.',
+        }),
+        h(
+          'label',
+          { class: 'checkbox' },
+          pushCosts,
+          h(
+            'span',
+            {},
+            'Copy costs to Shopify',
+            h(
+              'span',
+              { class: 'field-hint block' },
+              'Updates “Cost per item” in every store when a product’s cost changes, so Shopify’s profit reports match.',
+            ),
+          ),
+        ),
+      ),
+    ),
     actions,
   );
 
@@ -284,13 +434,28 @@ function settingsForm(settings, reload) {
   return form;
 }
 
-function numberInput(name, value, min) {
+/** The report time zone choices: the first store's (empty value), then every IANA zone. */
+function timeZoneOptions(current) {
+  let zones = [];
+  try {
+    zones = Intl.supportedValuesOf('timeZone');
+  } catch {
+    // Older browsers: only the current value and the default can be chosen.
+  }
+  if (current && !zones.includes(current)) zones = [current, ...zones];
+  return [
+    { value: '', label: 'Same as your first store' },
+    ...zones.map((zone) => ({ value: zone, label: zone.replace(/_/g, ' ') })),
+  ];
+}
+
+function numberInput(name, value, min, max = 1000000) {
   return input({
     type: 'number',
     name,
     value,
     min,
-    max: 1000000,
+    max,
     step: 1,
     required: true,
     inputmode: 'numeric',

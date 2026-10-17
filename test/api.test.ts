@@ -367,6 +367,92 @@ describe('HTTP API', () => {
     expect((await api('GET', '/api/alerts')).body).toEqual([]);
   });
 
+  it('validates and saves the currency, reorder, sales and cost settings', async () => {
+    expect((await api('GET', '/api/settings')).body).toMatchObject({
+      baseCurrency: 'USD',
+      reorderAlertsEnabled: true,
+      reorderLookbackDays: 30,
+      reorderSafetyDays: 7,
+      reorderCoverDays: 30,
+      reorderDefaultLeadTimeDays: 14,
+      salesHistoryDays: 60,
+      costMethod: 'average',
+      pushCostsToShopify: false,
+      reportTimezone: '',
+    });
+    const changed = {
+      baseCurrency: 'EUR',
+      salesHistoryDays: 365,
+      costMethod: 'last',
+      pushCostsToShopify: true,
+      reportTimezone: 'America/Bogota',
+    };
+    expect((await api('PATCH', '/api/settings', changed)).body).toMatchObject(changed);
+    expect((await api('GET', '/api/settings')).body).toMatchObject(changed);
+    expect((await api('PATCH', '/api/settings', { reportTimezone: '' })).body.reportTimezone).toBe(
+      '',
+    );
+    const reorderTasks = async () =>
+      (await db.query(`SELECT 1 FROM tasks WHERE kind = 'reorder_check'`)).rowCount;
+    expect(await reorderTasks()).toBe(0);
+
+    const invalid = [
+      { baseCurrency: 'usd' },
+      { baseCurrency: 'EURO' },
+      { reorderLookbackDays: 6 },
+      { reorderLookbackDays: 366 },
+      { reorderSafetyDays: -1 },
+      { reorderCoverDays: 0 },
+      { reorderDefaultLeadTimeDays: 366 },
+      { salesHistoryDays: 0 },
+      { salesHistoryDays: 3651 },
+      { salesHistoryDays: 1.5 },
+      { costMethod: 'fifo' },
+      { reportTimezone: 'Mars/Base' },
+      { reportTimezone: '+05:00' },
+    ];
+    for (const patch of invalid) {
+      expect((await api('PATCH', '/api/settings', patch)).status, JSON.stringify(patch)).toBe(400);
+    }
+
+    // Reorder suggestions depend on these: they are re-checked.
+    const reorder = await api('PATCH', '/api/settings', {
+      reorderAlertsEnabled: false,
+      reorderLookbackDays: 7,
+      reorderSafetyDays: 0,
+      reorderCoverDays: 365,
+      reorderDefaultLeadTimeDays: 0,
+    });
+    expect(reorder.status).toBe(200);
+    expect(await reorderTasks()).toBe(1);
+  });
+
+  it('shows a store’s currency, time zone and exchange rate, and edits the rate', async () => {
+    addShop('brand-a.myshopify.com', {});
+    const store = await connect('Brand A', 'brand-a.myshopify.com');
+    expect((await api('GET', `/api/stores/${store.id}`)).body).toMatchObject({
+      currencyCode: null,
+      timezone: null,
+      exchangeRate: 1,
+      scopesCheckedAt: null,
+    });
+    await db.query(
+      `UPDATE stores SET currency_code = 'COP', iana_timezone = 'America/Bogota' WHERE id = $1`,
+      [store.id],
+    );
+    const patched = await api('PATCH', `/api/stores/${store.id}`, { exchangeRate: 4100.25 });
+    expect(patched.body).toMatchObject({
+      currencyCode: 'COP',
+      timezone: 'America/Bogota',
+      exchangeRate: 4100.25,
+    });
+    expect((await api('GET', '/api/stores')).body[0].exchangeRate).toBe(4100.25);
+    for (const exchangeRate of [0, -1, 'abc', null]) {
+      expect((await api('PATCH', `/api/stores/${store.id}`, { exchangeRate })).status).toBe(400);
+    }
+    expect((await api('GET', `/api/stores/${store.id}`)).body.exchangeRate).toBe(4100.25);
+  });
+
   it('lists unmatched and conflicting variants and links them manually', async () => {
     addShop('brand-a.myshopify.com', { 'TEE-M': 5, 'ONLY-A': 1, DUP: 1 });
     const b = addShop('brand-b.myshopify.com', { 'TEE-M': 5, 'TYPO-A': 1 });
@@ -402,6 +488,10 @@ describe('HTTP API', () => {
     expect(page.statusCode).toBe(200);
     expect(page.headers['content-type']).toContain('text/html');
     expect(page.headers['content-security-policy']).toContain("default-src 'self'");
+    // Product images come from Shopify's CDN.
+    expect(page.headers['content-security-policy']).toContain(
+      "img-src 'self' data: https://cdn.shopify.com;",
+    );
   });
 
   it('keeps accepting webhooks signed with the previous client secret after a rotation', async () => {

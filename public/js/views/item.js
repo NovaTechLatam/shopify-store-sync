@@ -1,7 +1,8 @@
-import { api, latestOnly } from '../api.js';
+import { api, isAbort, latestOnly } from '../api.js';
 import { confirmDialog, formDialog } from '../dialog.js';
-import { h, replace, uid } from '../dom.js';
+import { h, icon, replace, uid } from '../dom.js';
 import { num, signed, timeAgo } from '../format.js';
+import { ITEM_SECTIONS } from '../item-sections.js';
 import { alertBadge } from '../labels.js';
 import { refreshStatus } from '../shell.js';
 import { timeline } from '../timeline.js';
@@ -47,7 +48,7 @@ export async function render({ root, params, signal, setTitle }) {
       render: ([item, settings]) => {
         setTitle(item.title || item.sku);
         header = replaceHeader(header, itemHeader(item, back, actions));
-        return itemBody(item, settings, actions);
+        return itemBody(item, settings, actions, reqSignal);
       },
     }),
   );
@@ -91,7 +92,7 @@ function itemStateBadge(item) {
   return badge('Syncing', 'success', 'check');
 }
 
-function itemBody(item, settings, actions) {
+function itemBody(item, settings, actions, signal) {
   const openAlerts = item.alerts.filter((a) => !a.resolvedAt);
   return [
     !item.syncEnabled &&
@@ -135,6 +136,7 @@ function itemBody(item, settings, actions) {
         ),
       ),
     item.levels.map((level) => stockCard(item, level, settings, actions)),
+    ITEM_SECTIONS.map(({ name, section }) => featureSection(name, section, item, signal)),
     h(
       'div',
       { class: 'grid-2' },
@@ -155,6 +157,45 @@ function itemBody(item, settings, actions) {
         : timeline(item.events),
     ),
   ];
+}
+
+/**
+ * A feature's part of the page (catalog, prices, sales, purchasing), loaded on its own: while it
+ * loads it takes no room, and if it fails only it shows an error.
+ */
+function featureSection(name, section, item, signal) {
+  const container = h('div', { class: 'item-section', dataset: { section: name } });
+  const load = async () => {
+    try {
+      const node = await section(item, { signal });
+      if (signal.aborted) return;
+      if (node) replace(container, node);
+      else container.remove();
+    } catch (err) {
+      if (isAbort(err) || signal.aborted) return;
+      console.warn(`item section ${name} failed`, err);
+      const retry = button('Try again', {
+        size: 'small',
+        variant: 'plain',
+        onClick: () => {
+          replace(container);
+          load();
+        },
+      });
+      replace(
+        container,
+        h(
+          'div',
+          { class: 'section-error', role: 'alert' },
+          icon('error'),
+          h('p', {}, `Part of this page couldn’t be loaded: ${err?.message || 'unknown error'}`),
+          retry,
+        ),
+      );
+    }
+  };
+  load();
+  return container;
 }
 
 function stockCard(item, level, settings, actions) {
