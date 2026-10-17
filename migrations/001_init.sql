@@ -153,10 +153,12 @@ CREATE INDEX sync_queue_ready ON sync_queue (run_after);
 --               values: 'store' (one store is right), 'min', 'max', 'sum', or 'value' (given).
 --   set         "we counted 40": the shared quantity becomes `value`.
 --   adjust      "received 24 units": the shared quantity changes by `value`.
+--   count       "there are 40 on the shelf": physical count; the shared quantity becomes `value`
+--               minus the units every store has committed to open (unfulfilled) orders.
 CREATE TABLE pool_adjustments (
   id              bigserial PRIMARY KEY,
   pool_level_id   bigint NOT NULL REFERENCES pool_levels(id) ON DELETE CASCADE,
-  kind            text NOT NULL CHECK (kind IN ('initialize', 'set', 'adjust')),
+  kind            text NOT NULL CHECK (kind IN ('initialize', 'set', 'adjust', 'count')),
   strategy        text CHECK (strategy IN ('store', 'min', 'max', 'sum', 'value')),
   source_store_id bigint REFERENCES stores(id) ON DELETE SET NULL,
   value           integer,

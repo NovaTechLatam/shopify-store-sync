@@ -79,7 +79,7 @@ interface Member {
 
 interface Adjustment {
   id: number;
-  kind: 'initialize' | 'set' | 'adjust';
+  kind: 'initialize' | 'set' | 'adjust' | 'count';
   strategy: 'store' | 'min' | 'max' | 'sum' | 'value' | null;
   sourceStoreId: number | null;
   value: number | null;
@@ -320,19 +320,41 @@ export class SyncEngine {
       });
       next += delta;
     }
+    // A stock count needs every store's open orders, read now; without them it waits.
+    const committed = ctx.adjustments.some((a) => a.kind === 'count' && !applied.includes(a.id))
+      ? await this.readCommittedAll(participants, ctx.members.length, problems)
+      : null;
     for (const adj of ctx.adjustments) {
       if (applied.includes(adj.id)) continue;
+      if (adj.kind === 'initialize') {
+        applied.push(adj.id); // already initialised
+        continue;
+      }
+      if (adj.kind === 'count' && !committed) continue;
       applied.push(adj.id);
-      if (adj.kind === 'initialize') continue; // already initialised
-      const after = adj.kind === 'set' ? adj.value! : next + adj.value!;
+      let after: number;
+      let message: string;
+      let details: unknown;
+      if (adj.kind === 'count') {
+        const open = [...committed!.values()].reduce((a, b) => a + b, 0);
+        after = adj.value! - open;
+        message =
+          adj.note ??
+          `Counted ${adj.value} on the shelf; ${open} already sold and waiting to ship, so ${after} can be sold`;
+        details = { counted: adj.value, committed: Object.fromEntries(committed!) };
+      } else {
+        after = adj.kind === 'set' ? adj.value! : next + adj.value!;
+        message =
+          adj.note ??
+          (adj.kind === 'set' ? `Set to ${adj.value}` : `Adjusted by ${signed(adj.value!)}`);
+      }
       events.push({
-        kind: adj.kind === 'set' ? 'manual_set' : 'manual_adjust',
+        kind: { set: 'manual_set', adjust: 'manual_adjust', count: 'stock_count' }[adj.kind],
         delta: after - next,
         before: next,
         after,
-        message:
-          adj.note ??
-          (adj.kind === 'set' ? `Set to ${adj.value}` : `Adjusted by ${signed(adj.value!)}`),
+        message,
+        details,
       });
       next = after;
     }
@@ -631,6 +653,32 @@ export class SyncEngine {
     });
     this.logger.error({ sku: ctx.sku }, 'circuit breaker tripped; sync paused');
     return true;
+  }
+
+  /**
+   * Units committed to open orders in every member store, or null (with a problem recorded) if
+   * any store can't be read: a stock count is only right with all of them.
+   */
+  private async readCommittedAll(
+    participants: Member[],
+    memberCount: number,
+    problems: Problem[],
+  ): Promise<Map<number, number> | null> {
+    if (participants.length !== memberCount) return null;
+    try {
+      const values = await Promise.all(
+        participants.map(async (m) => {
+          const shop = await this.shopify.forStore(m.storeId);
+          const map = await shop.readCommitted(m.locationId, [m.inventoryItemId]);
+          return [m.storeId, map.get(m.inventoryItemId) ?? 0] as const;
+        }),
+      );
+      return new Map(values);
+    } catch (err) {
+      const e = describeError(err);
+      problems.push({ storeId: participants[0]!.storeId, message: e.message, storeLevel: false });
+      return null;
+    }
   }
 
   /**

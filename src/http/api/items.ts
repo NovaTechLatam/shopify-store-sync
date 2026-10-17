@@ -30,7 +30,7 @@ const UpdateItemBody = z.object({
 
 const AdjustBody = z.object({
   warehouseId: z.number().int().positive().optional(),
-  kind: z.enum(['set', 'adjust']),
+  kind: z.enum(['set', 'adjust', 'count']),
   value: z.number().int().min(-1_000_000).max(1_000_000),
   note: z.string().trim().max(500).optional(),
 });
@@ -353,7 +353,7 @@ export async function registerItemRoutes(app: FastifyInstance, deps: AppDeps): P
         'This item has not started syncing yet. Start it from the onboarding screen first.',
       );
     }
-    if (body.kind === 'set' && body.value < 0) throw badRequest('Stock can’t be set below zero');
+    if (body.kind !== 'adjust' && body.value < 0) throw badRequest('Stock can’t be set below zero');
     await db.query(
       `INSERT INTO pool_adjustments (pool_level_id, kind, value, note) VALUES ($1, $2, $3, $4)`,
       [level.id, body.kind, body.value, body.note ?? null],

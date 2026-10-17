@@ -1,10 +1,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
-import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import type { Logger } from 'pino';
 import { ZodError } from 'zod';
+import { CatalogError } from '../catalog/catalog.js';
 import type { Db } from '../db/pool.js';
+import { ShopifyApiError } from '../shopify/client.js';
 import type { StoreCredentials } from '../shopify/registry.js';
 import type { ShopifyAdmin } from '../shopify/types.js';
 import type { ShopifyRegistry } from '../sync/engine.js';
@@ -38,12 +40,20 @@ export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
     trustProxy: true,
     // Shopify product payloads can be large; everything else is small.
     bodyLimit: 5 * 1024 * 1024,
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
   });
 
   app.setErrorHandler((err, request, reply) => {
     if (err instanceof HttpError) {
       return reply.code(err.statusCode).send({ error: err.message, ...err.details });
+    }
+    if (err instanceof ShopifyApiError) {
+      // Shopify (not us) failed or refused: say so, in words the merchant can act on.
+      return reply.code(502).send({ error: `Shopify: ${err.message}` });
+    }
+    if (err instanceof CatalogError) {
+      const status = { invalid: 400, not_found: 404, conflict: 409 }[err.code];
+      return reply.code(status).send({ error: err.message });
     }
     if (err instanceof ZodError) {
       const message = err.issues
@@ -51,8 +61,9 @@ export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
         .join('; ');
       return reply.code(400).send({ error: message });
     }
+    // Errors that carry a status (Fastify's own, OnboardingInputError...) have safe messages.
     const status = (err as { statusCode?: number }).statusCode;
-    if (status && status >= 400 && status < 500) {
+    if (status && status >= 400 && status < 600 && status !== 500) {
       return reply.code(status).send({ error: (err as Error).message });
     }
     request.log.error({ err, url: request.url }, 'request failed');

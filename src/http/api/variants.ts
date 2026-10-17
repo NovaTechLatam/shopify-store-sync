@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { resetToAutoLink, setManualLink } from '../../catalog/catalog.js';
-import { badRequest, notFound, parseId } from '../errors.js';
+import { parseId } from '../errors.js';
 import type { AppDeps } from '../server.js';
 
 const VariantsQuery = z.object({
@@ -99,19 +99,13 @@ export async function registerVariantRoutes(app: FastifyInstance, deps: AppDeps)
   app.put('/api/variants/:id/link', async (request) => {
     const variantId = parseId((request.params as { id: string }).id);
     const body = LinkBody.parse(request.body);
-    try {
-      await setManualLink(db, variantId, body.itemId);
-    } catch (err) {
-      throw badRequest((err as Error).message);
-    }
+    await setManualLink(db, variantId, body.itemId);
     deps.onWork?.();
     return { ok: true };
   });
 
   app.delete('/api/variants/:id/link', async (request) => {
     const variantId = parseId((request.params as { id: string }).id);
-    const exists = await db.query('SELECT 1 FROM variants WHERE id = $1', [variantId]);
-    if (!exists.rowCount) throw notFound('Variant');
     await resetToAutoLink(db, variantId);
     deps.onWork?.();
     return { ok: true };

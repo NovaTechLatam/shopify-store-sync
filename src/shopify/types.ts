@@ -80,6 +80,11 @@ export interface ShopifyAdmin {
     locationId: string,
     inventoryItemIds: string[],
   ): Promise<Map<string, number | null>>;
+  /** Units committed to open (unfulfilled) orders, same shape as `readAvailable`. */
+  readCommitted(
+    locationId: string,
+    inventoryItemIds: string[],
+  ): Promise<Map<string, number | null>>;
   setAvailable(input: SetAvailableInput): Promise<SetAvailableResult>;
   /** Stocks an item at a location (no-op if already stocked). */
   activateInventory(inventoryItemId: string, locationId: string): Promise<void>;

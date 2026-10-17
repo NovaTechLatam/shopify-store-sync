@@ -125,12 +125,12 @@ export const GRAPHQL_DOCUMENTS = {
 
   // `inventoryLevel` is null when the item isn't (actively) stocked at the location.
   levels: /* GraphQL */ `
-    query StoreSyncLevels($ids: [ID!]!, $locationId: ID!) {
+    query StoreSyncLevels($ids: [ID!]!, $locationId: ID!, $names: [String!]!) {
       nodes(ids: $ids) {
         ... on InventoryItem {
           id
           inventoryLevel(locationId: $locationId) {
-            quantities(names: ["available"]) {
+            quantities(names: $names) {
               name
               quantity
             }
@@ -326,7 +326,16 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
     return item.variants.nodes.map((n) => toVariant(n, n.product, item));
   }
 
-  async readAvailable(
+  readAvailable(locationId: string, inventoryItemIds: string[]) {
+    return this.readQuantity('available', locationId, inventoryItemIds);
+  }
+
+  readCommitted(locationId: string, inventoryItemIds: string[]) {
+    return this.readQuantity('committed', locationId, inventoryItemIds);
+  }
+
+  private async readQuantity(
+    name: 'available' | 'committed',
     locationId: string,
     inventoryItemIds: string[],
   ): Promise<Map<string, number | null>> {
@@ -340,13 +349,13 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
       const ids = unique.slice(i, i + READ_BATCH_SIZE);
       const data = await this.client.request<{ nodes: Node[] }>(
         GRAPHQL_DOCUMENTS.levels,
-        { ids, locationId },
+        { ids, locationId, names: [name] },
         ids.length * 3 + 1,
       );
       ids.forEach((id, idx) => {
         const node = data.nodes[idx];
-        const available = node?.inventoryLevel?.quantities.find((q) => q.name === 'available');
-        result.set(id, available ? available.quantity : null);
+        const quantity = node?.inventoryLevel?.quantities.find((q) => q.name === name);
+        result.set(id, quantity ? quantity.quantity : null);
       });
     }
     return result;

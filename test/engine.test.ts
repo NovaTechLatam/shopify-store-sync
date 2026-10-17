@@ -407,4 +407,49 @@ describe('sync engine', () => {
     expect(await h.shared(item)).toBe(9);
     expect(h.levels(item)).toEqual([9, 9]);
   });
+
+  it('applies a stock count net of every store’s open orders', async () => {
+    h = await Harness.create(3);
+    const item = await h.addItem('SKU', [20, 20, 20]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    const [a, b] = h.stores as [(typeof h.stores)[0], (typeof h.stores)[0]];
+    a.shop.placeOrder(item.inventoryItemIds.get(a.id)!, a.locationId, 2);
+    b.shop.placeOrder(item.inventoryItemIds.get(b.id)!, b.locationId, 1);
+    await h.enqueue(item);
+    await h.drain();
+    expect(await h.shared(item)).toBe(17);
+    // The merchant counts 25 units on the shelf (3 of them are packed for open orders).
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, value) VALUES ($1, 'count', 25)`,
+      [item.poolLevelId],
+    );
+    await h.enqueue(item);
+    await h.drain();
+    expect(await h.shared(item)).toBe(22);
+    expect(h.levels(item)).toEqual([22, 22, 22]);
+    // Fulfilling an order doesn't change what can be sold.
+    a.shop.fulfillOrder(item.inventoryItemIds.get(a.id)!, a.locationId, 2);
+    await h.enqueue(item);
+    await h.drain();
+    expect(await h.shared(item)).toBe(22);
+  });
+
+  it('waits to apply a stock count until every store can be read', async () => {
+    h = await Harness.create(2);
+    const item = await h.addItem('SKU', [10, 10]);
+    await h.initialize(item, 'min');
+    await h.drain();
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, value) VALUES ($1, 'count', 7)`,
+      [item.poolLevelId],
+    );
+    h.stores[1]!.shop.failNext('readAvailable', 'throw_before');
+    await h.enqueue(item);
+    await h.drain({ releaseBackoff: false });
+    expect(await h.shared(item)).toBe(10);
+    await h.drain();
+    expect(await h.shared(item)).toBe(7);
+    expect(h.levels(item)).toEqual([7, 7]);
+  });
 });

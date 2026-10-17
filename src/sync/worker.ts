@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import type { Db } from '../db/pool.js';
 import { getSettings } from '../settings.js';
+import { WorkLoop } from '../util/work-loop.js';
 import type { ReconcileOutcome, SyncEngine } from './engine.js';
 import type { ClaimedLevel } from './queue.js';
 import {
@@ -30,9 +31,7 @@ export async function processClaim(
   try {
     const outcome = await engine.reconcile(claim);
     if (outcome.status === 'retry') {
-      const immediate = outcome.delayMs === 0 && claim.attempts <= MAX_IMMEDIATE_RETRIES;
-      const delay = immediate ? 0 : (outcome.delayMs ?? retryDelayMs(claim.attempts));
-      await retryClaim(db, claim, delay, outcome.reason);
+      await retryClaim(db, claim, retryDelay(outcome.delayMs, claim.attempts), outcome.reason);
     } else {
       await completeClaim(db, claim);
     }
@@ -51,6 +50,14 @@ export async function processClaim(
     );
     return 'error';
   }
+}
+
+function retryDelay(requestedMs: number | undefined, attempts: number): number {
+  if (requestedMs === undefined) return retryDelayMs(attempts);
+  // The store keeps changing under our writes: stop hammering it, back off from 5s again.
+  if (requestedMs === 0 && attempts > MAX_IMMEDIATE_RETRIES)
+    return retryDelayMs(attempts - MAX_IMMEDIATE_RETRIES);
+  return requestedMs;
 }
 
 /**
@@ -83,52 +90,39 @@ export interface SyncWorkerOptions {
   idleMs?: number;
 }
 
-/** Background loop: keeps `concurrency` reconciles in flight while there is work. */
+/**
+ * Background loop: keeps `concurrency` reconciles in flight while there is work, claiming another
+ * pool level as soon as one finishes. Claims nothing while sync is paused (checked at most once
+ * per second); reconciles already running finish normally.
+ */
 export class SyncWorker {
-  private running = false;
-  private stopped?: Promise<void>;
-  private wake?: () => void;
+  private readonly loop: WorkLoop<ClaimedLevel>;
 
-  constructor(private readonly opts: SyncWorkerOptions) {}
+  constructor(opts: SyncWorkerOptions) {
+    const { db, engine, logger } = opts;
+    this.loop = new WorkLoop({
+      name: 'sync worker',
+      concurrency: opts.concurrency,
+      idleMs: opts.idleMs ?? 1000,
+      logger,
+      claim: (limit) => claimPoolLevels(db, limit, LEASE_MS),
+      run: async (claim) => {
+        await processClaim(db, engine, claim, logger);
+      },
+      isPaused: () => isSyncPaused(db),
+    });
+  }
 
   start(): void {
-    if (this.running) return;
-    this.running = true;
-    this.stopped = this.loop();
+    this.loop.start();
   }
 
   /** Wakes the loop early (e.g. right after a webhook was enqueued). */
   nudge(): void {
-    this.wake?.();
+    this.loop.nudge();
   }
 
   async stop(): Promise<void> {
-    this.running = false;
-    this.wake?.();
-    await this.stopped;
-  }
-
-  private async loop(): Promise<void> {
-    const { db, engine, logger, concurrency } = this.opts;
-    const idleMs = this.opts.idleMs ?? 1000;
-    while (this.running) {
-      let worked = 0;
-      try {
-        if (!(await isSyncPaused(db)))
-          worked = await drainQueue(db, engine, logger, { concurrency, maxRounds: 1 });
-      } catch (err) {
-        logger.error({ err }, 'sync worker iteration failed');
-      }
-      if (worked === 0 && this.running) {
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, idleMs);
-          this.wake = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-        });
-        this.wake = undefined;
-      }
-    }
+    await this.loop.stop();
   }
 }

@@ -17,6 +17,11 @@ export default tseslint.config(
     },
   },
   {
+    // Tests poke at loosely-typed JSON responses.
+    files: ['test/**/*.ts'],
+    rules: { '@typescript-eslint/no-explicit-any': 'off' },
+  },
+  {
     files: ['public/**/*.js'],
     languageOptions: { globals: { ...globals.browser } },
   },

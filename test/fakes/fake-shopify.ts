@@ -29,6 +29,7 @@ export class FakeShop implements ShopifyAdmin {
   readonly locations: ShopifyLocation[] = [];
   readonly variants: ShopifyVariant[] = [];
   private readonly levels = new Map<string, number>();
+  private readonly committed = new Map<string, number>();
   private readonly idempotency = new Map<
     string,
     { fingerprint: string; result: SetAvailableResult }
@@ -53,17 +54,17 @@ export class FakeShop implements ShopifyAdmin {
   // ---- test helpers -------------------------------------------------------------------------
 
   addLocation(name = 'Warehouse', isActive = true): string {
-    const id = `gid://shopify/Location/${this.domain}-${this.nextId++}`;
+    const id = `gid://shopify/Location/${nextGlobalId()}`;
     this.locations.push({ id, name, isActive });
     return id;
   }
 
   addVariant(sku: string | null, opts: Partial<ShopifyVariant> = {}): ShopifyVariant {
-    const n = this.nextId++;
+    const n = nextGlobalId();
     const variant: ShopifyVariant = {
-      productId: opts.productId ?? `gid://shopify/Product/${this.domain}-${n}`,
-      variantId: `gid://shopify/ProductVariant/${this.domain}-${n}`,
-      inventoryItemId: `gid://shopify/InventoryItem/${this.domain}-${n}`,
+      productId: opts.productId ?? `gid://shopify/Product/${n}`,
+      variantId: `gid://shopify/ProductVariant/${n}`,
+      inventoryItemId: `gid://shopify/InventoryItem/${n}`,
       sku,
       barcode: opts.barcode ?? null,
       productTitle: opts.productTitle ?? `Product ${sku ?? n}`,
@@ -73,6 +74,15 @@ export class FakeShop implements ShopifyAdmin {
     };
     this.variants.push(variant);
     return variant;
+  }
+
+  /** Deletes a variant (and with it its inventory item), as deleting it in the Shopify admin does. */
+  removeVariant(variantId: string): void {
+    const idx = this.variants.findIndex((v) => v.variantId === variantId);
+    if (idx < 0) throw new Error(`no variant ${variantId}`);
+    const [removed] = this.variants.splice(idx, 1);
+    for (const k of [...this.levels.keys()])
+      if (k.startsWith(`${removed!.inventoryItemId}|`)) this.levels.delete(k);
   }
 
   /** Stocks the item at the location with `available` units (no change event). */
@@ -93,6 +103,19 @@ export class FakeShop implements ShopifyAdmin {
     this.levels.set(k, next);
     this.changes.push({ inventoryItemId, locationId, available: next, source: 'external' });
     return next;
+  }
+
+  /** An order is placed: units move from available to committed (as Shopify does). */
+  placeOrder(inventoryItemId: string, locationId: string, qty: number): void {
+    this.externalAdjust(inventoryItemId, locationId, -qty);
+    const k = key(inventoryItemId, locationId);
+    this.committed.set(k, (this.committed.get(k) ?? 0) + qty);
+  }
+
+  /** An order is fulfilled: committed units leave; available doesn't change. */
+  fulfillOrder(inventoryItemId: string, locationId: string, qty: number): void {
+    const k = key(inventoryItemId, locationId);
+    this.committed.set(k, (this.committed.get(k) ?? 0) - qty);
   }
 
   /** Makes the next matching call fail with a transient network error, before or after it takes effect. */
@@ -142,6 +165,19 @@ export class FakeShop implements ShopifyAdmin {
     const out = new Map<string, number | null>();
     for (const id of inventoryItemIds) out.set(id, this.levels.get(key(id, locationId)) ?? null);
     this.afterRead?.(locationId, inventoryItemIds);
+    return out;
+  }
+
+  async readCommitted(
+    locationId: string,
+    inventoryItemIds: string[],
+  ): Promise<Map<string, number | null>> {
+    this.calls.push({ op: 'readCommitted', args: { locationId, inventoryItemIds } });
+    const out = new Map<string, number | null>();
+    for (const id of inventoryItemIds) {
+      const k = key(id, locationId);
+      out.set(id, this.levels.has(k) ? (this.committed.get(k) ?? 0) : null);
+    }
     return out;
   }
 
@@ -222,6 +258,12 @@ export class FakeShop implements ShopifyAdmin {
     if (idx < 0) return undefined;
     return this.faults.splice(idx, 1)[0];
   }
+}
+
+// Numeric, process-wide unique IDs, like Shopify's (webhook payloads carry only the number).
+let globalId = 1_000_000_000_000;
+function nextGlobalId(): number {
+  return ++globalId;
 }
 
 function key(inventoryItemId: string, locationId: string): string {
