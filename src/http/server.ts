@@ -8,6 +8,7 @@ import { CatalogError } from '../catalog/catalog.js';
 import type { Db } from '../db/pool.js';
 import { ShopifyApiError } from '../shopify/client.js';
 import type { StoreCredentials } from '../shopify/registry.js';
+import { FeatureUnavailableError } from '../shopify/scopes.js';
 import type { ShopifyAdmin } from '../shopify/types.js';
 import type { ShopifyRegistry } from '../sync/engine.js';
 import type { SecretBox } from '../util/crypto.js';
@@ -52,6 +53,12 @@ export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
     if (err instanceof ShopifyApiError) {
       // Shopify (not us) failed or refused: say so, in words the merchant can act on.
       return reply.code(502).send({ error: `Shopify: ${err.message}` });
+    }
+    if (err instanceof FeatureUnavailableError) {
+      // The dashboard shows which permission to add.
+      return reply
+        .code(err.statusCode)
+        .send({ error: err.message, feature: err.feature, missingScopes: err.missing });
     }
     if (err instanceof CatalogError) {
       const status = { invalid: 400, not_found: 404, conflict: 409 }[err.code];

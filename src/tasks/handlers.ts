@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { setAlert } from '../alerts/alerts.js';
 import type { CatalogDeps } from '../catalog/catalog.js';
 import {
   refreshInventoryItem,
@@ -14,11 +13,9 @@ import { PURCHASING_TASKS } from '../purchasing/tasks.js';
 import { SALES_TASKS } from '../sales/tasks.js';
 import { driftScan } from '../sync/drift.js';
 import { checkStoreHealth } from '../sync/health.js';
-import { ensureWebhooks } from '../webhooks/subscriptions.js';
-import { webhookUrl } from '../webhooks/topics.js';
+import { registerStoreWebhooks } from '../webhooks/register.js';
 import type { CoreTaskPayloads, TaskKind, TaskPayloads } from './queue.js';
-import { enqueueTask } from './queue.js';
-import type { TaskDeps, TaskHandler, TaskStore } from './types.js';
+import type { TaskDeps, TaskHandler } from './types.js';
 import { forStore, positiveId as storeId, shopifyGid as gid } from './types.js';
 
 // Moved to ./types.js so feature modules can use them without importing this registry.
@@ -53,7 +50,9 @@ const CORE_HANDLERS: { [K in keyof CoreTaskPayloads]: TaskHandler<K> } = {
   remove_product: forStore((deps, { storeId, productId }) =>
     removeProduct(deps.db, storeId, productId),
   ),
-  ensure_webhooks: forStore((deps, { storeId }, store) => registerWebhooks(deps, storeId, store)),
+  ensure_webhooks: forStore(async (deps, { storeId }) => {
+    await registerStoreWebhooks(deps, storeId);
+  }),
   drift_scan: forStore(async (deps, { storeId }) => {
     await driftScan(deps, storeId);
   }),
@@ -81,30 +80,4 @@ export const TASK_HANDLERS: { [K in TaskKind]: TaskHandler<K> } = {
 
 function catalogDeps(deps: TaskDeps): CatalogDeps {
   return { db: deps.db, shopify: deps.shopify, logger: deps.logger };
-}
-
-async function registerWebhooks(deps: TaskDeps, storeId: number, store: TaskStore): Promise<void> {
-  const admin = await deps.shopify.forStore(storeId);
-  const { created, deleted } = await ensureWebhooks(admin, webhookUrl(deps.publicUrl));
-  await deps.db.query(
-    'UPDATE stores SET webhooks_registered_at = now(), updated_at = now() WHERE id = $1',
-    [storeId],
-  );
-  if (created.length || deleted.length)
-    deps.logger.info({ storeId, created, deleted }, 'webhook subscriptions updated');
-  // Shopify deletes subscriptions after repeated delivery failures: changes may have been missed.
-  if (created.length && store.webhooks_registered_at) {
-    await setAlert(deps.db, {
-      open: true,
-      kind: 'webhooks_recreated',
-      dedupeKey: `webhooks_recreated:${storeId}`,
-      storeId,
-      message:
-        `Shopify had stopped sending stock updates for ${store.name} (${created.length} webhook ` +
-        `subscription${created.length === 1 ? ' was' : 's were'} missing, usually after this service ` +
-        `was unreachable for a while). They have been re-created and a full stock check is running.`,
-      details: { created },
-    });
-    await enqueueTask(deps.db, 'drift_scan', { storeId });
-  }
 }

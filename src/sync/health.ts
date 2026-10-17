@@ -2,7 +2,8 @@ import type { Logger } from 'pino';
 import { setAlert } from '../alerts/alerts.js';
 import type { Db } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
-import type { ShopifyAdmin } from '../shopify/types.js';
+import { missingScopes as missingScopesOf, recordShopInfo } from '../shopify/scopes.js';
+import type { ShopInfo, ShopifyAdmin } from '../shopify/types.js';
 import { enqueueTask } from '../tasks/queue.js';
 import type { ShopifyRegistry } from './engine.js';
 import { enqueuePoolLevels } from './queue.js';
@@ -24,25 +25,36 @@ export interface ConnectionCheck {
 
 /** Calls the shop and checks that every required scope was granted. Never throws. */
 export async function checkConnection(admin: ShopifyAdmin): Promise<ConnectionCheck> {
+  return (await inspectConnection(admin)).check;
+}
+
+/**
+ * checkConnection, plus the shop it read (null when it couldn't), so a caller that knows the
+ * store can record its scopes, currency and time zone (recordShopInfo). Never throws.
+ */
+export async function inspectConnection(
+  admin: ShopifyAdmin,
+): Promise<{ check: ConnectionCheck; shop: ShopInfo | null }> {
+  let shop: ShopInfo;
   try {
-    const shop = await admin.getShop();
-    const granted = new Set(shop.scopes);
-    // Shopify grants write_X without listing read_X, but write_X includes read access.
-    const missingScopes = REQUIRED_SCOPES.filter(
-      (scope) => !granted.has(scope) && !granted.has(scope.replace(/^read_/, 'write_')),
-    );
-    if (missingScopes.length) {
-      return {
+    shop = await admin.getShop();
+  } catch (err) {
+    return { check: { ok: false, missingScopes: [], error: errorMessage(err) }, shop: null };
+  }
+  // Optional scopes (features) are not checked here: see src/shopify/scopes.ts.
+  const missingScopes = missingScopesOf(shop.scopes, REQUIRED_SCOPES);
+  if (missingScopes.length) {
+    return {
+      check: {
         ok: false,
         shopName: shop.name,
         missingScopes,
         error: `The app is missing these permissions: ${missingScopes.join(', ')}`,
-      };
-    }
-    return { ok: true, shopName: shop.name, missingScopes: [] };
-  } catch (err) {
-    return { ok: false, missingScopes: [], error: errorMessage(err) };
+      },
+      shop,
+    };
   }
+  return { check: { ok: true, shopName: shop.name, missingScopes: [] }, shop };
 }
 
 /**
@@ -67,11 +79,13 @@ export async function checkStoreHealth(
   // The merchant may have just fixed the credentials: don't reuse a client built from old ones.
   shopify.invalidate?.(storeId);
   let check: ConnectionCheck;
+  let shop: ShopInfo | null = null;
   try {
-    check = await checkConnection(await shopify.forStore(storeId));
+    ({ check, shop } = await inspectConnection(await shopify.forStore(storeId)));
   } catch (err) {
     check = { ok: false, missingScopes: [], error: errorMessage(err) };
   }
+  if (shop) await recordShopInfo(db, storeId, shop);
 
   if (!check.ok) {
     const reason = (check.error ?? 'Connection test failed').replace(/\.+$/, '');

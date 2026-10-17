@@ -430,11 +430,12 @@ describe('HTTP API', () => {
   it('shows a store’s currency, time zone and exchange rate, and edits the rate', async () => {
     addShop('brand-a.myshopify.com', {});
     const store = await connect('Brand A', 'brand-a.myshopify.com');
+    // Read from Shopify when the store was connected.
     expect((await api('GET', `/api/stores/${store.id}`)).body).toMatchObject({
-      currencyCode: null,
-      timezone: null,
+      currencyCode: 'USD',
+      timezone: 'America/New_York',
       exchangeRate: 1,
-      scopesCheckedAt: null,
+      scopesCheckedAt: expect.any(String),
     });
     await db.query(
       `UPDATE stores SET currency_code = 'COP', iana_timezone = 'America/Bogota' WHERE id = $1`,
@@ -451,6 +452,43 @@ describe('HTTP API', () => {
       expect((await api('PATCH', `/api/stores/${store.id}`, { exchangeRate })).status).toBe(400);
     }
     expect((await api('GET', `/api/stores/${store.id}`)).body.exchangeRate).toBe(4100.25);
+  });
+
+  it('shows which extra features a store’s permissions allow, read again on Test connection', async () => {
+    const { shop } = addShop('brand-a.myshopify.com', {});
+    const store = (await connect('Brand A', 'brand-a.myshopify.com')) as any;
+    expect(store.features).toEqual({
+      catalog: { available: false, missingScopes: ['write_products'] },
+      publishing: { available: false, missingScopes: ['write_publications'] },
+      pricing: { available: false, missingScopes: ['write_products'] },
+      sales: { available: false, missingScopes: ['read_orders'] },
+    });
+
+    // The merchant approves a new app version with more permissions.
+    shop.scopes.push('write_products', 'read_orders');
+    shop.currencyCode = 'COP';
+    expect((await api('POST', `/api/stores/${store.id}/test`)).body).toEqual({
+      ok: true,
+      shopName: 'brand-a',
+      missingScopes: [],
+    });
+    const after = (await api('GET', `/api/stores/${store.id}`)).body;
+    expect(after).toMatchObject({
+      currencyCode: 'COP',
+      features: {
+        catalog: { available: true, missingScopes: [] },
+        publishing: { available: false, missingScopes: ['write_publications'] },
+        sales: { available: true, missingScopes: [] },
+      },
+    });
+
+    // Setting up live updates again subscribes the sales topics too.
+    const registered = await api('POST', `/api/stores/${store.id}/register-webhooks`);
+    expect(registered.status).toBe(200);
+    expect(registered.body.created).toEqual(
+      expect.arrayContaining(['ORDERS_CREATE', 'REFUNDS_CREATE']),
+    );
+    expect(registered.body.refused).toEqual([]);
   });
 
   it('lists unmatched and conflicting variants and links them manually', async () => {

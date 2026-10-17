@@ -142,7 +142,7 @@ export function render({ root, setTitle }) {
       h(
         'p',
         {},
-        'We test the connection first. Once connected, this store shows the shared stock for every product that is already syncing: its current numbers for those products are replaced. Prices, images and titles are never touched.',
+        'We test the connection first. Once connected, this store shows the shared stock for every product that is already syncing: its current numbers for those products are replaced. Connecting doesn’t change prices, images or titles.',
       ),
     ),
     h(

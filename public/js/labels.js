@@ -75,6 +75,7 @@ const ALERT_KINDS = withFeatures(
     store_unmapped: { label: 'Location not chosen', tone: 'warning' },
     webhook_gap: { label: 'Missed updates', tone: 'warning' },
     webhooks_recreated: { label: 'Updates reconnected', tone: 'info' },
+    sales_webhooks_refused: { label: 'No live sales updates', tone: 'warning' },
     circuit_breaker: { label: 'Sync paused automatically', tone: 'critical' },
     possible_double_count: { label: 'Possible double count', tone: 'warning' },
     write_rejected: { label: 'Store refused an update', tone: 'critical' },

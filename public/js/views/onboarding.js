@@ -186,7 +186,11 @@ export async function render({ root, signal, setTitle }) {
           h('li', {}, 'Each product gets one shared stock number.'),
           h('li', {}, 'Every store shows that number (minus its safety buffer, if you set one).'),
           h('li', {}, 'A sale, return or edit in any store changes the number in all stores.'),
-          h('li', {}, 'Prices, images and titles are never touched.'),
+          h(
+            'li',
+            {},
+            'Syncing stock never changes prices, images or titles. Only the catalog and prices pages do, when you publish or apply changes.',
+          ),
         ),
       ),
       nothingToDo

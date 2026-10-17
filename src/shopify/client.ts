@@ -22,6 +22,38 @@ export class ShopifyApiError extends Error {
   }
 }
 
+export interface ShopifyUserError {
+  code: string | null;
+  field: string[] | null;
+  message: string;
+}
+
+/**
+ * Shopify understood the request but refused it (a mutation's userErrors: duplicate handle,
+ * invalid barcode...). Nothing was changed; retrying the same request won't help.
+ */
+export class ShopifyUserErrors extends ShopifyApiError {
+  constructor(
+    message: string,
+    readonly errors: ShopifyUserError[],
+  ) {
+    super(message, 'invalid');
+    this.name = 'ShopifyUserErrors';
+  }
+}
+
+/**
+ * Shopify is already running as many bulk exports for our app on this store as it allows
+ * (OPERATION_IN_PROGRESS, LIMIT_REACHED). Nothing was started; trying again later works, hence
+ * `transient`.
+ */
+export class BulkOperationInProgressError extends ShopifyApiError {
+  constructor(message: string) {
+    super(message, 'transient');
+    this.name = 'BulkOperationInProgressError';
+  }
+}
+
 export interface TokenProvider {
   /** Returns a valid Admin API access token. `forceRefresh` discards any cached token. */
   getToken(forceRefresh?: boolean): Promise<string>;
@@ -135,12 +167,14 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
  * bucket state and waits before sending a query that would be throttled, and retries THROTTLED,
  * 429, 5xx and network failures with backoff.
  *
- * Retrying a mutation is only safe because every mutation we send carries an idempotency key.
+ * Retrying a mutation is only safe because every mutation we send either carries an idempotency
+ * key or writes absolute values / upserts by identifier (see the ShopifyAdmin methods).
  */
 export class ShopifyGraphqlClient {
   readonly shopDomain: string;
   private readonly endpoint: string;
-  private readonly fetchFn: FetchFn;
+  /** Also used for uploads to Shopify's file storage (staged uploads), which take no token. */
+  readonly fetchFn: FetchFn;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;

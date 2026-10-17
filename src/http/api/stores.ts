@@ -3,10 +3,11 @@ import { z } from 'zod';
 import { setAlert } from '../../alerts/alerts.js';
 import type { Queryable } from '../../db/pool.js';
 import type { StoreCredentials } from '../../shopify/registry.js';
-import { checkConnection } from '../../sync/health.js';
+import { featureStatus, recordShopInfo } from '../../shopify/scopes.js';
+import { inspectConnection } from '../../sync/health.js';
 import { enqueuePoolLevels } from '../../sync/queue.js';
 import { enqueueTask } from '../../tasks/queue.js';
-import { ensureWebhooks } from '../../webhooks/subscriptions.js';
+import { registerStoreWebhooks } from '../../webhooks/register.js';
 import { webhookUrl } from '../../webhooks/topics.js';
 import { badRequest, conflict, notFound, parseId } from '../errors.js';
 import type { AppDeps } from '../server.js';
@@ -163,6 +164,11 @@ function storeView(s: StoreRow, locations: LocationRow[]) {
     exchangeRate: s.exchange_rate,
     /** When the app's permissions on the store were last read (null = never). */
     scopesCheckedAt: s.scopes_checked_at,
+    /**
+     * Which optional features the app's permissions allow (src/shopify/scopes.ts). Before the
+     * permissions were read every feature counts as available: Shopify then has the last word.
+     */
+    features: featureStatus(s.granted_scopes),
     locations: locations.map((l) => ({
       id: l.id,
       shopifyLocationId: l.shopify_location_id,
@@ -201,8 +207,8 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
     } catch (err) {
       throw badRequest((err as Error).message);
     }
-    const check = await checkConnection(admin);
-    if (!check.ok) {
+    const { check, shop } = await inspectConnection(admin);
+    if (!check.ok || !shop) {
       const scopes = check.missingScopes.length
         ? ` The app is missing these permissions: ${check.missingScopes.join(', ')}.`
         : '';
@@ -213,7 +219,7 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
         },
       );
     }
-    return check;
+    return shop;
   }
 
   app.get('/api/stores', async () => loadStores(db));
@@ -228,7 +234,7 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
       body.shopDomain,
     ]);
     if (existing.rowCount) throw conflict(`${body.shopDomain} is already connected`);
-    await testCredentials({
+    const shop = await testCredentials({
       shopDomain: body.shopDomain,
       authMode: body.authMode,
       accessToken: body.accessToken,
@@ -255,6 +261,7 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
       ],
     );
     const storeId = rows[0]!.id;
+    await recordShopInfo(db, storeId, shop);
     await enqueueTask(db, 'catalog_sync', { storeId });
     await enqueueTask(db, 'ensure_webhooks', { storeId });
     deps.onWork?.();
@@ -296,7 +303,8 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
           body.clientSecret ??
           (current.client_secret_enc ? secrets.decrypt(current.client_secret_enc) : null),
       };
-      await testCredentials(creds);
+      const shop = await testCredentials(creds);
+      await recordShopInfo(db, storeId, shop);
       // Keep the old client secret for webhook signatures until Shopify stops using it.
       const rotated = body.clientSecret !== undefined && current.client_secret_enc !== null;
       if (rotated) {
@@ -399,11 +407,15 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
     const storeId = parseId((request.params as { id: string }).id);
     await loadStore(db, storeId);
     deps.shopify.invalidate(storeId);
+    let inspected;
     try {
-      return await checkConnection(await deps.shopify.forStore(storeId));
+      inspected = await inspectConnection(await deps.shopify.forStore(storeId));
     } catch (err) {
       return { ok: false, missingScopes: [], error: (err as Error).message };
     }
+    // The permissions panel and currency on the store page come from what was read here.
+    if (inspected.shop) await recordShopInfo(db, storeId, inspected.shop);
+    return inspected.check;
   });
 
   app.post('/api/stores/:id/sync-catalog', async (request, reply) => {
@@ -417,12 +429,7 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
   app.post('/api/stores/:id/register-webhooks', async (request) => {
     const storeId = parseId((request.params as { id: string }).id);
     await loadStore(db, storeId);
-    const result = await ensureWebhooks(
-      await deps.shopify.forStore(storeId),
-      webhookUrl(deps.publicUrl),
-    );
-    await db.query('UPDATE stores SET webhooks_registered_at = now() WHERE id = $1', [storeId]);
-    return result;
+    return registerStoreWebhooks(deps, storeId);
   });
 
   app.put('/api/stores/:id/locations/:locationId', async (request) => {

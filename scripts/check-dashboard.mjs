@@ -319,6 +319,11 @@ async function flows(browser, baseUrl, server) {
 
   await step('add store: connection errors shown inline, then success', async () => {
     await go('#/stores/new');
+    const steps = await page.locator('ol.steps').first().textContent();
+    expect(
+      steps.includes('write_products') && steps.includes('For Catalog and Prices'),
+      'setup steps list the optional permissions and what they are for',
+    );
     await page.getByLabel('Name').fill('Ocean Row');
     await page.getByLabel('Shopify address').fill('ocean-row.myshopify.com');
     await page.getByLabel('Client ID').fill('scopes');
@@ -439,11 +444,12 @@ async function flows(browser, baseUrl, server) {
     await page.locator('.toast', { hasText: 'Exchange rate saved' }).waitFor();
     await settle(page);
     expect(server.state.stores[1].exchangeRate === 4250.5, 'rate saved');
+    const permissions = await page
+      .locator('.card', { hasText: 'Permissions for extra features' })
+      .textContent();
     expect(
-      (
-        await page.locator('.card', { hasText: 'Permissions for extra features' }).textContent()
-      ).includes('read_orders'),
-      'missing permission listed',
+      permissions.includes('read_orders') && permissions.includes('For Reports'),
+      'missing permission listed with the feature it turns on',
     );
   });
 

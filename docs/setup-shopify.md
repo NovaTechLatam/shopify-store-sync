@@ -77,7 +77,10 @@ A store that can't join (for example, it is billed in another currency) can stil
    - `read_inventory`
    - `write_inventory`
    - `read_locations`
-5. Click **Release**.
+5. If you want the extra features, add their scopes too (see
+   [Permissions for the extra features](#permissions-for-the-extra-features)). You can also add
+   them later.
+6. Click **Release**.
 
 ### Step 4: Install the app on every store
 
@@ -114,7 +117,8 @@ you never have to do anything.
 
 ### Later: when a new permission is needed
 
-If a future version of Store Sync needs a new permission:
+If a future version of Store Sync needs a new permission, or you want to turn on an
+[extra feature](#permissions-for-the-extra-features):
 
 1. In the Dev Dashboard, create a new app version with the new scope and click **Release**.
 2. Open the admin of **each** store and approve the new permission. Shopify does not approve it for
@@ -127,6 +131,32 @@ If a store can't join your organization, create a second app in the same way, in
 own organization. Use that app's Client ID and Client secret when you add that store. Test
 connection tells you right away whether it works.
 
+## Permissions for the extra features
+
+Syncing stock only needs the four scopes above. The catalog, prices and reports need more. They
+are optional: without them a feature is simply off for that store, and stock keeps syncing. Each
+store's page in Store Sync shows, under **Permissions for extra features**, what its app allows.
+
+| Scope                | What it turns on                                                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `write_products`     | **Catalog**: create products in Store Sync and publish them to each store. **Prices**: update the stores' prices from your price rules.                                        |
+| `write_publications` | Show the products you publish in each store's **Online Store** sales channel. Without it, published products are created but you choose where they appear in Shopify yourself. |
+| `read_orders`        | **Reports** and **reorder suggestions**: Store Sync reads each store's orders (products, quantities and amounts; never customers' names or addresses).                         |
+| `read_all_orders`    | Optional on top of `read_orders`: sales history older than 60 days. Shopify must approve your app for it first (in the Partner Dashboard, under **API access requests**).      |
+
+To add them, follow [Later: when a new permission is needed](#later-when-a-new-permission-is-needed)
+(option A) or edit the app's **Admin API scopes** (option B).
+
+**Live sales updates.** With `read_orders`, Store Sync also asks Shopify to tell it about new
+orders and refunds as they happen. Orders contain customer information, so Shopify may refuse
+until the app says how it uses that data. Store Sync then shows the alert “Shopify didn't allow
+live sales updates…”. Reports still work, but new orders show up within 15 minutes instead of right
+away. To fix it, open the app in the Dev Dashboard, go to **API access > Protected customer data
+access**, describe the use (reports and stock planning; no names, addresses, emails or phone
+numbers are read), then release the new version and approve it in each store. Store Sync tries
+again every 15 minutes. (Shopify's rules for this differ by app type: this is what we expect for a
+Dev Dashboard app, so check what your app's settings show.)
+
 ## Option B: an existing custom app (legacy)
 
 Shopify no longer lets you create custom apps in the store admin, but existing ones keep working.
@@ -135,7 +165,8 @@ Use this option only for a store that already has one.
 1. Open the store's admin and go to **Settings > Apps and sales channels > Develop apps**. On some
    stores the list is called **Legacy custom apps**.
 2. Open your app and check its **Admin API scopes**. It needs `read_products`, `read_inventory`,
-   `write_inventory` and `read_locations`. Add any that are missing and save.
+   `write_inventory` and `read_locations`. Add any that are missing and save. For the extra
+   features, also add [their scopes](#permissions-for-the-extra-features).
 3. Open **API credentials** and copy two things:
    - The **Admin API access token**.
    - The **API secret key**. Store Sync uses it to check that stock notifications really come from
@@ -156,6 +187,8 @@ Sync, in the store's page.
 | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `shop_not_permitted` or "Client credentials cannot be performed on this shop" | The store is not in the same organization as the app.                                                          | Do [step 1](#step-1-put-your-stores-in-one-organization), or create a [separate app](#stores-in-different-organizations) for that store.                                                    |
 | "The app is missing these permissions: …"                                     | The app's version doesn't have all four scopes, or the store hasn't approved them yet.                         | Add the scopes in a new app version and release it. Approve them in **each** store's admin. Then click **Test connection**.                                                                 |
+| “… hasn't given Store Sync permission to …”                                   | A feature (catalog, prices, reports) needs a permission that store's app doesn't have.                         | Add the scope named in the message ([extra features](#permissions-for-the-extra-features)), approve it in that store's admin, then click **Test connection**.                               |
+| Alert: “Shopify didn't allow live sales updates for …”                        | Shopify refused to send order notifications, usually because the app hasn't declared its customer data use.    | Reports keep working with a 15-minute delay. See **Live sales updates** under [extra features](#permissions-for-the-extra-features).                                                        |
 | "Invalid API key or access token", or a 401 error                             | The keys are wrong or no longer valid (the client secret was changed, or the app was reinstalled).             | Copy the keys again and paste them in the store's page in Store Sync.                                                                                                                       |
 | The store's status is **Error**                                               | Shopify refused the keys, or the store was unavailable.                                                        | Store Sync tests the store again every 5 minutes and resumes on its own once it works. If the keys changed, paste the new ones in the store's page.                                         |
 | The store's status is **Disconnected**                                        | The app was uninstalled from that store.                                                                       | Install the app again (option A: **Installs** card; option B: reinstall it in the store admin). Paste new keys if they changed, then resume the store from its page.                        |

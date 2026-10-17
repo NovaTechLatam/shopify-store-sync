@@ -7,8 +7,8 @@ import {
   FEATURE_PERMISSIONS,
   connectionError,
   credentialFields,
+  optionalScopeList,
   readCredentials,
-  scopeList,
 } from '../credentials.js';
 import { storeProblem, storeStatusBadge } from '../labels.js';
 import { refreshStatus } from '../shell.js';
@@ -63,7 +63,7 @@ export async function render({ root, params, signal, setTitle }) {
 
 function storeHeader(store, back, reload) {
   const test = button('Test connection', {
-    onClick: () => withBusy(test, () => testConnection(store)),
+    onClick: () => withBusy(test, () => testConnection(store, reload)),
   });
   let toggle;
   if (store.status === 'active') {
@@ -309,7 +309,7 @@ function permissionsCard(store) {
           'div',
           { class: 'stack' },
           h('p', {}, 'To turn these on, add these permissions to the app:'),
-          scopeList(missing),
+          optionalScopeList(missing),
           h(
             'p',
             { class: 'muted small' },
@@ -479,6 +479,12 @@ function maintenanceCard(store) {
             ? 'Live updates were already set up correctly.'
             : `Live updates set up (${num(result.created.length)} added, ${num(result.deleted.length)} removed).`,
         );
+        if (result.refused?.length > 0) {
+          toast(
+            'Shopify didn’t allow live sales updates, so reports update every 15 minutes instead. The alert on the Alerts page says how to fix it.',
+            { tone: 'info' },
+          );
+        }
       }).catch(() => {}),
   });
   return card(
@@ -623,11 +629,15 @@ async function removeStore(store) {
   }
 }
 
-async function testConnection(store) {
+async function testConnection(store, reload) {
   try {
     const result = await api(`/api/stores/${store.id}/test`, { method: 'POST' });
+    // The test also re-reads the store's permissions, currency and time zone.
+    reload();
     if (result.ok) {
-      toast(`Connected to ${result.shopName ?? store.name}. All permissions are in place.`);
+      toast(
+        `Connected to ${result.shopName ?? store.name}. Syncing stock has every permission it needs.`,
+      );
     } else if (result.missingScopes.length > 0) {
       toast(`Connected, but the app is missing permissions: ${result.missingScopes.join(', ')}.`, {
         tone: 'error',

@@ -20,6 +20,23 @@ export const WEBHOOK_TOPICS = [
 
 export type WebhookTopic = (typeof WEBHOOK_TOPICS)[number];
 
+/**
+ * Topics of the optional features, subscribed only when the store granted their scope (null =
+ * none needed). Shopify may still refuse them: orders topics carry protected customer data, which
+ * the app must be approved for. A refusal doesn't stop stock syncing (see ensureWebhooks).
+ */
+export const OPTIONAL_WEBHOOK_TOPICS = [
+  { topic: 'ORDERS_CREATE', scope: 'read_orders' },
+  { topic: 'ORDERS_UPDATED', scope: 'read_orders' },
+  { topic: 'ORDERS_CANCELLED', scope: 'read_orders' },
+  { topic: 'ORDERS_DELETE', scope: 'read_orders' },
+  { topic: 'REFUNDS_CREATE', scope: 'read_orders' },
+  // Our order history export finished (the sales backfill also polls, in case it never comes).
+  { topic: 'BULK_OPERATIONS_FINISH', scope: null },
+] as const satisfies readonly { topic: string; scope: string | null }[];
+
+export type OptionalWebhookTopic = (typeof OPTIONAL_WEBHOOK_TOPICS)[number]['topic'];
+
 export function webhookUrl(publicUrl: string): string {
   return `${publicUrl.replace(/\/+$/, '')}${WEBHOOK_PATH}`;
 }

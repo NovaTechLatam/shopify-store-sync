@@ -10,7 +10,7 @@ import {
   type WebhookDeps,
 } from '../src/webhooks/intake.js';
 import { ensureWebhooks } from '../src/webhooks/subscriptions.js';
-import { WEBHOOK_TOPICS, webhookUrl } from '../src/webhooks/topics.js';
+import { OPTIONAL_WEBHOOK_TOPICS, WEBHOOK_TOPICS, webhookUrl } from '../src/webhooks/topics.js';
 import { FakeShop } from './fakes/fake-shopify.js';
 import { TEST_DATABASE_URL, resetDatabase } from './helpers/harness.js';
 
@@ -308,14 +308,71 @@ describe('webhook intake', () => {
   it('acknowledges topics it does not handle and payloads without the expected ids', async () => {
     await addStore('legacy', { webhookSecret: WEBHOOK_SECRET });
     const shop = 'legacy.myshopify.com';
-    expect(await deliver(shop, 'orders/create', '{"id":1}')).toEqual({
+    expect(await deliver(shop, 'products/update', '{"id":1}')).toEqual({
       status: 200,
       body: 'ignored',
     });
     expect((await deliver(shop, 'inventory_levels/update', '{"available":3}')).body).toBe(
       'ignored',
     );
+    // An order payload without the order's own id (a nested "id" is not it).
+    expect((await deliver(shop, 'orders/create', '{"line_items":[{"id":1}]}')).body).toBe(
+      'ignored',
+    );
+    expect((await deliver(shop, 'refunds/create', '{"id":5,"refund_line_items":[]}')).body).toBe(
+      'ignored',
+    );
     expect(await tasks()).toEqual([]);
+  });
+
+  it('turns order, refund and export webhooks into sales tasks, keeping 18-digit ids exact', async () => {
+    const storeId = await addStore('legacy', { webhookSecret: WEBHOOK_SECRET });
+    const shop = 'legacy.myshopify.com';
+    // Each pair differs by one: parsed as JS numbers they would be the same id.
+    const ORDER = '820982911946154508';
+    const LINE = '820982911946154507';
+    const REFUNDED = '450789469012345679';
+    const REFUND = '450789469012345678';
+    const DELETED = '820982911946154519';
+    expect(Number(ORDER)).toBe(Number(LINE));
+
+    // Nested objects (line items, customer) come first and carry their own ids.
+    const order =
+      `{"line_items":[{"id":${LINE},"admin_graphql_api_id":"gid://shopify/LineItem/${LINE}",` +
+      `"variant_id":${LINE},"product_id":${LINE}}],"customer":{"id":${LINE},` +
+      `"admin_graphql_api_id":"gid://shopify/Customer/${LINE}"},"id":${ORDER},` +
+      `"admin_graphql_api_id":"gid://shopify/Order/${ORDER}","updated_at":"2026-10-17T10:00:00-04:00"}`;
+    for (const topic of ['orders/create', 'orders/updated', 'orders/cancelled'])
+      expect((await deliver(shop, topic, order)).body).toBe('ok');
+    const refund =
+      `{"id":${REFUND},"order_id":${REFUNDED},"admin_graphql_api_id":"gid://shopify/Refund/${REFUND}",` +
+      `"refund_line_items":[{"id":${LINE},"line_item_id":${LINE},"quantity":1}]}`;
+    expect((await deliver(shop, 'refunds/create', refund)).body).toBe('ok');
+    expect((await deliver(shop, 'orders/delete', `{"id":${DELETED}}`)).body).toBe('ok');
+    const finished =
+      '{"admin_graphql_api_id":"gid://shopify/BulkOperation/720918","completed_at":"2026-10-17T17:23:25Z",' +
+      '"created_at":"2026-10-17T17:16:35Z","error_code":null,"status":"completed","type":"query"}';
+    expect((await deliver(shop, 'bulk_operations/finish', finished)).body).toBe('ok');
+
+    expect(await tasks()).toEqual([
+      {
+        kind: 'refresh_order',
+        payload: { storeId, orderId: `gid://shopify/Order/${ORDER}` },
+        generation: 3, // create, update and cancel: one refresh
+      },
+      {
+        kind: 'refresh_order',
+        payload: { storeId, orderId: `gid://shopify/Order/${REFUNDED}` },
+        generation: 1,
+      },
+      {
+        kind: 'remove_order',
+        payload: { storeId, orderId: `gid://shopify/Order/${DELETED}` },
+        generation: 1,
+      },
+      { kind: 'sales_backfill', payload: { storeId }, generation: 1 },
+    ]);
+    expect(onWork).toHaveBeenCalledTimes(6);
   });
 
   it('answers 500 and records nothing when processing fails, so the retry is not a duplicate', async () => {
@@ -344,11 +401,11 @@ describe('ensureWebhooks', () => {
     expect(url).toBe('https://sync.example.com/webhooks/shopify');
 
     const first = await ensureWebhooks(shop, url);
-    expect(first).toEqual({ created: [...WEBHOOK_TOPICS], deleted: [] });
+    expect(first).toEqual({ created: [...WEBHOOK_TOPICS], deleted: [], refused: [] });
     expect(shop.subscriptions.map((s) => [s.topic, s.uri])).toEqual(
       WEBHOOK_TOPICS.map((t) => [t, url]),
     );
-    expect(await ensureWebhooks(shop, url)).toEqual({ created: [], deleted: [] });
+    expect(await ensureWebhooks(shop, url)).toEqual({ created: [], deleted: [], refused: [] });
   });
 
   it('moves our subscriptions off an old domain and drops duplicates, leaving other apps alone', async () => {
@@ -356,10 +413,10 @@ describe('ensureWebhooks', () => {
     await ensureWebhooks(shop, 'https://old.example.com/webhooks/shopify');
     await shop.createWebhookSubscription('INVENTORY_LEVELS_UPDATE', url);
     await shop.createWebhookSubscription('INVENTORY_LEVELS_UPDATE', url);
-    await shop.createWebhookSubscription('ORDERS_CREATE', 'https://other-app.example.com/hooks');
-    await shop.createWebhookSubscription(
-      'PRODUCTS_UPDATE',
-      'arn:aws:events:us-east-1::event-source',
+    // Other apps' subscriptions (made with their own permissions).
+    shop.subscriptions.push(
+      { id: 'other-1', topic: 'ORDERS_CREATE', uri: 'https://other-app.example.com/hooks' },
+      { id: 'other-2', topic: 'PRODUCTS_UPDATE', uri: 'arn:aws:events:us-east-1::event-source' },
     );
 
     const result = await ensureWebhooks(shop, url);
@@ -375,6 +432,59 @@ describe('ensureWebhooks', () => {
       'ORDERS_CREATE',
       'PRODUCTS_UPDATE',
     ]);
+  });
+
+  it('wants the orders topics only with read_orders (or write_orders), and drops them without it', async () => {
+    const shop = new FakeShop('a.myshopify.com');
+    const core = [...shop.scopes];
+    const optional = OPTIONAL_WEBHOOK_TOPICS.map((t) => t.topic);
+
+    shop.scopes = [...core, 'write_orders'];
+    const first = await ensureWebhooks(shop, url, { scopes: shop.scopes });
+    expect(first).toEqual({ created: [...WEBHOOK_TOPICS, ...optional], deleted: [], refused: [] });
+
+    const second = await ensureWebhooks(shop, url, { scopes: core });
+    expect(second.created).toEqual([]);
+    expect(second.deleted.sort()).toEqual(
+      optional.filter((t) => t !== 'BULK_OPERATIONS_FINISH').sort(),
+    );
+  });
+
+  it('reports refused optional topics without stopping, but fails on core topics and network errors', async () => {
+    const shop = new FakeShop('a.myshopify.com');
+    shop.scopes.push('read_orders');
+    shop.refusedTopics.add('ORDERS_CREATE');
+    shop.refusedTopics.add('REFUNDS_CREATE');
+    const old = 'https://old.example.com/webhooks/shopify';
+    await shop.createWebhookSubscription('LOCATIONS_DELETE', old);
+
+    const result = await ensureWebhooks(shop, url, { scopes: shop.scopes });
+    expect(result.refused).toEqual([
+      {
+        topic: 'ORDERS_CREATE',
+        message:
+          'This app is not approved to subscribe to webhook topics containing protected customer data.',
+      },
+      { topic: 'REFUNDS_CREATE', message: expect.stringContaining('protected customer data') },
+    ]);
+    expect(result.created).not.toContain('ORDERS_CREATE');
+    expect(result.created).toContain('ORDERS_UPDATED');
+    // Stale subscriptions are still cleaned up.
+    expect(result.deleted).toEqual(['LOCATIONS_DELETE']);
+
+    // A network error on an optional topic is not a refusal: the whole run is retried.
+    shop.refusedTopics.clear();
+    shop.failNext('createWebhookSubscription', 'throw_before');
+    await expect(ensureWebhooks(shop, url, { scopes: shop.scopes })).rejects.toMatchObject({
+      kind: 'transient',
+    });
+
+    // A core topic Shopify refuses stops the run (stock syncing depends on it).
+    const fresh = new FakeShop('b.myshopify.com');
+    fresh.refusedTopics.add('INVENTORY_LEVELS_UPDATE');
+    await expect(ensureWebhooks(fresh, url, { scopes: fresh.scopes })).rejects.toThrow(
+      /protected customer data/,
+    );
   });
 
   it('refuses a URL that is not our webhook endpoint', async () => {

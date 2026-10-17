@@ -462,9 +462,10 @@ async function upsertVariants(
     }>(
       `WITH input AS (
          SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
-                              $7::text[], $8::text[], $9::boolean[], $10::boolean[])
+                              $7::text[], $8::text[], $9::boolean[], $10::boolean[],
+                              $12::numeric[], $13::numeric[])
            AS t(variant_id, product_id, inventory_item_id, sku, barcode, product_title,
-                variant_title, tracked, is_bundle)
+                variant_title, tracked, is_bundle, price, compare_at_price)
        ),
        prior AS (
          SELECT v.id, v.sku, v.item_id, v.tracked, v.is_bundle, v.inventory_item_id, v.deleted_at
@@ -474,9 +475,10 @@ async function upsertVariants(
        saved AS (
          INSERT INTO variants AS v
            (store_id, shopify_variant_id, shopify_product_id, inventory_item_id, sku, barcode,
-            product_title, variant_title, tracked, is_bundle, seen_at)
+            product_title, variant_title, tracked, is_bundle, price, compare_at_price, seen_at)
          SELECT $1::bigint, i.variant_id, i.product_id, i.inventory_item_id, i.sku, i.barcode,
-                i.product_title, i.variant_title, i.tracked, i.is_bundle, $11::timestamptz
+                i.product_title, i.variant_title, i.tracked, i.is_bundle, i.price,
+                i.compare_at_price, $11::timestamptz
            FROM input i
          ON CONFLICT (store_id, shopify_variant_id) DO UPDATE
            SET shopify_product_id = EXCLUDED.shopify_product_id,
@@ -487,6 +489,8 @@ async function upsertVariants(
                variant_title = EXCLUDED.variant_title,
                tracked = EXCLUDED.tracked,
                is_bundle = EXCLUDED.is_bundle,
+               price = EXCLUDED.price,
+               compare_at_price = EXCLUDED.compare_at_price,
                item_id = CASE WHEN v.deleted_at IS NULL THEN v.item_id END,
                seen_at = EXCLUDED.seen_at,
                deleted_at = NULL,
@@ -512,6 +516,9 @@ async function upsertVariants(
         chunk.map((v) => v.tracked),
         chunk.map((v) => v.isBundle),
         seenAt,
+        // What the store charges now (its currency); prices don't affect stock syncing.
+        chunk.map((v) => v.price),
+        chunk.map((v) => v.compareAtPrice),
       ],
     );
     for (const r of rows) {

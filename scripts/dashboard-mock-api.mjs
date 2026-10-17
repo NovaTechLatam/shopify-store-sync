@@ -834,7 +834,7 @@ function handle(state, method, pathname, query, body, contentType) {
       return reply(202, { queued: true });
     case 'POST /stores/:id/register-webhooks':
       findOr404(state.stores, id, 'Store');
-      return { created: ['INVENTORY_LEVELS_UPDATE'], deleted: [] };
+      return { created: ['INVENTORY_LEVELS_UPDATE'], deleted: [], refused: [] };
     case 'PUT /stores/:id/locations/:id': {
       const store = findOr404(state.stores, id, 'Store');
       const loc = findOr404(store.locations, subId, 'Location');

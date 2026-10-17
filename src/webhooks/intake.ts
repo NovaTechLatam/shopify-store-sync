@@ -12,7 +12,7 @@ import { verifyShopifyHmac } from '../util/crypto.js';
  * Shopify webhook intake. Shopify expects an answer within 5 seconds and delivers at least once,
  * in any order, sometimes a day late. So we only verify, de-duplicate and mark work: a pool level
  * to reconcile (the engine re-reads live values, so a late or repeated webhook is harmless) or a
- * catalog task. Payload IDs can exceed 2^53, so they are taken from the raw body as strings and
+ * task (catalog, orders) that re-reads what changed. Payload IDs can exceed 2^53, so they are taken from the raw body as strings and
  * never parsed as JSON numbers.
  */
 
@@ -168,6 +168,35 @@ async function dispatch(
     case 'locations/delete':
       await enqueueTask(client, 'sync_locations', { storeId });
       return { body: 'ok', work: true };
+    // Sales history: the task re-reads the order, so late, repeated or out-of-order deliveries
+    // are harmless. Order payloads hold many nested ids (line items, variants, customer...):
+    // only the type-anchored admin_graphql_api_id is the order's.
+    case 'orders/create':
+    case 'orders/updated':
+    case 'orders/cancelled': {
+      const orderId = anchoredGid(body, 'Order');
+      if (!orderId) return malformed(log);
+      await enqueueTask(client, 'refresh_order', { storeId, orderId });
+      return { body: 'ok', work: true };
+    }
+    case 'refunds/create': {
+      // The refund's own id comes first; the order is `order_id`.
+      const id = numericField(body, 'order_id');
+      if (!id) return malformed(log);
+      await enqueueTask(client, 'refresh_order', { storeId, orderId: `gid://shopify/Order/${id}` });
+      return { body: 'ok', work: true };
+    }
+    case 'orders/delete': {
+      // The payload is just {"id": …}.
+      const orderId = resourceGid(body, 'Order');
+      if (!orderId) return malformed(log);
+      await enqueueTask(client, 'remove_order', { storeId, orderId });
+      return { body: 'ok', work: true };
+    }
+    case 'bulk_operations/finish':
+      // Our order history export finished (or failed): the backfill checks which and goes on.
+      await enqueueTask(client, 'sales_backfill', { storeId });
+      return { body: 'ok', work: true };
     case 'app/uninstalled':
       await client.query(
         `UPDATE stores SET status = 'disconnected', last_error = $2, updated_at = now() WHERE id = $1`,
@@ -238,12 +267,21 @@ function numericField(body: string, field: string): string | null {
   return new RegExp(`"${field}"\\s*:\\s*"?(\\d+)`).exec(body)?.[1] ?? null;
 }
 
+type ResourceType = 'InventoryItem' | 'Product' | 'Order';
+
 /** `gid://shopify/<type>/<n>` from the payload's admin_graphql_api_id, else from its `id`. */
-function resourceGid(body: string, type: 'InventoryItem' | 'Product'): string | null {
-  const fromGid = new RegExp(`"admin_graphql_api_id"\\s*:\\s*"gid://shopify/${type}/(\\d+)`).exec(
+function resourceGid(body: string, type: ResourceType): string | null {
+  const anchored = anchoredGid(body, type);
+  if (anchored) return anchored;
+  const id = numericField(body, 'id');
+  return id ? `gid://shopify/${type}/${id}` : null;
+}
+
+/** The first admin_graphql_api_id of that type (never another object's id). */
+function anchoredGid(body: string, type: ResourceType): string | null {
+  const id = new RegExp(`"admin_graphql_api_id"\\s*:\\s*"gid://shopify/${type}/(\\d+)`).exec(
     body,
   )?.[1];
-  const id = fromGid ?? numericField(body, 'id');
   return id ? `gid://shopify/${type}/${id}` : null;
 }
 

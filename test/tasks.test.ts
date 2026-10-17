@@ -132,7 +132,9 @@ describe('task handlers', () => {
     const store = h.stores[0]!;
     await enqueueTask(h.db, 'ensure_webhooks', { storeId: store.id });
     await runTasksOnce(h.db, taskDeps(), silentLogger);
-    expect(store.shop.subscriptions.map((s) => s.topic).sort()).toEqual([...WEBHOOK_TOPICS].sort());
+    // Plus the export-finished topic, which needs no permission (orders topics need read_orders).
+    const topics = [...WEBHOOK_TOPICS, 'BULK_OPERATIONS_FINISH'];
+    expect(store.shop.subscriptions.map((s) => s.topic).sort()).toEqual(topics.sort());
     expect(new Set(store.shop.subscriptions.map((s) => s.uri))).toEqual(
       new Set([`${PUBLIC_URL}/webhooks/shopify`]),
     );
@@ -144,7 +146,7 @@ describe('task handlers', () => {
     store.shop.subscriptions.splice(0, 1);
     await enqueueTask(h.db, 'ensure_webhooks', { storeId: store.id });
     await runTasksOnce(h.db, taskDeps(), silentLogger);
-    expect(store.shop.subscriptions).toHaveLength(WEBHOOK_TOPICS.length);
+    expect(store.shop.subscriptions).toHaveLength(topics.length);
     const { rows } = await h.db.query(
       'SELECT kind, store_id, message FROM alerts WHERE resolved_at IS NULL',
     );

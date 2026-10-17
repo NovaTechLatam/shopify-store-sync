@@ -24,6 +24,24 @@ export const FEATURE_PERMISSIONS = {
   sales: { label: 'Reports', enables: 'Read orders for sales reports and reorder suggestions.' },
 };
 
+/**
+ * The optional permissions and the features (FEATURE_PERMISSIONS keys) each one turns on. Kept
+ * in step with FEATURE_SCOPES in src/shopify/scopes.ts. Stock syncing never needs them.
+ */
+export const OPTIONAL_SCOPES = [
+  { scope: 'write_products', features: ['catalog', 'pricing'] },
+  { scope: 'write_publications', features: ['publishing'] },
+  { scope: 'read_orders', features: ['sales'] },
+];
+
+/** "Catalog and Prices" */
+function featureNames(features) {
+  const labels = features.map((f) => FEATURE_PERMISSIONS[f]?.label ?? f);
+  return labels.length > 1
+    ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+    : (labels[0] ?? '');
+}
+
 export const AUTH_MODES = {
   client_credentials: {
     label: 'Dev Dashboard app',
@@ -47,6 +65,22 @@ export const scopeList = (scopes = REQUIRED_SCOPES) =>
     scopes.map((s) => h('li', {}, h('code', {}, s))),
   );
 
+/** Optional permissions, each with the features it turns on. */
+export const optionalScopeList = (scopes = OPTIONAL_SCOPES.map((s) => s.scope)) =>
+  h(
+    'ul',
+    { class: 'scope-list scope-list-described' },
+    scopes.map((scope) => {
+      const entry = OPTIONAL_SCOPES.find((s) => s.scope === scope);
+      return h(
+        'li',
+        {},
+        h('code', {}, scope),
+        entry && h('span', { class: 'muted small' }, `For ${featureNames(entry.features)}`),
+      );
+    }),
+  );
+
 export function setupSteps(mode) {
   if (mode === 'client_credentials') {
     return h(
@@ -59,7 +93,14 @@ export function setupSteps(mode) {
         h('strong', {}, 'dev.shopify.com'),
         ' and open your app (or create one).',
       ),
-      h('li', {}, 'Create a version with these access scopes, then release it:', scopeList()),
+      h(
+        'li',
+        {},
+        'Create a version with these access scopes, then release it:',
+        scopeList(),
+        'To use the extra features, add these too (you can also add them later):',
+        optionalScopeList(),
+      ),
       h(
         'li',
         {},
@@ -90,7 +131,14 @@ export function setupSteps(mode) {
       h('strong', {}, 'Settings → Apps and sales channels → Develop apps'),
       ' and open your app.',
     ),
-    h('li', {}, 'Check that its Admin API access scopes include:', scopeList()),
+    h(
+      'li',
+      {},
+      'Check that its Admin API access scopes include:',
+      scopeList(),
+      'To use the extra features, add these too (you can also add them later):',
+      optionalScopeList(),
+    ),
     h(
       'li',
       {},
