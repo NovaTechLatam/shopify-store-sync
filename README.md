@@ -105,6 +105,7 @@ Set these as environment variables, or in `.env` when you use Docker Compose.
 | `NODE_ENV`                         | no       | `development` | `development`, `production` or `test`. The Docker image sets `production`.            |
 | `HOST`                             | no       | `0.0.0.0`     | Address the web server listens on.                                                    |
 | `PORT`                             | no       | `3000`        | Port the web server listens on.                                                       |
+| `TRUST_PROXY`                      | no       | private nets  | Proxies trusted to report the visitor's address (used to lock out password guessing). |
 
 Everything else (pause switch, alert destinations, low-stock level, safety buffers...) is set in
 the dashboard.

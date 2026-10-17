@@ -61,6 +61,7 @@ const ALERT_KINDS = {
   circuit_breaker: { label: 'Sync paused automatically', tone: 'critical' },
   possible_double_count: { label: 'Possible double count', tone: 'warning' },
   write_rejected: { label: 'Store refused an update', tone: 'critical' },
+  stock_count_cancelled: { label: 'Stock count not applied', tone: 'warning' },
   test: { label: 'Test', tone: 'info' },
 };
 
@@ -78,6 +79,7 @@ export const EVENT_KINDS = {
   propagated: 'Stores updated',
   manual_set: 'Stock set',
   stock_count: 'Stock counted',
+  stock_count_cancelled: 'Stock count cancelled',
   manual_adjust: 'Stock added or removed',
   initialized: 'Started syncing',
   initialize_failed: 'Could not start syncing',
@@ -98,6 +100,8 @@ export function describeEvent(e) {
       return { title: 'Stock set from the dashboard', tone: 'info', icon: 'sliders' };
     case 'stock_count':
       return { title: 'Stock counted', tone: 'info', icon: 'sliders' };
+    case 'stock_count_cancelled':
+      return { title: 'Stock count cancelled', tone: 'warning', icon: 'alert' };
     case 'manual_adjust':
       return {
         title: `${e.delta < 0 ? 'Units removed' : 'Units added'} from the dashboard`,

@@ -224,9 +224,9 @@ them.
   2. Paste it in Store Sync, in the page of every store that uses this app.
   3. Revoke the old secret in the Dev Dashboard.
 
-  Shopify keeps signing notifications with the old secret for up to an hour after you revoke it, so
-  some notifications are rejected in the meantime. Shopify retries them, and the 15-minute check
-  catches anything missed.
+  Store Sync keeps accepting notifications signed with the previous secret for 7 days after you
+  save the new one, so nothing is rejected while Shopify switches over. The 15-minute check catches
+  anything missed either way.
 
 - **Legacy access token:** reinstalling the app in the store admin creates a new token. Paste it
   in the store's page.

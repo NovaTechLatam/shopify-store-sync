@@ -129,7 +129,7 @@ export function credentialFields(mode, { optional = false, clientId = '' } = {})
       label: 'API secret key',
       control: secretInput({ name: 'webhookSecret', required: !optional, maxlength: 500 }),
       optional,
-      hint: 'Lets us check that stock updates really come from Shopify. Without it we can’t receive live updates.',
+      hint: 'Shown next to the access token under API credentials. Lets us check that stock updates really come from Shopify.',
     }),
   ];
 }

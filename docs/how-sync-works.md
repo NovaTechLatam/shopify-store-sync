@@ -100,9 +100,16 @@ watch out for three things:
 ### Counting the shelf
 
 Units that are sold but not shipped yet are still on your shelf, but they aren't available. So if
-you count 40 on the shelf and 3 are waiting to ship, the right shared number is 37. The admin API
-also accepts a **stock count**: you give it the shelf count, and Store Sync subtracts every store's
-unshipped orders for you.
+you count 40 on the shelf and 3 are waiting to ship, the right shared number is 37. On the
+product's page, **Set stock to… > Units I counted on the shelf** does this for you: count everything
+that is physically there (including units already packed for orders and damaged ones), and Store
+Sync subtracts, across every store (paused ones too), the units sold but not shipped and the units
+set aside as damaged, reserved, in quality control or as safety stock.
+
+Store Sync reads every store at the moment it applies the count. If a store can't be read, the
+count waits; if it still can't be applied after 10 minutes, it is cancelled with an alert, because
+orders placed since then would make it wrong. Count again and re-enter it. Counts (and **Units
+available to sell**) are refused while sync is paused, for everything or for that product.
 
 ## Safety buffers
 
@@ -132,7 +139,10 @@ page you pick where the starting numbers come from:
 - **Highest number**.
 - **Add them up**: only if each store really had its own separate stock until now.
 
-You see a preview of every change in every store before anything is written.
+You see a preview of every change in every store before anything is written. Stores that are
+paused, can't connect or are still loading their products are listed as not included: their
+numbers aren't read, and they show the shared number once they're back. Copying a store's numbers
+waits until that store can be read.
 
 ## New products
 
@@ -152,6 +162,11 @@ different variant.
 
 If the new store brings its own extra stock that isn't part of the shared stock yet, add those units
 on the product's page in Store Sync (**Add/remove units**) after it joins.
+
+A store that was paused or disconnected isn't treated as new: when it comes back, Store Sync first
+re-reads its products, then counts the sales and changes it made while it was away. Only the
+products that were linked to a different variant or location in the meantime start over from the
+shared number.
 
 ## Pausing
 

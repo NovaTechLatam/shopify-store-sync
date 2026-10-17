@@ -324,8 +324,10 @@ export async function render({ root, signal, setTitle }) {
 
   function previewContent(result) {
     const startable = result.rows.filter((r) => r.proposed !== null);
+    const excluded = excludedNotice(result.excludedStores ?? []);
     if (startable.length === 0) {
       return [
+        excluded,
         emptyState({
           title: 'Nothing to start',
           message:
@@ -388,6 +390,7 @@ export async function render({ root, signal, setTitle }) {
     const skipped = result.rows.filter((r) => r.proposed === null);
 
     return [
+      excluded,
       h(
         'div',
         { class: 'stats' },
@@ -579,6 +582,24 @@ export async function render({ root, signal, setTitle }) {
   }
 
   await go(1, { focus: false });
+}
+
+/** Stores left out of this start (paused, disconnected, still loading), and what happens to them. */
+function excludedNotice(excluded) {
+  if (excluded.length === 0) return null;
+  return banner(
+    { tone: 'info', title: `Not included: ${plural(excluded.length, 'store')}` },
+    h(
+      'ul',
+      { class: 'plain-list' },
+      excluded.map((e) => h('li', {}, `${e.storeName} (${e.reason})`)),
+    ),
+    h(
+      'p',
+      {},
+      'Their numbers aren’t read or changed now. When a store is back, it shows the shared numbers of the products it sells.',
+    ),
+  );
 }
 
 /** 'zero' when a store goes to 0 from stock, 'drop' when it loses at least half (and 5+). */

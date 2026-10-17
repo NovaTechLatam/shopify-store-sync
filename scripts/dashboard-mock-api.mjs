@@ -658,7 +658,14 @@ function preview(state, strategy, sourceStoreId) {
     }
     if (zeroed) summary.zeroedInSomeStore++;
   }
-  return { rows, summary };
+  const excludedStores = state.stores
+    .filter((s) => s.status !== 'active')
+    .map((s) => ({
+      storeId: s.id,
+      storeName: s.name,
+      reason: s.status === 'paused' ? 'paused' : 'can’t connect',
+    }));
+  return { rows, excludedStores, summary };
 }
 
 // ---------- routes ----------

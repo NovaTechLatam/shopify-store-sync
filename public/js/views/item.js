@@ -130,7 +130,7 @@ function itemBody(item, settings, actions) {
         h(
           'p',
           { class: 'muted' },
-          'Fix SKUs and tracking in Shopify; changes are picked up automatically. ',
+          'Fix SKUs, tracking and missing products in Shopify; changes are picked up automatically. Updates waiting to be confirmed are retried on their own. ',
           h('a', { href: '#/mapping' }, 'Open matching'),
         ),
       ),
@@ -344,8 +344,8 @@ async function setStockDialog(item, level, actions) {
   });
   const noteInput = input({ name: 'note', maxlength: 500, placeholder: 'e.g. Monthly count' });
   const name = uid('kind');
-  // A shelf count still includes units sold but not shipped yet; the API subtracts every store's
-  // open orders for 'count', so it is the safe default after counting.
+  // A shelf count still includes units sold but not shipped yet and units set aside; the API
+  // subtracts them across every store for 'count', so it is the safe default after counting.
   const counted = h('input', {
     type: 'radio',
     name,
@@ -377,7 +377,7 @@ async function setStockDialog(item, level, actions) {
             h(
               'span',
               { class: 'field-hint block' },
-              'Units already sold but not shipped yet are subtracted, so they aren’t sold twice.',
+              'Count everything that is physically there, including units packed for orders and damaged ones. Units sold but not shipped yet, and units set aside as damaged or reserved, are subtracted so they aren’t sold.',
             ),
           ),
         ),
@@ -425,7 +425,7 @@ async function setStockDialog(item, level, actions) {
   if (result !== null) {
     toast(
       result.kind === 'count'
-        ? `Count of ${num(result.value)} saved. Units waiting to ship are subtracted, then every store updates.`
+        ? `Count of ${num(result.value)} saved. Units waiting to ship or set aside are subtracted, then every store updates.`
         : `Stock set to ${num(result.value)}. Stores update in a few seconds.`,
     );
     actions.reloadSoon();
