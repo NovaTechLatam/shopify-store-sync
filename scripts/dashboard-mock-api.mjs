@@ -1001,6 +1001,13 @@ export async function startMockServer({ port = 0, state = createMockState() } = 
     try {
       if (url.pathname.startsWith('/api/')) {
         if (server.state.signedOut) throw new HttpError(401, 'Authentication required');
+        // Same CSRF rule as the real server (src/http/auth.ts).
+        if (
+          !['GET', 'HEAD'].includes(req.method) &&
+          req.headers['x-requested-with'] !== 'store-sync'
+        ) {
+          throw new HttpError(403, 'Changes must be made from the dashboard.');
+        }
         if (server.state.delayMs) {
           await new Promise((resolve) => setTimeout(resolve, server.state.delayMs));
         }

@@ -52,6 +52,7 @@ async function main(): Promise<void> {
     publicUrl: config.PUBLIC_URL,
     adminUsername: config.ADMIN_USERNAME,
     adminPassword: config.ADMIN_PASSWORD,
+    trustProxy: config.TRUST_PROXY,
     onWork,
   });
   await app.listen({ host: config.HOST, port: config.PORT });

@@ -42,6 +42,14 @@ const CreateStoreBody = z
         message: 'The Admin API access token is required',
       });
     }
+    if (b.authMode === 'access_token' && !b.webhookSecret) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['webhookSecret'],
+        message:
+          'The API secret key is required: without it the store’s notifications can’t be verified',
+      });
+    }
     if (b.authMode === 'client_credentials' && (!b.clientId || !b.clientSecret)) {
       ctx.addIssue({
         code: 'custom',
@@ -264,6 +272,16 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
           (current.client_secret_enc ? secrets.decrypt(current.client_secret_enc) : null),
       };
       await testCredentials(creds);
+      // Keep the old client secret for webhook signatures until Shopify stops using it.
+      const rotated = body.clientSecret !== undefined && current.client_secret_enc !== null;
+      if (rotated) {
+        await db.query(
+          `UPDATE stores SET previous_client_secret_enc = client_secret_enc,
+                             client_secret_rotated_at = now()
+            WHERE id = $1`,
+          [storeId],
+        );
+      }
       await db.query(
         `UPDATE stores SET access_token_enc = $2, client_id = $3, client_secret_enc = $4, updated_at = now()
           WHERE id = $1`,
@@ -299,37 +317,28 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
       ]);
       await enqueuePoolLevels(db, await storePoolLevelIds(db, storeId), 'store_buffer_changed');
     }
-    // Resuming (or fixing credentials of) a store: sync everything it sells and check its setup.
-    const reactivate = body.status === 'active' && current.status !== 'active';
-    if (body.status !== undefined && body.status !== current.status) {
+    // Resuming a store, or fixing the credentials of one in error, brings it back. Its catalog is
+    // re-read first (links may have changed meanwhile); the catalog sync then starts syncing it.
+    const fixedError = credentialsChanged && current.status === 'error' && body.status !== 'paused';
+    const nextStatus = body.status ?? (fixedError ? 'active' : current.status);
+    if (nextStatus !== current.status) {
+      const reactivate = nextStatus === 'active';
       await db.query(
-        `UPDATE stores SET status = $2, last_error = NULL, updated_at = now() WHERE id = $1`,
-        [storeId, body.status],
+        `UPDATE stores SET status = $2, last_error = NULL, updated_at = now(),
+                           catalog_pending = catalog_pending OR $3
+          WHERE id = $1`,
+        [storeId, nextStatus, reactivate],
       );
-      if (body.status === 'active') {
+      if (reactivate) {
         await setAlert(db, {
           open: false,
           kind: 'store_error',
           dedupeKey: `store_error:${storeId}`,
           message: '',
         });
+        await enqueueTask(db, 'catalog_sync', { storeId });
+        await enqueueTask(db, 'ensure_webhooks', { storeId });
       }
-    }
-    if (reactivate || (credentialsChanged && current.status === 'error')) {
-      if (credentialsChanged && current.status === 'error') {
-        await db.query(`UPDATE stores SET status = 'active', last_error = NULL WHERE id = $1`, [
-          storeId,
-        ]);
-        await setAlert(db, {
-          open: false,
-          kind: 'store_error',
-          dedupeKey: `store_error:${storeId}`,
-          message: '',
-        });
-      }
-      await enqueueTask(db, 'catalog_sync', { storeId });
-      await enqueueTask(db, 'ensure_webhooks', { storeId });
-      await enqueuePoolLevels(db, await storePoolLevelIds(db, storeId), 'store_resumed');
     }
     deps.onWork?.();
     return loadStore(db, storeId);

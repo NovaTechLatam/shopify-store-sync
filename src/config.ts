@@ -19,6 +19,16 @@ const ConfigSchema = z.object({
   /** 32 random bytes, base64. Encrypts Shopify credentials at rest. `openssl rand -base64 32` */
   ENCRYPTION_KEY: z.string().min(1, 'ENCRYPTION_KEY is required'),
 
+  /**
+   * Which proxies may tell us the client's IP (X-Forwarded-For), used by the login lockout.
+   * Default: only proxies on this machine or a private network (Caddy, Render, Fly, Railway).
+   * "true" trusts anyone (only safe if nothing can reach the app except your proxy), "false" none.
+   */
+  TRUST_PROXY: z
+    .string()
+    .default('loopback,linklocal,uniquelocal')
+    .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+
   /** Dashboard / admin API login (HTTP Basic auth). */
   ADMIN_USERNAME: z.string().min(1).default('admin'),
   ADMIN_PASSWORD: z.string().min(12, 'ADMIN_PASSWORD must be at least 12 characters'),

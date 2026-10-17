@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
-import type { Db, DbClient } from '../db/pool.js';
+import type { Db, DbClient, Queryable } from '../db/pool.js';
+import { withTransaction } from '../db/pool.js';
 import { ShopifyApiError } from '../shopify/client.js';
 import type { ShopifyAdmin } from '../shopify/types.js';
 import { evaluateStockAlerts, setAlert } from '../alerts/alerts.js';
 import { getSettings, updateSettings } from '../settings.js';
 import type { ClaimedLevel } from './queue.js';
-import { withLease } from './queue.js';
+import { checkLease } from './queue.js';
 
 /**
  * THE SYNC ALGORITHM
@@ -39,9 +40,12 @@ import { withLease } from './queue.js';
  *     which value is right.
  * Duplicate, late or out-of-order webhooks are harmless: they only trigger step 2's fresh read.
  *
- * A store whose baseline is unknown (it just started selling the item, its variant or location
- * mapping changed, or the item was re-stocked at the location) "joins": its current value is not
- * counted and it is overwritten with the shared quantity.
+ * Membership. A baseline only means something while the store kept syncing the item. Whenever a
+ * store's variant or location stops or starts syncing it (relinked, untracked, unmapped...),
+ * database triggers bump `membership_changed_at`; a baseline written before that is ignored, so
+ * the store "joins": its current value is not counted and it is overwritten with the shared
+ * quantity. Every transaction that saves baselines first re-checks (and row-locks) the members
+ * it was computed for, so a relink racing with a reconcile can't slip a stale baseline in.
  */
 
 export interface ShopifyRegistry {
@@ -56,6 +60,16 @@ export type ReconcileOutcome =
 
 /** Shopify forgets idempotency keys after 24h; past this age a replay proves nothing. */
 export const IDEMPOTENCY_WINDOW_MS = 23 * 60 * 60 * 1000;
+/**
+ * Shopify may keep answering "in progress" for a stalled write. After this many replays we stop
+ * waiting and settle it by looking at the store, so the store isn't frozen for a whole day.
+ */
+const MAX_IN_PROGRESS_REPLAYS = 6;
+/**
+ * A stock count describes the shelf when it was entered. If it can't be applied within this time
+ * (a store can't be read), shipments since may have changed the shelf: it is cancelled instead.
+ */
+const COUNT_MAX_DELAY_MS = 10 * 60_000;
 
 interface PendingWrite {
   storeId: number;
@@ -77,23 +91,39 @@ interface Member {
   baseline: number | null;
 }
 
+/** A store that sells the item from this warehouse, whatever its sync status. */
+interface Seller {
+  storeId: number;
+  storeName: string;
+  status: string;
+  catalogPending: boolean;
+  inventoryItemId: string;
+  locationId: string;
+}
+
 interface Adjustment {
   id: number;
   kind: 'initialize' | 'set' | 'adjust' | 'count';
   strategy: 'store' | 'min' | 'max' | 'sum' | 'value' | null;
   sourceStoreId: number | null;
+  storeIds: number[] | null;
   value: number | null;
   note: string | null;
+  createdAt: Date;
 }
 
 interface LevelContext {
   poolLevelId: number;
   itemId: number;
+  warehouseId: number;
   sku: string;
   quantity: number | null;
   syncEnabled: boolean;
   lowStockThreshold: number | null;
   members: Member[];
+  /** Fingerprint of the members (rows and their membership timestamps) when loaded. */
+  membership: string;
+  sellers: Seller[];
   pending: PendingWrite[];
   adjustments: Adjustment[];
 }
@@ -119,6 +149,13 @@ type Resolution =
   | { kind: 'applied' | 'not_applied'; note?: string }
   | { kind: 'unknown'; message: string; storeLevel: boolean };
 
+type LiveRead =
+  | { kind: 'ok'; value: number; activated: boolean; offShelf?: number }
+  | { kind: 'not_stocked' }
+  | { kind: 'error'; message: string; storeLevel: boolean };
+
+class MembershipChanged extends Error {}
+
 export interface SyncEngineOptions {
   db: Db;
   shopify: ShopifyRegistry;
@@ -132,6 +169,16 @@ export interface SyncEngineOptions {
 export function displayQuantity(shared: number, buffer: number): number {
   return Math.max(0, shared - buffer);
 }
+
+// Stores selling an item ($1) from a warehouse ($2): a tracked, non-bundle variant and an active
+// location mapped to the warehouse. Members are the sellers that take part in syncing: active,
+// with an up-to-date catalog.
+const SELLERS_FROM = `
+  FROM stores s
+  JOIN variants v ON v.store_id = s.id AND v.item_id = $1 AND v.deleted_at IS NULL
+                 AND v.tracked AND NOT v.is_bundle
+  JOIN store_locations sl ON sl.store_id = s.id AND sl.warehouse_id = $2 AND sl.is_active`;
+const MEMBERS_WHERE = `s.status = 'active' AND NOT s.catalog_pending`;
 
 export class SyncEngine {
   private readonly db: Db;
@@ -152,11 +199,22 @@ export class SyncEngine {
     const ctx = await this.load(claim.poolLevelId);
     if (!ctx) return { status: 'skipped', reason: 'pool level no longer exists' };
     const log = this.logger.child({ poolLevelId: ctx.poolLevelId, sku: ctx.sku });
+    // Every write to our state happens in a transaction that re-checks the members (and holds
+    // their rows) before re-checking the lease: same lock order as the catalog code.
     const lease = <T>(fn: (client: DbClient) => Promise<T>) =>
-      withLease(this.db, claim.poolLevelId, claim.leaseToken, fn);
+      withTransaction(this.db, async (client) => {
+        const now = await membershipOf(client, ctx.itemId, ctx.warehouseId, true);
+        if (now !== ctx.membership) throw new MembershipChanged();
+        await checkLease(client, claim.poolLevelId, claim.leaseToken);
+        return fn(client);
+      });
     const problems: Problem[] = [];
     try {
       return await this.run(ctx, lease, problems, log);
+    } catch (err) {
+      if (!(err instanceof MembershipChanged)) throw err;
+      // A relink or mapping change raced with us; whatever we computed is for the old members.
+      return { status: 'retry', delayMs: 0, reason: 'the stores selling this item changed' };
     } finally {
       await this.flagStoreProblems(problems);
     }
@@ -178,8 +236,8 @@ export class SyncEngine {
         for (const [i, p] of ctx.pending.entries()) {
           const r = resolutions[i]!;
           const member = memberOf(p.storeId);
-          // A write to an inventory level the store no longer syncs (mapping changed) only needs
-          // to be settled; it says nothing about the current member's baseline.
+          // A write to an inventory level the store no longer syncs only needs settling; it says
+          // nothing about the current member's baseline.
           const current =
             member &&
             member.inventoryItemId === p.inventoryItemId &&
@@ -220,10 +278,21 @@ export class SyncEngine {
     if (!ctx.syncEnabled) return { status: 'skipped', reason: 'sync disabled for this item' };
     if (ctx.members.length === 0) return { status: 'skipped', reason: 'no store sells this item' };
 
+    const init =
+      ctx.quantity === null ? ctx.adjustments.find((a) => a.kind === 'initialize') : undefined;
+    if (ctx.quantity === null && !init) {
+      // Nothing to do until the merchant starts this item. Don't touch Shopify at all: even
+      // stocking the item at a location could put an old, inactive quantity on sale.
+      return { status: 'skipped', reason: 'item not initialised yet' };
+    }
+    const countPending = ctx.adjustments.some((a) => a.kind === 'count');
+
     // ---- 2. read live values ------------------------------------------------------------------
     const active = ctx.members.filter((m) => !frozen.has(m.storeId));
-    const reads = await Promise.all(active.map((m) => this.readLive(m)));
+    const reads = await Promise.all(active.map((m) => this.readLive(m, countPending)));
     const live = new Map<number, number>();
+    const offShelf = new Map<number, number>(); // for stock counts: committed + unavailable
+    const activated = new Set<number>();
     const forget: Member[] = []; // baselines that no longer mean anything
     for (const [i, m] of active.entries()) {
       const r = reads[i]!;
@@ -240,8 +309,12 @@ export class SyncEngine {
         if (m.baseline !== null) forget.push(m);
       } else {
         // Re-stocked after being disconnected: whatever it shows now is not a sale or restock.
-        if (r.activated && m.baseline !== null) forget.push(m);
+        if (r.activated) {
+          activated.add(m.storeId);
+          if (m.baseline !== null) forget.push(m);
+        }
         live.set(m.storeId, r.value);
+        if (r.offShelf !== undefined) offShelf.set(m.storeId, r.offShelf);
       }
     }
     for (const m of forget) m.baseline = null;
@@ -253,35 +326,28 @@ export class SyncEngine {
     const applied: number[] = [];
     let quantity = ctx.quantity;
 
-    if (quantity === null) {
-      const init = ctx.adjustments.find((a) => a.kind === 'initialize');
-      if (!init) {
+    if (init) {
+      const started = this.initialize(ctx, init, participants, live, activated);
+      if (started.kind === 'wait') {
         if (unstocked.length) await lease((c) => clearBaselines(c, ctx.poolLevelId, unstocked));
-        return { status: 'skipped', reason: 'item not initialised yet' };
+        return { status: 'retry', reason: started.reason };
       }
-      if (participants.length !== ctx.members.length) {
-        if (unstocked.length) await lease((c) => clearBaselines(c, ctx.poolLevelId, unstocked));
-        return {
-          status: 'retry',
-          reason: `cannot initialise while some stores are unavailable: ${describeProblems(problems)}`,
-        };
-      }
-      quantity = initialQuantity(init, participants, live);
-      if (quantity === null) {
+      if (started.kind === 'failed') {
+        const reason = started.reason;
         await lease(async (client) => {
           await client.query('UPDATE pool_adjustments SET applied_at = now() WHERE id = $1', [
             init.id,
           ]);
-          await insertEvents(client, ctx, [
-            {
-              kind: 'initialize_failed',
-              message: 'The chosen source store does not sell this item',
-            },
-          ]);
+          await insertEvents(client, ctx, [{ kind: 'initialize_failed', message: reason }]);
         });
-        return { status: 'skipped', reason: 'initialisation source store does not sell this item' };
+        return { status: 'skipped', reason };
       }
-      for (const m of participants) m.baseline = live.get(m.storeId)!; // nothing to count yet
+      const { counted } = started;
+      quantity = started.quantity;
+      // The stores counted in the starting number have nothing to add; any other store joins.
+      for (const m of participants) {
+        m.baseline = counted.has(m.storeId) ? live.get(m.storeId)! : null;
+      }
       applied.push(init.id);
       events.push({
         kind: 'initialized',
@@ -295,7 +361,7 @@ export class SyncEngine {
       });
     }
 
-    let next = quantity;
+    let next = quantity!;
     for (const m of participants) {
       const value = live.get(m.storeId)!;
       if (m.baseline === null) {
@@ -320,28 +386,44 @@ export class SyncEngine {
       });
       next += delta;
     }
-    // A stock count needs every store's open orders, read now; without them it waits.
-    const committed = ctx.adjustments.some((a) => a.kind === 'count' && !applied.includes(a.id))
-      ? await this.readCommittedAll(participants, ctx.members.length, problems)
+
+    // Manual adjustments, strictly in the order they were entered. A stock count needs every
+    // store's open orders and set-aside units read right now; if it can't have them, it and
+    // everything after it wait for the next run.
+    const outside = countPending
+      ? await this.offShelfEverywhere(ctx, participants, offShelf, problems)
       : null;
+    let cancelledCount = false;
     for (const adj of ctx.adjustments) {
       if (applied.includes(adj.id)) continue;
       if (adj.kind === 'initialize') {
         applied.push(adj.id); // already initialised
         continue;
       }
-      if (adj.kind === 'count' && !committed) continue;
+      if (adj.kind === 'count' && !outside) {
+        if (this.now() - adj.createdAt.getTime() <= COUNT_MAX_DELAY_MS) break;
+        applied.push(adj.id);
+        events.push({
+          kind: 'stock_count_cancelled',
+          message:
+            `The stock count of ${adj.value} entered ${adj.createdAt.toISOString()} was cancelled: ` +
+            'not every store could be read in time. Count again and re-enter it.',
+        });
+        cancelledCount = true;
+        continue;
+      }
       applied.push(adj.id);
       let after: number;
       let message: string;
       let details: unknown;
       if (adj.kind === 'count') {
-        const open = [...committed!.values()].reduce((a, b) => a + b, 0);
-        after = adj.value! - open;
+        const held = [...outside!.values()].reduce((a, b) => a + b, 0);
+        after = adj.value! - held;
         message =
           adj.note ??
-          `Counted ${adj.value} on the shelf; ${open} already sold and waiting to ship, so ${after} can be sold`;
-        details = { counted: adj.value, committed: Object.fromEntries(committed!) };
+          `Counted ${adj.value} in the warehouse; ${held} are sold and waiting to ship or set ` +
+            `aside, so ${after} can be sold`;
+        details = { counted: adj.value, heldByStore: Object.fromEntries(outside!) };
       } else {
         after = adj.kind === 'set' ? adj.value! : next + adj.value!;
         message =
@@ -417,6 +499,7 @@ export class SyncEngine {
           open: true,
           kind: 'possible_double_count',
           dedupeKey: `possible_double_count:${ctx.poolLevelId}`,
+          renotify: true,
           itemId: ctx.itemId,
           storeId: d.storeId,
           message:
@@ -424,6 +507,16 @@ export class SyncEngine {
             `If this was the same delivery entered in each store, the shared stock now counts it twice: ` +
             `remove ${d.delta} units from the product page. Tip: enter deliveries in one store (or here) only.`,
           details: { delta: d.delta, storeIds: d.storeIds },
+        });
+      }
+      if (cancelledCount) {
+        await setAlert(client, {
+          open: true,
+          kind: 'stock_count_cancelled',
+          dedupeKey: `stock_count_cancelled:${ctx.poolLevelId}`,
+          renotify: true,
+          itemId: ctx.itemId,
+          message: `A stock count of ${ctx.sku} could not be applied because a store was unreachable. Enter it again.`,
         });
       }
       if (applied.length) {
@@ -548,24 +641,115 @@ export class SyncEngine {
     return { status: 'done' };
   }
 
+  /**
+   * Works out the starting quantity of an item, or why it must wait. Every store whose stock should
+   * be part of the starting number must be readable right now: the stores the merchant saw in the
+   * onboarding preview, or (for items that start automatically) every store that sells the item and
+   * isn't paused. A store whose level we just stocked counts as 0, as the preview showed.
+   */
+  private initialize(
+    ctx: LevelContext,
+    init: Adjustment,
+    participants: Member[],
+    live: Map<number, number>,
+    activated: Set<number>,
+  ):
+    | { kind: 'ok'; quantity: number; counted: Set<number> }
+    | { kind: 'wait'; reason: string }
+    | { kind: 'failed'; reason: string } {
+    const sellers = new Map(ctx.sellers.map((s) => [s.storeId, s]));
+    const required = init.storeIds
+      ? init.storeIds.filter((id) => sellers.has(id))
+      : ctx.sellers
+          .filter((s) => s.status === 'active' || s.status === 'error')
+          .map((s) => s.storeId);
+    if (init.strategy === 'store') {
+      if (!init.sourceStoreId || !sellers.has(init.sourceStoreId)) {
+        return { kind: 'failed', reason: 'The chosen source store does not sell this item' };
+      }
+      if (!required.includes(init.sourceStoreId)) required.push(init.sourceStoreId);
+    }
+    const missing = required.filter((id) => !participants.some((m) => m.storeId === id));
+    if (missing.length) {
+      const names = missing.map((id) => sellers.get(id)!.storeName).join(', ');
+      return { kind: 'wait', reason: `waiting for ${names} before starting this item` };
+    }
+    const counted = new Set(required);
+    const valueOf = (storeId: number) => (activated.has(storeId) ? 0 : live.get(storeId)!);
+    const values = [...counted].map(valueOf);
+    let quantity: number | null;
+    switch (init.strategy) {
+      case 'store':
+        quantity = valueOf(init.sourceStoreId!);
+        break;
+      case 'min':
+        quantity = values.length ? Math.min(...values) : null;
+        break;
+      case 'max':
+        quantity = values.length ? Math.max(...values) : null;
+        break;
+      case 'sum':
+        quantity = values.reduce((a, b) => a + b, 0);
+        break;
+      case 'value':
+        quantity = init.value;
+        break;
+      default:
+        quantity = null;
+    }
+    if (quantity === null)
+      return { kind: 'failed', reason: 'No store could provide a starting number' };
+    return { kind: 'ok', quantity, counted };
+  }
+
+  /**
+   * Units held outside "available" in every store that sells the item from this warehouse
+   * (committed to open orders, or set aside as damaged/reserved/...), or null when a stock count
+   * can't be applied yet because some store can't be read. Paused stores are read too: their
+   * open orders are still on the shelf.
+   */
+  private async offShelfEverywhere(
+    ctx: LevelContext,
+    participants: Member[],
+    known: Map<number, number>,
+    problems: Problem[],
+  ): Promise<Map<number, number> | null> {
+    const held = new Map<number, number>();
+    for (const seller of ctx.sellers) {
+      if (participants.some((m) => m.storeId === seller.storeId)) {
+        const value = known.get(seller.storeId);
+        if (value === undefined) return null;
+        held.set(seller.storeId, value);
+        continue;
+      }
+      if (seller.status !== 'paused' || seller.catalogPending) {
+        problems.push({
+          storeId: seller.storeId,
+          message: `stock count waits until ${seller.storeName} can be read`,
+          storeLevel: false,
+        });
+        return null;
+      }
+      try {
+        const shop = await this.shopify.forStore(seller.storeId);
+        const level = (await shop.readLevels(seller.locationId, [seller.inventoryItemId])).get(
+          seller.inventoryItemId,
+        );
+        held.set(seller.storeId, level ? level.committed + level.unavailable : 0);
+      } catch (err) {
+        problems.push({ storeId: seller.storeId, ...describeError(err), storeLevel: false });
+        return null;
+      }
+    }
+    return held;
+  }
+
   /** Replays a write with an unknown outcome to learn whether it landed. */
   private async resolvePending(p: PendingWrite): Promise<Resolution> {
     try {
       const shop = await this.shopify.forStore(p.storeId);
       if (this.now() - p.createdAt.getTime() > IDEMPOTENCY_WINDOW_MS) {
-        // Too old to replay: Shopify has forgotten the key. Judge by what the store shows; if it
-        // matches neither value, assume whichever outcome leaves less stock (never oversell).
-        const live = (await shop.readAvailable(p.locationId, [p.inventoryItemId])).get(
-          p.inventoryItemId,
-        );
-        const landed =
-          live === p.target ? true : live === p.changeFrom ? false : p.target > p.changeFrom;
-        return {
-          kind: landed ? 'applied' : 'not_applied',
-          note:
-            `Write ${p.changeFrom} → ${p.target} was unresolved for over 24 hours; assumed ` +
-            `${landed ? 'applied' : 'not applied'} (store shows ${live ?? 'nothing'}). Check this item's count.`,
-        };
+        return this.settleByLooking(shop, p, 'was unresolved for over 24 hours');
       }
       const result = await shop.setAvailable({
         inventoryItemId: p.inventoryItemId,
@@ -578,6 +762,9 @@ export class SyncEngine {
         case 'applied':
           return { kind: 'applied' };
         case 'in_progress':
+          if (p.attempts >= MAX_IN_PROGRESS_REPLAYS) {
+            return this.settleByLooking(shop, p, 'stayed "in progress" at Shopify');
+          }
           return {
             kind: 'unknown',
             message: 'previous write still in progress at Shopify',
@@ -597,26 +784,57 @@ export class SyncEngine {
     }
   }
 
-  private async readLive(
-    m: Member,
-  ): Promise<
-    | { kind: 'ok'; value: number; activated: boolean }
-    | { kind: 'not_stocked' }
-    | { kind: 'error'; message: string; storeLevel: boolean }
-  > {
+  /**
+   * Settles a write that can't be replayed by looking at the store. If it shows neither the old
+   * nor the new value, assume whichever outcome leaves less stock (never oversell).
+   */
+  private async settleByLooking(
+    shop: ShopifyAdmin,
+    p: PendingWrite,
+    why: string,
+  ): Promise<Resolution> {
+    const live = (await shop.readAvailable(p.locationId, [p.inventoryItemId])).get(
+      p.inventoryItemId,
+    );
+    const landed =
+      live === p.target ? true : live === p.changeFrom ? false : p.target > p.changeFrom;
+    return {
+      kind: landed ? 'applied' : 'not_applied',
+      note:
+        `Write ${p.changeFrom} → ${p.target} ${why}; assumed ${landed ? 'applied' : 'not applied'} ` +
+        `(store shows ${live ?? 'nothing'}). Check this item's count.`,
+    };
+  }
+
+  /**
+   * Reads a member's live value (and, for stock counts, its off-shelf units in the same request).
+   * An item not stocked at the location is stocked there first: we only get here when we are
+   * about to write the shared quantity to it.
+   */
+  private async readLive(m: Member, withLevels: boolean): Promise<LiveRead> {
     try {
       const shop = await this.shopify.forStore(m.storeId);
-      const value = (await shop.readAvailable(m.locationId, [m.inventoryItemId])).get(
-        m.inventoryItemId,
-      );
-      if (value !== null && value !== undefined) return { kind: 'ok', value, activated: false };
+      const read = async (): Promise<{ value: number; offShelf?: number } | null> => {
+        if (withLevels) {
+          const level = (await shop.readLevels(m.locationId, [m.inventoryItemId])).get(
+            m.inventoryItemId,
+          );
+          return level
+            ? { value: level.available, offShelf: level.committed + level.unavailable }
+            : null;
+        }
+        const value = (await shop.readAvailable(m.locationId, [m.inventoryItemId])).get(
+          m.inventoryItemId,
+        );
+        return value === null || value === undefined ? null : { value };
+      };
+      const first = await read();
+      if (first) return { kind: 'ok', activated: false, ...first };
       if (!this.autoActivate) return { kind: 'not_stocked' };
       await shop.activateInventory(m.inventoryItemId, m.locationId);
-      const after = (await shop.readAvailable(m.locationId, [m.inventoryItemId])).get(
-        m.inventoryItemId,
-      );
-      if (after === null || after === undefined) return { kind: 'not_stocked' };
-      return { kind: 'ok', value: after, activated: true };
+      const after = await read();
+      if (!after) return { kind: 'not_stocked' };
+      return { kind: 'ok', activated: true, ...after };
     } catch (err) {
       const e = describeError(err);
       return { kind: 'error', message: e.message, storeLevel: e.storeLevel };
@@ -631,6 +849,16 @@ export class SyncEngine {
   private async breakerTripped(ctx: LevelContext): Promise<boolean> {
     const settings = await getSettings(this.db);
     if (settings.massZeroLimit <= 0) return false;
+    // Held before the merchant resumed sync: they reviewed it and said the change was real.
+    if (settings.breakerResetAt) {
+      const acknowledged = await this.db.query(
+        `SELECT 1 FROM circuit_breaker_hits
+          WHERE pool_level_id = $1 AND created_at <= $2::timestamptz
+            AND created_at > $2::timestamptz - interval '1 hour'`,
+        [ctx.poolLevelId, settings.breakerResetAt],
+      );
+      if (acknowledged.rowCount) return false;
+    }
     await this.db.query('INSERT INTO circuit_breaker_hits (pool_level_id) VALUES ($1)', [
       ctx.poolLevelId,
     ]);
@@ -653,32 +881,6 @@ export class SyncEngine {
     });
     this.logger.error({ sku: ctx.sku }, 'circuit breaker tripped; sync paused');
     return true;
-  }
-
-  /**
-   * Units committed to open orders in every member store, or null (with a problem recorded) if
-   * any store can't be read: a stock count is only right with all of them.
-   */
-  private async readCommittedAll(
-    participants: Member[],
-    memberCount: number,
-    problems: Problem[],
-  ): Promise<Map<number, number> | null> {
-    if (participants.length !== memberCount) return null;
-    try {
-      const values = await Promise.all(
-        participants.map(async (m) => {
-          const shop = await this.shopify.forStore(m.storeId);
-          const map = await shop.readCommitted(m.locationId, [m.inventoryItemId]);
-          return [m.storeId, map.get(m.inventoryItemId) ?? 0] as const;
-        }),
-      );
-      return new Map(values);
-    } catch (err) {
-      const e = describeError(err);
-      problems.push({ storeId: participants[0]!.storeId, message: e.message, storeLevel: false });
-      return null;
-    }
   }
 
   /**
@@ -758,8 +960,10 @@ export class SyncEngine {
     );
     const row = level.rows[0];
     if (!row) return null;
+    // Fingerprint first: a membership change after this point is caught by the first save.
+    const membership = await membershipOf(this.db, row.item_id, row.warehouse_id, false);
 
-    const [members, pending, adjustments] = await Promise.all([
+    const [members, sellers, pending, adjustments] = await Promise.all([
       this.db.query<{
         store_id: number;
         store_name: string;
@@ -768,18 +972,33 @@ export class SyncEngine {
         shopify_location_id: string;
         baseline: number | null;
       }>(
+        // A baseline counts only for the same inventory level, written after the store last
+        // started syncing the item (see the membership triggers in the schema).
         `SELECT s.id AS store_id, s.name AS store_name, s.safety_buffer, v.inventory_item_id,
                 sl.shopify_location_id,
                 CASE WHEN lvl.inventory_item_id = v.inventory_item_id
-                      AND lvl.location_id = sl.shopify_location_id THEN lvl.baseline END AS baseline
-           FROM stores s
-           JOIN variants v ON v.store_id = s.id AND v.item_id = $2 AND v.deleted_at IS NULL
-                          AND v.tracked AND NOT v.is_bundle
-           JOIN store_locations sl ON sl.store_id = s.id AND sl.warehouse_id = $3 AND sl.is_active
-           LEFT JOIN store_levels lvl ON lvl.pool_level_id = $1 AND lvl.store_id = s.id
-          WHERE s.status = 'active'
+                      AND lvl.location_id = sl.shopify_location_id
+                      AND lvl.updated_at > GREATEST(v.membership_changed_at, sl.membership_changed_at)
+                     THEN lvl.baseline END AS baseline
+           ${SELLERS_FROM}
+           LEFT JOIN store_levels lvl ON lvl.pool_level_id = $3 AND lvl.store_id = s.id
+          WHERE ${MEMBERS_WHERE}
           ORDER BY s.id`,
-        [poolLevelId, row.item_id, row.warehouse_id],
+        [row.item_id, row.warehouse_id, poolLevelId],
+      ),
+      this.db.query<{
+        store_id: number;
+        store_name: string;
+        status: string;
+        catalog_pending: boolean;
+        inventory_item_id: string;
+        shopify_location_id: string;
+      }>(
+        `SELECT s.id AS store_id, s.name AS store_name, s.status, s.catalog_pending,
+                v.inventory_item_id, sl.shopify_location_id
+           ${SELLERS_FROM}
+          ORDER BY s.id`,
+        [row.item_id, row.warehouse_id],
       ),
       this.db.query<{
         store_id: number;
@@ -802,18 +1021,21 @@ export class SyncEngine {
         kind: Adjustment['kind'];
         strategy: Adjustment['strategy'];
         source_store_id: number | null;
+        store_ids: number[] | null;
         value: number | null;
         note: string | null;
+        created_at: Date;
       }>(
-        `SELECT id, kind, strategy, source_store_id, value, note FROM pool_adjustments
-          WHERE pool_level_id = $1 AND applied_at IS NULL ORDER BY id`,
+        `SELECT id, kind, strategy, source_store_id, store_ids, value, note, created_at
+           FROM pool_adjustments WHERE pool_level_id = $1 AND applied_at IS NULL ORDER BY id`,
         [poolLevelId],
       ),
     ]);
 
-    return {
+    const ctx: LevelContext = {
       poolLevelId: row.id,
       itemId: row.item_id,
+      warehouseId: row.warehouse_id,
       sku: row.sku,
       quantity: row.quantity,
       syncEnabled: row.sync_enabled,
@@ -825,6 +1047,15 @@ export class SyncEngine {
         inventoryItemId: r.inventory_item_id,
         locationId: r.shopify_location_id,
         baseline: r.baseline,
+      })),
+      membership,
+      sellers: sellers.rows.map((r) => ({
+        storeId: r.store_id,
+        storeName: r.store_name,
+        status: r.status,
+        catalogPending: r.catalog_pending,
+        inventoryItemId: r.inventory_item_id,
+        locationId: r.shopify_location_id,
       })),
       pending: pending.rows.map((r) => ({
         storeId: r.store_id,
@@ -841,41 +1072,43 @@ export class SyncEngine {
         kind: a.kind,
         strategy: a.strategy,
         sourceStoreId: a.source_store_id,
+        storeIds: a.store_ids,
         value: a.value,
         note: a.note,
+        createdAt: a.created_at,
       })),
     };
+    return ctx;
   }
 }
 
-function initialQuantity(
-  init: Adjustment,
-  participants: Member[],
-  live: Map<number, number>,
-): number | null {
-  const values = participants.map((m) => live.get(m.storeId)!);
-  switch (init.strategy) {
-    case 'store': {
-      const source = participants.find((m) => m.storeId === init.sourceStoreId);
-      return source ? live.get(source.storeId)! : null;
-    }
-    case 'min':
-      return Math.min(...values);
-    case 'max':
-      return Math.max(...values);
-    case 'sum':
-      return values.reduce((a, b) => a + b, 0);
-    case 'value':
-      return init.value;
-    default:
-      return null;
-  }
+/**
+ * Fingerprint of the current members of a pool level: which variant and location rows, and when
+ * they last started or stopped syncing. With `lock`, the rows are share-locked until the end of
+ * the transaction, so membership can't change while we save baselines computed for it.
+ */
+async function membershipOf(
+  db: Queryable,
+  itemId: number,
+  warehouseId: number,
+  lock: boolean,
+): Promise<string> {
+  const { rows } = await db.query<{ fingerprint: string }>(
+    `SELECT s.id || ':' || v.id || ':' || v.inventory_item_id || ':' || sl.id || ':' ||
+            sl.shopify_location_id || ':' || v.membership_changed_at || ':' ||
+            sl.membership_changed_at AS fingerprint
+       ${SELLERS_FROM}
+      WHERE ${MEMBERS_WHERE}
+      ORDER BY s.id ${lock ? 'FOR SHARE OF v, sl' : ''}`,
+    [itemId, warehouseId],
+  );
+  return rows.map((r) => r.fingerprint).join('|');
 }
 
 function describeStrategy(init: Adjustment, ctx: LevelContext): string {
   switch (init.strategy) {
     case 'store':
-      return `copied from ${ctx.members.find((m) => m.storeId === init.sourceStoreId)?.storeName ?? 'source store'}`;
+      return `copied from ${ctx.sellers.find((m) => m.storeId === init.sourceStoreId)?.storeName ?? 'source store'}`;
     case 'min':
       return 'lowest store quantity';
     case 'max':
@@ -893,12 +1126,13 @@ async function upsertBaseline(
   m: Member,
   baseline: number | null,
 ) {
+  // clock_timestamp(), not now(): compared with membership_changed_at set by other transactions.
   await client.query(
     `INSERT INTO store_levels (pool_level_id, store_id, inventory_item_id, location_id, baseline, updated_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+     VALUES ($1, $2, $3, $4, $5, clock_timestamp())
      ON CONFLICT (pool_level_id, store_id) DO UPDATE
        SET inventory_item_id = EXCLUDED.inventory_item_id, location_id = EXCLUDED.location_id,
-           baseline = EXCLUDED.baseline, updated_at = now()`,
+           baseline = EXCLUDED.baseline, updated_at = clock_timestamp()`,
     [poolLevelId, m.storeId, m.inventoryItemId, m.locationId, baseline],
   );
 }

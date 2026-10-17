@@ -8,6 +8,7 @@ import {
   LeaseLostError,
   claimPoolLevels,
   completeClaim,
+  extendLease,
   retryClaim,
   retryDelayMs,
 } from './queue.js';
@@ -28,6 +29,13 @@ export async function processClaim(
   claim: ClaimedLevel,
   logger: Logger,
 ): Promise<ReconcileOutcome | 'lease_lost' | 'error'> {
+  // A reconcile waiting out Shopify rate limits can outlast a lease; keep it ours meanwhile.
+  const heartbeat = setInterval(() => {
+    extendLease(db, claim, LEASE_MS).catch((err: unknown) =>
+      logger.warn({ err, poolLevelId: claim.poolLevelId }, 'could not extend lease'),
+    );
+  }, LEASE_MS / 3);
+  heartbeat.unref();
   try {
     const outcome = await engine.reconcile(claim);
     if (outcome.status === 'retry') {
@@ -49,6 +57,8 @@ export async function processClaim(
       (e: unknown) => logger.error({ err: e }, 'failed to release claim'),
     );
     return 'error';
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 

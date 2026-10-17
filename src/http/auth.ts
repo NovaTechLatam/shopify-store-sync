@@ -52,3 +52,18 @@ function credentialsMatch(header: string | undefined, username: string, password
   const passOk = safeEqual(decoded.slice(sep + 1), password);
   return userOk && passOk;
 }
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Browsers send the saved Basic-auth login with any request to our origin, including a form that
+ * another website submits (CSRF). Changes therefore require a custom header, which a cross-site
+ * form can't set and which cross-origin scripts can't send without a preflight we never allow.
+ */
+export async function requireSameSite(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (SAFE_METHODS.has(request.method)) return;
+  const fetchSite = request.headers['sec-fetch-site'];
+  if (request.headers['x-requested-with'] !== 'store-sync' || fetchSite === 'cross-site') {
+    await reply.code(403).send({ error: 'Changes must be made from the dashboard.' });
+  }
+}

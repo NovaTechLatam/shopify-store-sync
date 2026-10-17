@@ -94,7 +94,7 @@ export async function checkStoreHealth(
 
   const reactivated = await withTransaction(db, async (client) => {
     const { rowCount } = await client.query(
-      `UPDATE stores SET status = 'active', last_error = NULL, updated_at = now()
+      `UPDATE stores SET status = 'active', last_error = NULL, catalog_pending = true, updated_at = now()
         WHERE id = $1 AND status = 'error'`,
       [storeId],
     );
@@ -105,14 +105,11 @@ export async function checkStoreHealth(
       dedupeKey: `store_error:${storeId}`,
       message: '',
     });
-    // Pending writes are included even if the store no longer sells that item: they must be settled.
+    // Writes left unsettled while the store was down are settled right away. Everything else waits
+    // for the catalog sync below: links may have changed meanwhile (catalog_pending keeps the store
+    // out of syncing until then, and the sync enqueues its items when it finishes).
     const { rows } = await client.query<{ id: number }>(
-      `SELECT pl.id FROM variants v
-         JOIN store_locations sl ON sl.store_id = v.store_id AND sl.warehouse_id IS NOT NULL
-         JOIN pool_levels pl ON pl.item_id = v.item_id AND pl.warehouse_id = sl.warehouse_id
-        WHERE v.store_id = $1 AND v.item_id IS NOT NULL AND v.deleted_at IS NULL
-       UNION
-       SELECT pool_level_id FROM pending_writes WHERE store_id = $1`,
+      'SELECT DISTINCT pool_level_id AS id FROM pending_writes WHERE store_id = $1',
       [storeId],
     );
     await enqueuePoolLevels(

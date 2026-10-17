@@ -31,6 +31,12 @@ export interface PreviewRow {
 
 export interface PreviewResult {
   rows: PreviewRow[];
+  /**
+   * Stores that sell some of these items but can't take part right now (paused, can't connect,
+   * still loading their products). Their numbers aren't counted; when they come back they take
+   * the shared numbers.
+   */
+  excludedStores: { storeId: number; storeName: string; reason: string }[];
   summary: {
     items: number;
     itemsChanging: number;
@@ -112,10 +118,25 @@ export async function previewOnboarding(
        FROM pool_levels pl
        JOIN items i ON i.id = pl.item_id
        JOIN variants v ON v.item_id = pl.item_id AND v.deleted_at IS NULL AND v.tracked AND NOT v.is_bundle
-       JOIN stores s ON s.id = v.store_id AND s.status = 'active'
+       JOIN stores s ON s.id = v.store_id AND s.status = 'active' AND NOT s.catalog_pending
        JOIN store_locations sl ON sl.store_id = s.id AND sl.warehouse_id = pl.warehouse_id AND sl.is_active
       WHERE ${IN_SCOPE}
       ORDER BY i.sku, pl.warehouse_id, s.id`,
+    [opts.poolLevelIds ?? null],
+  );
+  const { rows: excluded } = await deps.db.query<{ id: number; name: string; reason: string }>(
+    `SELECT DISTINCT s.id, s.name,
+            CASE WHEN s.status = 'paused' THEN 'paused'
+                 WHEN s.status = 'error' THEN 'can’t connect'
+                 WHEN s.status = 'disconnected' THEN 'the app was uninstalled'
+                 ELSE 'still loading its products' END AS reason
+       FROM pool_levels pl
+       JOIN items i ON i.id = pl.item_id
+       JOIN variants v ON v.item_id = pl.item_id AND v.deleted_at IS NULL AND v.tracked AND NOT v.is_bundle
+       JOIN stores s ON s.id = v.store_id AND (s.status <> 'active' OR s.catalog_pending)
+       JOIN store_locations sl ON sl.store_id = s.id AND sl.warehouse_id = pl.warehouse_id AND sl.is_active
+      WHERE ${IN_SCOPE}
+      ORDER BY s.id`,
     [opts.poolLevelIds ?? null],
   );
   const live = await readLive(deps.shopify, members);
@@ -153,7 +174,11 @@ export async function previewOnboarding(
       row.changes.push({ storeId: s.storeId, from: s.live, to });
     }
   }
-  return { rows, summary: summarize(rows) };
+  return {
+    rows,
+    excludedStores: excluded.map((e) => ({ storeId: e.id, storeName: e.name, reason: e.reason })),
+    summary: summarize(rows),
+  };
 }
 
 /**
@@ -167,17 +192,21 @@ export async function applyOnboarding(
 ): Promise<{ queued: number }> {
   const opts = await validate(db, options);
   return withTransaction(db, async (client) => {
+    // Each initialisation records the stores the preview showed: the engine waits until every one
+    // of them can be read, so none is left out of the starting number by a passing outage.
     const { rows } = await client.query<{ pool_level_id: number }>(
-      `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, source_store_id)
-       SELECT pl.id, 'initialize', $2, $3
+      `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, source_store_id, store_ids)
+       SELECT pl.id, 'initialize', $2, $3, m.store_ids
          FROM pool_levels pl JOIN items i ON i.id = pl.item_id
+         CROSS JOIN LATERAL (
+           SELECT array_agg(s.id ORDER BY s.id) AS store_ids FROM variants v
+             JOIN stores s ON s.id = v.store_id AND s.status = 'active' AND NOT s.catalog_pending
+             JOIN store_locations sl ON sl.store_id = s.id
+                                    AND sl.warehouse_id = pl.warehouse_id AND sl.is_active
+            WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL AND v.tracked AND NOT v.is_bundle) m
         WHERE ${IN_SCOPE}
-          AND EXISTS (SELECT 1 FROM variants v
-                        JOIN stores s ON s.id = v.store_id AND s.status = 'active'
-                        JOIN store_locations sl ON sl.store_id = s.id
-                                               AND sl.warehouse_id = pl.warehouse_id AND sl.is_active
-                       WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL AND v.tracked
-                         AND NOT v.is_bundle AND ($3::bigint IS NULL OR s.id = $3::bigint))
+          AND m.store_ids IS NOT NULL
+          AND ($3::bigint IS NULL OR $3::bigint = ANY(m.store_ids))
        RETURNING pool_level_id`,
       [opts.poolLevelIds ?? null, opts.strategy, opts.sourceStoreId ?? null],
     );

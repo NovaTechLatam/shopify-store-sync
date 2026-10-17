@@ -145,6 +145,8 @@ export class ShopifyGraphqlClient {
   private readonly timeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private bucket?: ThrottleStatus & { at: number };
+  /** Points of requests sent but not answered yet. */
+  private reserved = 0;
   private versionWarned = false;
 
   constructor(private readonly opts: ShopifyGraphqlClientOptions) {
@@ -163,139 +165,169 @@ export class ShopifyGraphqlClient {
   ): Promise<T> {
     let authRetried = false;
     for (let attempt = 0; ; attempt++) {
-      await this.waitForBudget(estimatedCost);
-      const token = await this.opts.tokens.getToken(false);
-      let res: Response;
+      const release = await this.reserveBudget(estimatedCost);
+      // Backing off gives the reserved points back first, so a retry wait doesn't hold them.
+      const pause = (ms: number) => {
+        release();
+        return this.sleep(ms);
+      };
       try {
-        res = await this.fetchFn(this.endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            'X-Shopify-Access-Token': token,
-          },
-          body: JSON.stringify({ query, variables }),
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
-      } catch (err) {
-        if (attempt < this.maxRetries) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new ShopifyApiError(
-          `Network error calling Shopify: ${(err as Error).message}`,
-          'transient',
-        );
-      }
-
-      if (res.status === 401 && !authRetried) {
-        // Expired/rotated token: refresh once (no-op for static tokens) and retry.
-        authRetried = true;
-        await this.opts.tokens.getToken(true);
-        continue;
-      }
-      if (res.status === 401 || res.status === 403) {
-        throw new ShopifyApiError(
-          `Shopify rejected the credentials (HTTP ${res.status}). Check the access token and API scopes.`,
-          'auth',
-          res.status,
-        );
-      }
-      if (res.status === 402 || res.status === 404 || res.status === 423) {
-        throw new ShopifyApiError(
-          `Shop ${this.shopDomain} is unavailable (HTTP ${res.status}).`,
-          'store_unavailable',
-          res.status,
-        );
-      }
-      if (res.status === 429 || res.status >= 500) {
-        if (attempt < this.maxRetries) {
-          const retryAfter = Number(res.headers.get('retry-after'));
-          await this.sleep(
-            Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt),
-          );
-          continue;
-        }
-        throw new ShopifyApiError(`Shopify returned HTTP ${res.status}`, 'transient', res.status);
-      }
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new ShopifyApiError(
-          `Shopify returned HTTP ${res.status}: ${body.slice(0, 300)}`,
-          'invalid',
-          res.status,
-        );
-      }
-
-      // Shopify silently serves a newer version once ours is retired; mutation semantics may differ.
-      const served = res.headers.get('x-shopify-api-version');
-      if (served && served !== this.opts.apiVersion && !this.versionWarned) {
-        this.versionWarned = true;
-        this.opts.logger?.warn(
-          { requested: this.opts.apiVersion, served },
-          'Shopify served a different API version; update SHOPIFY_API_VERSION',
-        );
-      }
-
-      let json: GraphqlResponse<T>;
-      try {
-        json = (await res.json()) as GraphqlResponse<T>;
-      } catch (err) {
-        if (attempt < this.maxRetries) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new ShopifyApiError(
-          `Invalid JSON from Shopify: ${(err as Error).message}`,
-          'transient',
-        );
-      }
-      const throttle = json.extensions?.cost?.throttleStatus;
-      if (throttle) this.bucket = { ...throttle, at: Date.now() };
-
-      if (json.errors?.length) {
-        const throttled = json.errors.some((e) => e.extensions?.code === 'THROTTLED');
-        if (throttled) {
-          if (attempt < this.maxRetries + 5) {
-            const needed = json.extensions?.cost?.requestedQueryCost ?? estimatedCost;
-            await this.sleep(this.msUntilAvailable(needed) || backoffMs(attempt));
+        const token = await this.opts.tokens.getToken(false);
+        let res: Response;
+        try {
+          res = await this.fetchFn(this.endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'X-Shopify-Access-Token': token,
+            },
+            body: JSON.stringify({ query, variables }),
+            signal: AbortSignal.timeout(this.timeoutMs),
+          });
+        } catch (err) {
+          if (attempt < this.maxRetries) {
+            await pause(backoffMs(attempt));
             continue;
           }
-          throw new ShopifyApiError('Shopify API rate limit exceeded', 'transient', 200);
+          throw new ShopifyApiError(
+            `Network error calling Shopify: ${(err as Error).message}`,
+            'transient',
+          );
         }
-        const internal = json.errors.some((e) => e.extensions?.code === 'INTERNAL_SERVER_ERROR');
-        if (internal && attempt < this.maxRetries) {
-          await this.sleep(backoffMs(attempt));
+
+        if (res.status === 401 && !authRetried) {
+          // Expired/rotated token: refresh once (no-op for static tokens) and retry.
+          authRetried = true;
+          release();
+          await this.opts.tokens.getToken(true);
           continue;
         }
-        const access = json.errors.some((e) => e.extensions?.code === 'ACCESS_DENIED');
-        const message = json.errors.map((e) => e.message).join('; ');
-        throw new ShopifyApiError(
-          `Shopify GraphQL error: ${message}`,
-          access ? 'auth' : internal ? 'transient' : 'invalid',
-        );
+        if (res.status === 401 || res.status === 403) {
+          throw new ShopifyApiError(
+            `Shopify rejected the credentials (HTTP ${res.status}). Check the access token and API scopes.`,
+            'auth',
+            res.status,
+          );
+        }
+        if (res.status === 402 || res.status === 404 || res.status === 423) {
+          throw new ShopifyApiError(
+            `Shop ${this.shopDomain} is unavailable (HTTP ${res.status}).`,
+            'store_unavailable',
+            res.status,
+          );
+        }
+        if (res.status === 429 || res.status >= 500) {
+          if (attempt < this.maxRetries) {
+            const retryAfter = Number(res.headers.get('retry-after'));
+            await pause(
+              Number.isFinite(retryAfter) && retryAfter > 0
+                ? retryAfter * 1000
+                : backoffMs(attempt),
+            );
+            continue;
+          }
+          throw new ShopifyApiError(`Shopify returned HTTP ${res.status}`, 'transient', res.status);
+        }
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          throw new ShopifyApiError(
+            `Shopify returned HTTP ${res.status}: ${body.slice(0, 300)}`,
+            'invalid',
+            res.status,
+          );
+        }
+
+        // Shopify silently serves a newer version once ours is retired; mutation semantics may differ.
+        const served = res.headers.get('x-shopify-api-version');
+        if (served && served !== this.opts.apiVersion && !this.versionWarned) {
+          this.versionWarned = true;
+          this.opts.logger?.warn(
+            { requested: this.opts.apiVersion, served },
+            'Shopify served a different API version; update SHOPIFY_API_VERSION',
+          );
+        }
+
+        let json: GraphqlResponse<T>;
+        try {
+          json = (await res.json()) as GraphqlResponse<T>;
+        } catch (err) {
+          if (attempt < this.maxRetries) {
+            await pause(backoffMs(attempt));
+            continue;
+          }
+          throw new ShopifyApiError(
+            `Invalid JSON from Shopify: ${(err as Error).message}`,
+            'transient',
+          );
+        }
+        const throttle = json.extensions?.cost?.throttleStatus;
+        if (throttle) this.bucket = { ...throttle, at: Date.now() };
+        release();
+
+        if (json.errors?.length) {
+          const throttled = json.errors.some((e) => e.extensions?.code === 'THROTTLED');
+          if (throttled) {
+            if (attempt < this.maxRetries + 5) {
+              const needed = json.extensions?.cost?.requestedQueryCost ?? estimatedCost;
+              await this.sleep(this.msUntilAvailable(needed) || backoffMs(attempt));
+              continue;
+            }
+            throw new ShopifyApiError('Shopify API rate limit exceeded', 'transient', 200);
+          }
+          const internal = json.errors.some((e) => e.extensions?.code === 'INTERNAL_SERVER_ERROR');
+          if (internal && attempt < this.maxRetries) {
+            await this.sleep(backoffMs(attempt));
+            continue;
+          }
+          const access = json.errors.some((e) => e.extensions?.code === 'ACCESS_DENIED');
+          const message = json.errors.map((e) => e.message).join('; ');
+          throw new ShopifyApiError(
+            `Shopify GraphQL error: ${message}`,
+            access ? 'auth' : internal ? 'transient' : 'invalid',
+          );
+        }
+        if (json.data === undefined)
+          throw new ShopifyApiError('Shopify response had no data', 'transient');
+        return json.data;
+      } finally {
+        release();
       }
-      if (json.data === undefined)
-        throw new ShopifyApiError('Shopify response had no data', 'transient');
-      return json.data;
     }
   }
 
-  /** Milliseconds until the leaky bucket (as last reported) holds `cost` points. */
+  /** Milliseconds until the bucket (as last reported, minus points reserved) holds `cost`. */
   private msUntilAvailable(cost: number): number {
     if (!this.bucket) return 0;
     const elapsed = (Date.now() - this.bucket.at) / 1000;
-    const available = Math.min(
-      this.bucket.maximumAvailable,
-      this.bucket.currentlyAvailable + elapsed * this.bucket.restoreRate,
-    );
+    const available =
+      Math.min(
+        this.bucket.maximumAvailable,
+        this.bucket.currentlyAvailable + elapsed * this.bucket.restoreRate,
+      ) - this.reserved;
     if (available >= cost) return 0;
     return Math.ceil(((cost - available) / Math.max(this.bucket.restoreRate, 1)) * 1000);
   }
 
-  private async waitForBudget(cost: number): Promise<void> {
-    const ms = this.msUntilAvailable(Math.min(cost, this.bucket?.maximumAvailable ?? cost));
-    if (ms > 0) await this.sleep(ms);
+  /**
+   * Waits until the bucket can pay for a request, then reserves its estimated cost until the
+   * response arrives, so concurrent callers sharing this client (workers, tasks) don't all spend
+   * the same points and get throttled together. Returns the release function.
+   */
+  private async reserveBudget(cost: number): Promise<() => void> {
+    const need = Math.min(cost, this.bucket?.maximumAvailable ?? cost);
+    for (let i = 0, ms = this.msUntilAvailable(need); ms > 0 && i < 20; i++) {
+      await this.sleep(ms);
+      if (this.reserved === 0) break; // nothing else in flight: the wait above was enough
+      ms = this.msUntilAvailable(need);
+    }
+    this.reserved += need;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reserved -= need;
+    };
   }
 }
 

@@ -15,6 +15,10 @@ CREATE TABLE stores (
   access_token_enc       text,                               -- auth_mode = access_token
   client_id              text,                               -- auth_mode = client_credentials
   client_secret_enc      text,                               -- client_credentials, and HMAC secret fallback
+  -- Shopify keeps signing webhooks with the old secret until it is revoked, so after a rotation
+  -- the previous one stays accepted for a while.
+  previous_client_secret_enc text,
+  client_secret_rotated_at   timestamptz,
   webhook_secret_enc     text,                               -- secret that signs this store's webhooks
   safety_buffer          integer NOT NULL DEFAULT 0 CHECK (safety_buffer >= 0),
   status                 text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'error', 'disconnected')),
@@ -24,6 +28,9 @@ CREATE TABLE stores (
   catalog_synced_at      timestamptz,
   last_drift_scan_at     timestamptz,
   last_drift_count       integer,
+  -- The store's catalog must be re-read before it takes part in syncing: a new store, or one
+  -- coming back from paused/error, may have renamed or reused variants meanwhile.
+  catalog_pending        boolean NOT NULL DEFAULT true,
   created_at             timestamptz NOT NULL DEFAULT now(),
   updated_at             timestamptz NOT NULL DEFAULT now(),
   CHECK (auth_mode <> 'access_token' OR access_token_enc IS NOT NULL),
@@ -46,6 +53,8 @@ CREATE TABLE store_locations (
   name                text NOT NULL,
   is_active           boolean NOT NULL DEFAULT true,
   warehouse_id        bigint REFERENCES warehouses(id) ON DELETE SET NULL,
+  -- Bumped (by trigger) whenever this location starts or stops holding a warehouse's stock.
+  membership_changed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (store_id, shopify_location_id)
 );
 -- A store maps at most one of its locations to a given warehouse.
@@ -80,6 +89,9 @@ CREATE TABLE variants (
   -- 'manual' links were set in the dashboard and are left alone.
   link_source        text NOT NULL DEFAULT 'auto' CHECK (link_source IN ('auto', 'manual')),
   seen_at            timestamptz NOT NULL DEFAULT now(),        -- last catalog sync that saw it
+  -- Bumped (by trigger) whenever the variant starts or stops syncing an item (link, tracking,
+  -- bundle, inventory item or deletion changes).
+  membership_changed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   deleted_at         timestamptz,
   updated_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (store_id, shopify_variant_id)
@@ -90,6 +102,32 @@ CREATE UNIQUE INDEX variants_store_inventory_item ON variants (store_id, invento
 CREATE UNIQUE INDEX variants_one_per_store_item ON variants (store_id, item_id)
   WHERE item_id IS NOT NULL AND deleted_at IS NULL;
 CREATE INDEX variants_sku ON variants (sku) WHERE deleted_at IS NULL;
+
+-- A store's baseline for an item is only meaningful while the store kept syncing it. Any change
+-- of membership bumps these timestamps; the engine ignores baselines older than them, so a store
+-- that leaves and later comes back is treated as joining (its count is replaced, not added).
+CREATE FUNCTION variants_membership_changed() RETURNS trigger AS $$
+BEGIN
+  IF NEW.item_id IS DISTINCT FROM OLD.item_id OR NEW.tracked IS DISTINCT FROM OLD.tracked
+     OR NEW.is_bundle IS DISTINCT FROM OLD.is_bundle
+     OR NEW.inventory_item_id IS DISTINCT FROM OLD.inventory_item_id
+     OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+    NEW.membership_changed_at := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER variants_membership_changed BEFORE UPDATE ON variants
+  FOR EACH ROW EXECUTE FUNCTION variants_membership_changed();
+
+CREATE FUNCTION store_locations_membership_changed() RETURNS trigger AS $$
+BEGIN
+  IF NEW.warehouse_id IS DISTINCT FROM OLD.warehouse_id OR NEW.is_active IS DISTINCT FROM OLD.is_active THEN
+    NEW.membership_changed_at := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER store_locations_membership_changed BEFORE UPDATE ON store_locations
+  FOR EACH ROW EXECUTE FUNCTION store_locations_membership_changed();
 
 CREATE TABLE pool_levels (
   id           bigserial PRIMARY KEY,
@@ -113,7 +151,8 @@ CREATE TABLE store_levels (
   -- Last "available" value we know this store had (read by us, or written by us and confirmed).
   -- NULL = never observed: the store joins the pool and is overwritten without counting a delta.
   baseline          integer,
-  updated_at        timestamptz NOT NULL DEFAULT now(),
+  -- clock_timestamp() of the write; compared with membership_changed_at (see triggers above).
+  updated_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (pool_level_id, store_id)
 );
 
@@ -161,14 +200,18 @@ CREATE TABLE pool_adjustments (
   kind            text NOT NULL CHECK (kind IN ('initialize', 'set', 'adjust', 'count')),
   strategy        text CHECK (strategy IN ('store', 'min', 'max', 'sum', 'value')),
   source_store_id bigint REFERENCES stores(id) ON DELETE SET NULL,
+  -- initialize from onboarding: the stores the merchant saw in the preview. The engine waits until
+  -- every one of them can be read, so no store's stock is left out of the starting number.
+  store_ids       bigint[],
   value           integer,
   note            text,
   created_at      timestamptz NOT NULL DEFAULT now(),
   applied_at      timestamptz,
   CHECK (kind <> 'initialize' OR strategy IS NOT NULL),
   CHECK (kind = 'initialize' OR value IS NOT NULL),
-  CHECK (strategy IS DISTINCT FROM 'value' OR value IS NOT NULL),
-  CHECK (strategy IS DISTINCT FROM 'store' OR source_store_id IS NOT NULL)
+  CHECK (strategy IS DISTINCT FROM 'value' OR value IS NOT NULL)
+  -- No CHECK that 'store' has a source: deleting that store sets it to NULL, and the engine
+  -- records the initialisation as failed.
 );
 CREATE INDEX pool_adjustments_pending ON pool_adjustments (pool_level_id) WHERE applied_at IS NULL;
 

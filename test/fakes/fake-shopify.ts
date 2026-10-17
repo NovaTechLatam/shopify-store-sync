@@ -1,5 +1,6 @@
 import { ShopifyApiError } from '../../src/shopify/client.js';
 import type {
+  LevelQuantities,
   SetAvailableInput,
   SetAvailableResult,
   ShopInfo,
@@ -30,6 +31,8 @@ export class FakeShop implements ShopifyAdmin {
   readonly variants: ShopifyVariant[] = [];
   private readonly levels = new Map<string, number>();
   private readonly committed = new Map<string, number>();
+  private readonly unavailable = new Map<string, number>();
+  private readonly inactive = new Map<string, number>();
   private readonly idempotency = new Map<
     string,
     { fingerprint: string; result: SetAvailableResult }
@@ -85,6 +88,13 @@ export class FakeShop implements ShopifyAdmin {
       if (k.startsWith(`${removed!.inventoryItemId}|`)) this.levels.delete(k);
   }
 
+  /** An inactive level (not stocked, invisible to reads) that still holds a quantity. */
+  stockInactive(inventoryItemId: string, locationId: string, available: number): void {
+    const k = key(inventoryItemId, locationId);
+    this.levels.delete(k);
+    this.inactive.set(k, available);
+  }
+
   /** Stocks the item at the location with `available` units (no change event). */
   stock(inventoryItemId: string, locationId: string, available: number): void {
     this.levels.set(key(inventoryItemId, locationId), available);
@@ -110,6 +120,13 @@ export class FakeShop implements ShopifyAdmin {
     this.externalAdjust(inventoryItemId, locationId, -qty);
     const k = key(inventoryItemId, locationId);
     this.committed.set(k, (this.committed.get(k) ?? 0) + qty);
+  }
+
+  /** Staff move units out of "available" into an unsellable state (damaged, safety stock...). */
+  markUnavailable(inventoryItemId: string, locationId: string, qty: number): void {
+    this.externalAdjust(inventoryItemId, locationId, -qty);
+    const k = key(inventoryItemId, locationId);
+    this.unavailable.set(k, (this.unavailable.get(k) ?? 0) + qty);
   }
 
   /** An order is fulfilled: committed units leave; available doesn't change. */
@@ -168,16 +185,29 @@ export class FakeShop implements ShopifyAdmin {
     return out;
   }
 
-  async readCommitted(
+  async readLevels(
     locationId: string,
     inventoryItemIds: string[],
-  ): Promise<Map<string, number | null>> {
-    this.calls.push({ op: 'readCommitted', args: { locationId, inventoryItemIds } });
-    const out = new Map<string, number | null>();
+  ): Promise<Map<string, LevelQuantities | null>> {
+    this.calls.push({ op: 'readLevels', args: { locationId, inventoryItemIds } });
+    const fault = this.takeFault('readAvailable');
+    if (fault) throw new ShopifyApiError('fake network error', 'transient');
+    const out = new Map<string, LevelQuantities | null>();
     for (const id of inventoryItemIds) {
       const k = key(id, locationId);
-      out.set(id, this.levels.has(k) ? (this.committed.get(k) ?? 0) : null);
+      const available = this.levels.get(k);
+      out.set(
+        id,
+        available === undefined
+          ? null
+          : {
+              available,
+              committed: this.committed.get(k) ?? 0,
+              unavailable: this.unavailable.get(k) ?? 0,
+            },
+      );
     }
+    this.afterRead?.(locationId, inventoryItemIds);
     return out;
   }
 
@@ -233,7 +263,9 @@ export class FakeShop implements ShopifyAdmin {
   async activateInventory(inventoryItemId: string, locationId: string): Promise<void> {
     this.calls.push({ op: 'activateInventory', args: { inventoryItemId, locationId } });
     const k = key(inventoryItemId, locationId);
-    if (!this.levels.has(k)) this.levels.set(k, 0);
+    // Since 2026-04 activating keeps the quantity an inactive level still holds.
+    if (!this.levels.has(k)) this.levels.set(k, this.inactive.get(k) ?? 0);
+    this.inactive.delete(k);
   }
 
   async listWebhookSubscriptions(): Promise<WebhookSubscription[]> {

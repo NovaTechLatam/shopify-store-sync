@@ -14,7 +14,7 @@ import type { SecretBox } from '../util/crypto.js';
 import { handleShopifyWebhook } from '../webhooks/intake.js';
 import { WEBHOOK_PATH } from '../webhooks/topics.js';
 import { registerApiRoutes } from './api/index.js';
-import { basicAuth } from './auth.js';
+import { basicAuth, requireSameSite } from './auth.js';
 import { HttpError } from './errors.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public');
@@ -29,6 +29,8 @@ export interface AppDeps {
   publicUrl: string;
   adminUsername: string;
   adminPassword: string;
+  /** Fastify `trustProxy`: which proxies' X-Forwarded-For to believe. Default: none. */
+  trustProxy?: boolean | string;
   /** Wakes the background workers after work was queued. */
   onWork?: () => void;
   fetchFn?: typeof fetch;
@@ -37,7 +39,7 @@ export interface AppDeps {
 export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: deps.logger as FastifyBaseLogger,
-    trustProxy: true,
+    trustProxy: deps.trustProxy ?? false,
     // Shopify product payloads can be large; everything else is small.
     bodyLimit: 5 * 1024 * 1024,
     logController: new LogController({ disableRequestLogging: true }),
@@ -113,6 +115,7 @@ export async function buildServer(deps: AppDeps): Promise<FastifyInstance> {
   // Everything else (dashboard + admin API) requires the admin login.
   await app.register(async (scope) => {
     scope.addHook('onRequest', basicAuth(deps.adminUsername, deps.adminPassword));
+    scope.addHook('onRequest', requireSameSite);
     await registerApiRoutes(scope, deps);
     await scope.register(fastifyStatic, { root: PUBLIC_DIR, prefix: '/', index: ['index.html'] });
   });

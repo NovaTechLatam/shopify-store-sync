@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ensureItem } from '../../catalog/catalog.js';
 import { normalizeSku } from '../../catalog/sku.js';
 import type { Queryable } from '../../db/pool.js';
+import { getSettings } from '../../settings.js';
 import { displayQuantity } from '../../sync/engine.js';
 import { enqueuePoolLevels } from '../../sync/queue.js';
 import { badRequest, conflict, notFound, parseId } from '../errors.js';
@@ -348,6 +349,22 @@ export async function registerItemRoutes(app: FastifyInstance, deps: AppDeps): P
     );
     const level = rows[0];
     if (!level) throw notFound('Item or warehouse');
+    // "Set" and "count" describe the stock right now; applied later they'd erase sales made in
+    // between. Relative changes ("received 24") stay correct whenever they are applied.
+    if (body.kind !== 'adjust') {
+      const [{ rows: item }, settings] = await Promise.all([
+        db.query<{ sync_enabled: boolean }>('SELECT sync_enabled FROM items WHERE id = $1', [
+          itemId,
+        ]),
+        getSettings(db),
+      ]);
+      if (settings.syncPaused || !item[0]?.sync_enabled) {
+        throw conflict(
+          'Syncing is paused for this product, so a stock count would be applied later with old ' +
+            'numbers. Resume syncing first, then enter the count.',
+        );
+      }
+    }
     if (level.quantity === null) {
       throw badRequest(
         'This item has not started syncing yet. Start it from the onboarding screen first.',

@@ -6,7 +6,7 @@ import {
   StaticTokenProvider,
   type TokenProvider,
 } from '../src/shopify/client.js';
-import { interpretSetResult } from '../src/shopify/graphql-admin.js';
+import { GraphqlShopifyAdmin, interpretSetResult } from '../src/shopify/graphql-admin.js';
 
 type Reply = { status?: number; body?: unknown; headers?: Record<string, string> } | Error;
 
@@ -146,6 +146,117 @@ describe('ShopifyGraphqlClient', () => {
     expect(err).toBeInstanceOf(ShopifyApiError);
     expect((err as ShopifyApiError).kind).toBe('auth');
     expect((err as ShopifyApiError).message).toContain('shop_not_permitted');
+  });
+  it('reserves points for requests in flight, so concurrent callers do not overdraw the bucket', async () => {
+    const bucket = (available: number) => ({
+      data: { ok: true },
+      extensions: {
+        cost: {
+          throttleStatus: {
+            maximumAvailable: 1000,
+            currentlyAvailable: available,
+            restoreRate: 50,
+          },
+        },
+      },
+    });
+    let answerFirst!: () => void;
+    const firstAnswered = new Promise<void>((resolve) => (answerFirst = resolve));
+    let sent = 0;
+    const fetchFn = (async () => {
+      sent++;
+      if (sent === 2) await firstAnswered; // the first of the two concurrent requests hangs
+      return new Response(JSON.stringify(bucket(sent === 1 ? 350 : 49)), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const inFlight: { first?: Promise<unknown> } = {};
+    const c = new ShopifyGraphqlClient({
+      shopDomain: 'brand.myshopify.com',
+      apiVersion: '2026-10',
+      tokens: new StaticTokenProvider('shpat_test'),
+      fetchFn,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        answerFirst();
+        await inFlight.first;
+      },
+    });
+    await c.request('query { ok }'); // learn the bucket: 350 points available
+    expect(sleeps).toEqual([]);
+
+    const first = (inFlight.first = c.request('query { ok }', {}, 301));
+    const second = c.request('query { ok }', {}, 301);
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    // The second request waited for points: 350 - 301 reserved = 49, short by 252 at 50/s.
+    expect(sleeps).toHaveLength(1);
+    expect(sleeps[0]).toBeGreaterThan(4_500);
+    expect(sent).toBe(3);
+  });
+
+  it('does not hold reserved points across a failed attempt', async () => {
+    const { c, requests } = client([
+      new Error('ECONNRESET'),
+      { status: 503 },
+      { body: { data: { ok: 1 } } },
+      { body: { data: { ok: 2 } } },
+    ]);
+    await expect(c.request('query { ok }', {}, 900)).resolves.toEqual({ ok: 1 });
+    await expect(c.request('query { ok }', {}, 900)).resolves.toEqual({ ok: 2 });
+    expect(requests).toHaveLength(4);
+  });
+});
+
+describe('GraphqlShopifyAdmin mutations', () => {
+  it('activates with a fresh idempotency key each call', async () => {
+    const ok = { body: { data: { inventoryActivate: { userErrors: [] } } } };
+    const { c, requests } = client([ok, ok]);
+    const admin = new GraphqlShopifyAdmin(c);
+    await admin.activateInventory('gid://shopify/InventoryItem/1', 'gid://shopify/Location/1');
+    await admin.activateInventory('gid://shopify/InventoryItem/1', 'gid://shopify/Location/1');
+    const keys = requests.map(
+      (r) =>
+        (JSON.parse(r.init.body as string) as { variables: { idempotencyKey: string } }).variables
+          .idempotencyKey,
+    );
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('treats a webhook that already exists (a retried create) as created', async () => {
+    const taken = {
+      body: {
+        data: {
+          webhookSubscriptionCreate: {
+            userErrors: [
+              {
+                field: ['webhookSubscription'],
+                message: 'Address for this topic has already been taken',
+              },
+            ],
+          },
+        },
+      },
+    };
+    const invalid = {
+      body: {
+        data: {
+          webhookSubscriptionCreate: {
+            userErrors: [{ field: ['uri'], message: 'Address is invalid' }],
+          },
+        },
+      },
+    };
+    const { c } = client([taken, invalid]);
+    const admin = new GraphqlShopifyAdmin(c);
+    await expect(
+      admin.createWebhookSubscription(
+        'INVENTORY_LEVELS_UPDATE',
+        'https://sync.example.com/webhooks',
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      admin.createWebhookSubscription('INVENTORY_LEVELS_UPDATE', 'not a url'),
+    ).rejects.toThrow(/Address is invalid/);
   });
 });
 

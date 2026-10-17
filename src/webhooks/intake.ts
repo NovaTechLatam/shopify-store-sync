@@ -39,6 +39,7 @@ interface WebhookStore {
   name: string;
   webhook_secret_enc: string | null;
   client_secret_enc: string | null;
+  previous_client_secret_enc: string | null;
 }
 
 interface Dispatched {
@@ -65,7 +66,10 @@ export async function handleShopifyWebhook(
     }
     // Shop domains are stored lowercased.
     const { rows } = await deps.db.query<WebhookStore>(
-      'SELECT id, name, webhook_secret_enc, client_secret_enc FROM stores WHERE shop_domain = $1',
+      `SELECT id, name, webhook_secret_enc, client_secret_enc,
+              CASE WHEN client_secret_rotated_at > now() - interval '7 days'
+                   THEN previous_client_secret_enc END AS previous_client_secret_enc
+         FROM stores WHERE shop_domain = $1`,
       [shop],
     );
     const store = rows[0];
@@ -73,8 +77,15 @@ export async function handleShopifyWebhook(
       log.warn('webhook from an unknown shop rejected');
       return UNAUTHORIZED;
     }
-    const secret = store.webhook_secret_enc ?? store.client_secret_enc;
-    if (!secret) {
+    // Every secret Shopify may sign with: the explicit webhook secret, the app's client secret,
+    // and for a week after a rotation the previous one (Shopify keeps using the oldest
+    // unrevoked secret until the old one is revoked).
+    const secrets = [
+      store.webhook_secret_enc,
+      store.client_secret_enc,
+      store.previous_client_secret_enc,
+    ].filter((v): v is string => Boolean(v));
+    if (secrets.length === 0) {
       log.warn(
         { storeId: store.id },
         `Webhook from ${store.name} rejected: no API secret key is saved for this store, so its ` +
@@ -83,7 +94,7 @@ export async function handleShopifyWebhook(
       return UNAUTHORIZED;
     }
     const hmac = header(req.headers, 'x-shopify-hmac-sha256');
-    if (!verifyShopifyHmac(req.rawBody, hmac, deps.secrets.decrypt(secret))) {
+    if (!secrets.some((enc) => verifyShopifyHmac(req.rawBody, hmac, deps.secrets.decrypt(enc)))) {
       log.warn({ storeId: store.id }, 'webhook with an invalid signature rejected');
       return UNAUTHORIZED;
     }

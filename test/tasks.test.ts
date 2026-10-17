@@ -319,6 +319,10 @@ describe('store health', () => {
       ['ensure_webhooks', broken.id],
       ['catalog_sync', broken.id],
     ]);
+    // Nothing syncs with the store's old links: its catalog is re-read first.
+    await h.drain();
+    expect(h.levels(item)).toEqual([10, 8]);
+    await runTasksOnce(h.db, taskDeps(), silentLogger);
     await h.drain();
     expect(await h.shared(item)).toBe(8);
     expect(h.levels(item)).toEqual([8, 8]);

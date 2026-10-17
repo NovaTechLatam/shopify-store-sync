@@ -101,12 +101,16 @@ export async function retryClaim(
   delayMs: number,
   error?: string,
 ): Promise<void> {
+  // Something new was enqueued while we worked (e.g. a sale): that deserves a run now, not after
+  // the backoff of whatever made this run fail.
   await db.query(
     `UPDATE sync_queue
         SET lease_token = NULL, leased_until = NULL, last_error = $3,
-            run_after = now() + make_interval(secs => $4::double precision / 1000)
+            run_after = CASE WHEN generation <> $5 THEN now()
+                             ELSE now() + make_interval(secs => $4::double precision / 1000) END,
+            attempts = CASE WHEN generation <> $5 THEN 0 ELSE attempts END
       WHERE pool_level_id = $1 AND lease_token = $2`,
-    [claim.poolLevelId, claim.leaseToken, error ?? null, delayMs],
+    [claim.poolLevelId, claim.leaseToken, error ?? null, delayMs, claim.generation],
   );
 }
 
@@ -118,16 +122,34 @@ export async function withLease<T>(
   fn: (client: DbClient) => Promise<T>,
 ): Promise<T> {
   return withTransaction(db, async (client) => {
-    const { rowCount } = await client.query(
-      'SELECT 1 FROM sync_queue WHERE pool_level_id = $1 AND lease_token = $2 FOR UPDATE',
-      [poolLevelId, leaseToken],
-    );
-    if (rowCount === 0) throw new LeaseLostError(poolLevelId);
+    await checkLease(client, poolLevelId, leaseToken);
     return fn(client);
   });
+}
+
+/** Row-locks our queue row inside the caller's transaction; throws if the lease is no longer ours. */
+export async function checkLease(client: DbClient, poolLevelId: number, leaseToken: string) {
+  const { rowCount } = await client.query(
+    'SELECT 1 FROM sync_queue WHERE pool_level_id = $1 AND lease_token = $2 FOR UPDATE',
+    [poolLevelId, leaseToken],
+  );
+  if (rowCount === 0) throw new LeaseLostError(poolLevelId);
 }
 
 /** Exponential backoff for failed reconciles: 5s, 10s, 20s ... capped at 10 minutes. */
 export function retryDelayMs(attempts: number): number {
   return Math.min(10 * 60_000, 5_000 * 2 ** Math.max(0, attempts - 1));
+}
+
+/** Pushes a running reconcile's lease out again, as long as it is still ours. */
+export async function extendLease(
+  db: Queryable,
+  claim: ClaimedLevel,
+  leaseMs: number,
+): Promise<void> {
+  await db.query(
+    `UPDATE sync_queue SET leased_until = now() + make_interval(secs => $3::double precision / 1000)
+      WHERE pool_level_id = $1 AND lease_token = $2`,
+    [claim.poolLevelId, claim.leaseToken, leaseMs],
+  );
 }

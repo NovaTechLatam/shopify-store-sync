@@ -94,6 +94,14 @@ export async function syncStoreCatalog(
   const listed = uniqueVariants(await (await deps.shopify.forStore(storeId)).listVariants());
 
   const summary = await withCatalogLock(deps.db, async (client) => {
+    // Lock the store row before any sync_queue row (same order as webhook intake: no deadlock).
+    const store = await client.query<{ was_pending: boolean }>(
+      `UPDATE stores s SET catalog_synced_at = now(), catalog_pending = false
+         FROM (SELECT catalog_pending FROM stores WHERE id = $1) prev
+        WHERE s.id = $1
+       RETURNING prev.catalog_pending AS was_pending`,
+      [storeId],
+    );
     const saved = await upsertVariants(client, storeId, listed, seenAt);
     // Anything our read didn't see (and nobody learned about since it started) is gone.
     const removed = await client.query<{ sku: string | null; item_id: number | null }>(
@@ -113,7 +121,21 @@ export async function syncStoreCatalog(
           GROUP BY sku HAVING count(*) > 1) duplicated`,
       [storeId],
     );
-    await client.query('UPDATE stores SET catalog_synced_at = now() WHERE id = $1', [storeId]);
+    // A store that was waiting for this read starts syncing now, with an up-to-date catalog.
+    if (store.rows[0]?.was_pending) {
+      const { rows } = await client.query<{ id: number }>(
+        `SELECT DISTINCT pl.id FROM variants v
+           JOIN store_locations sl ON sl.store_id = v.store_id AND sl.warehouse_id IS NOT NULL
+           JOIN pool_levels pl ON pl.item_id = v.item_id AND pl.warehouse_id = sl.warehouse_id
+          WHERE v.store_id = $1 AND v.item_id IS NOT NULL AND v.deleted_at IS NULL`,
+        [storeId],
+      );
+      await enqueuePoolLevels(
+        client,
+        rows.map((r) => r.id),
+        'store_catalog_ready',
+      );
+    }
     return {
       locations,
       variants: listed.length,
@@ -527,7 +549,7 @@ async function relinkSkus(
   }
   const affectedItemIds = [...affected];
   await ensurePoolLevels(client, affectedItemIds);
-  await autoInitialize(client, affectedItemIds);
+  await autoInitialize(client, created);
   await enqueueItems(client, affectedItemIds);
   return { affectedItemIds, linked: links.length, unlinked: changes.length - links.length };
 }
@@ -653,9 +675,10 @@ async function ensurePoolLevels(db: Queryable, itemIds: number[]): Promise<void>
 }
 
 /**
- * After onboarding, items that appear later start syncing on their own (if the merchant wants
- * that). Before onboarding, the merchant initialises everything from the onboarding screen.
- * Items with sync disabled are left for the merchant to start.
+ * After onboarding, items that appear later (a SKU seen for the first time) start syncing on
+ * their own, if the merchant wants that. Items that already existed but were never started (left
+ * out at onboarding, created by hand) are left for the merchant to start from the onboarding
+ * screen, where the starting numbers are previewed. Items with sync disabled are left alone.
  */
 async function autoInitialize(client: Queryable, itemIds: number[]): Promise<void> {
   if (itemIds.length === 0) return;

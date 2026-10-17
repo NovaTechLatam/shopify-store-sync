@@ -129,3 +129,16 @@ export async function failTask(
     [task.id, task.leaseToken, error, delayMs],
   );
 }
+
+/** Pushes a running task's lease out again, as long as it is still ours. */
+export async function extendTaskLease(
+  db: Queryable,
+  task: ClaimedTask,
+  leaseMs: number,
+): Promise<void> {
+  await db.query(
+    `UPDATE tasks SET leased_until = now() + make_interval(secs => $3::double precision / 1000)
+      WHERE id = $1 AND lease_token = $2`,
+    [task.id, task.leaseToken, leaseMs],
+  );
+}

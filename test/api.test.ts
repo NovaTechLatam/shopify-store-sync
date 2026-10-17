@@ -85,7 +85,7 @@ const api = async (
     method,
     url,
     payload: payload as object,
-    headers: { authorization: AUTH },
+    headers: { authorization: AUTH, 'x-requested-with': 'store-sync' },
   });
   return { status: res.statusCode, body: res.body ? (JSON.parse(res.body) as any) : undefined };
 };
@@ -125,6 +125,23 @@ async function connect(name: string, domain: string) {
 }
 
 describe('HTTP API', () => {
+  it('does not let a client pick its own IP to dodge the login lockout', async () => {
+    const wrong = `Basic ${Buffer.from('admin:nope').toString('base64')}`;
+    for (let i = 0; i < 25; i++) {
+      await app.inject({
+        method: 'GET',
+        url: '/api/status',
+        headers: { authorization: wrong, 'x-forwarded-for': `203.0.113.${i}` },
+      });
+    }
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/status',
+      headers: { authorization: wrong, 'x-forwarded-for': '198.51.100.7' },
+    });
+    expect(res.statusCode).toBe(429);
+  });
+
   it('requires the admin login except for health checks', async () => {
     expect((await app.inject({ method: 'GET', url: '/healthz' })).statusCode).toBe(200);
     const anonymous = await app.inject({ method: 'GET', url: '/api/status' });
@@ -153,6 +170,7 @@ describe('HTTP API', () => {
       shopDomain: 'brand-a',
       authMode: 'access_token',
       accessToken: 'wrong',
+      webhookSecret: 'secret',
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toContain('Could not connect');
@@ -167,6 +185,7 @@ describe('HTTP API', () => {
       shopDomain: 'https://Brand-A.myshopify.com/admin',
       authMode: 'access_token',
       accessToken: 'good-token',
+      webhookSecret: 'secret',
     });
     expect(res.status).toBe(400);
     expect(res.body.missingScopes).toEqual(
@@ -262,6 +281,27 @@ describe('HTTP API', () => {
     const events = (await api('GET', `/api/events?storeId=${storeB.id}&kind=external_change`)).body
       .events;
     expect(events[0]).toMatchObject({ storeName: 'Brand B', delta: -2, sku: 'TEE-M' });
+  });
+
+  it('refuses changes that could come from another website (CSRF)', async () => {
+    const forged = await app.inject({
+      method: 'POST',
+      url: '/api/settings/pause',
+      payload: 'reason=pwned',
+      headers: { authorization: AUTH, 'content-type': 'text/plain' },
+    });
+    expect(forged.statusCode).toBe(403);
+    const crossSite = await app.inject({
+      method: 'POST',
+      url: '/api/settings/pause',
+      headers: {
+        authorization: AUTH,
+        'x-requested-with': 'store-sync',
+        'sec-fetch-site': 'cross-site',
+      },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect((await api('GET', '/api/settings')).body.syncPaused).toBe(false);
   });
 
   it('rejects unsigned webhooks', async () => {
@@ -362,5 +402,99 @@ describe('HTTP API', () => {
     expect(page.statusCode).toBe(200);
     expect(page.headers['content-type']).toContain('text/html');
     expect(page.headers['content-security-policy']).toContain("default-src 'self'");
+  });
+
+  it('keeps accepting webhooks signed with the previous client secret after a rotation', async () => {
+    const shop = addShop('brand-a.myshopify.com', { SKU: 1 });
+    const created = await api('POST', '/api/stores', {
+      name: 'Brand A',
+      shopDomain: 'brand-a',
+      authMode: 'client_credentials',
+      clientId: 'id',
+      clientSecret: 'good-secret',
+    });
+    expect(created.status).toBe(201);
+    shop.shop.scopes = [...shop.shop.scopes];
+    const rotate = await api('PATCH', `/api/stores/${created.body.id}`, {
+      clientSecret: 'good-secret',
+    });
+    expect(rotate.status).toBe(200);
+    const body = '{"admin_graphql_api_id":"gid://shopify/InventoryItem/1"}';
+    const send = (secret: string, id: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/webhooks/shopify',
+        payload: body,
+        headers: {
+          'content-type': 'application/json',
+          'x-shopify-shop-domain': 'brand-a.myshopify.com',
+          'x-shopify-topic': 'inventory_items/update',
+          'x-shopify-hmac-sha256': createHmac('sha256', secret).update(body).digest('base64'),
+          'x-shopify-webhook-id': id,
+        },
+      });
+    expect((await send('good-secret', 'w1')).statusCode).toBe(200);
+    // Shopify signs with the oldest unrevoked secret: after rotating to a new one, the old one
+    // must still be accepted for a while.
+    await db.query(
+      `UPDATE stores SET previous_client_secret_enc = $1, client_secret_rotated_at = now()`,
+      [secrets.encrypt('old-secret')],
+    );
+    expect((await send('old-secret', 'w2')).statusCode).toBe(200);
+    await db.query(`UPDATE stores SET client_secret_rotated_at = now() - interval '8 days'`);
+    expect((await send('old-secret', 'w3')).statusCode).toBe(401);
+  });
+
+  it('resuming a store re-reads its catalog before it syncs again', async () => {
+    addShop('brand-a.myshopify.com', { SKU: 10 });
+    const b = addShop('brand-b.myshopify.com', { SKU: 10 });
+    await connect('Brand A', 'brand-a.myshopify.com');
+    const storeB = await connect('Brand B', 'brand-b.myshopify.com');
+    await settle();
+    await api('POST', '/api/onboarding/apply', { strategy: 'min' });
+    await settle();
+    await api('PATCH', `/api/stores/${storeB.id}`, { status: 'paused' });
+    // While paused, B's variant becomes a different product with 25 units.
+    b.shop.variants[0]!.sku = 'HAT';
+    b.shop.externalAdjust(b.shop.variants[0]!.inventoryItemId, b.location, +15);
+    const resumed = await api('PATCH', `/api/stores/${storeB.id}`, { status: 'active' });
+    expect(resumed.body.status).toBe('active');
+    await settle();
+    const items = (await api('GET', '/api/items')).body.items;
+    expect(items.find((i: any) => i.sku === 'SKU').levels[0].quantity).toBe(10);
+    // B's variant is now its own product, started from B's own number.
+    expect(items.find((i: any) => i.sku === 'HAT').levels[0].quantity).toBe(25);
+  });
+
+  it('keeps a store paused when its credentials are fixed while asking to pause it', async () => {
+    addShop('brand-a.myshopify.com', { SKU: 1 });
+    const store = await connect('Brand A', 'brand-a.myshopify.com');
+    await db.query(`UPDATE stores SET status = 'error' WHERE id = $1`, [store.id]);
+    const res = await api('PATCH', `/api/stores/${store.id}`, {
+      accessToken: 'good-token',
+      status: 'paused',
+    });
+    expect(res.body.status).toBe('paused');
+  });
+
+  it('refuses a stock count while syncing is paused, so it can’t be applied later with old numbers', async () => {
+    addShop('brand-a.myshopify.com', { SKU: 10 });
+    await connect('Brand A', 'brand-a.myshopify.com');
+    await settle();
+    await api('POST', '/api/onboarding/apply', { strategy: 'min' });
+    await settle();
+    const item = (await api('GET', '/api/items')).body.items[0];
+    await api('PATCH', `/api/items/${item.id}`, { syncEnabled: false });
+    expect(
+      (await api('POST', `/api/items/${item.id}/adjust`, { kind: 'count', value: 40 })).status,
+    ).toBe(409);
+    expect(
+      (await api('POST', `/api/items/${item.id}/adjust`, { kind: 'adjust', value: 4 })).status,
+    ).toBe(202);
+    await api('PATCH', `/api/items/${item.id}`, { syncEnabled: true });
+    await api('POST', '/api/settings/pause');
+    expect(
+      (await api('POST', `/api/items/${item.id}/adjust`, { kind: 'set', value: 40 })).status,
+    ).toBe(409);
   });
 });

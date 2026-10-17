@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { ShopifyGraphqlClient } from './client.js';
 import { ShopifyApiError } from './client.js';
 import type {
@@ -234,6 +234,10 @@ interface VariantNode {
   requiresComponents: boolean;
 }
 
+/** Shopify quantity states that are on the shelf but not for sale. */
+const UNAVAILABLE_NAMES = ['reserved', 'damaged', 'safety_stock', 'quality_control'] as const;
+const QUANTITY_NAMES = ['available', 'committed', ...UNAVAILABLE_NAMES] as const;
+
 /** Shopify's `nodes` query accepts at most 250 IDs; 100 keeps each query's cost near 300 points. */
 export const READ_BATCH_SIZE = 100;
 
@@ -326,36 +330,51 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
     return item.variants.nodes.map((n) => toVariant(n, n.product, item));
   }
 
-  readAvailable(locationId: string, inventoryItemIds: string[]) {
-    return this.readQuantity('available', locationId, inventoryItemIds);
+  async readAvailable(locationId: string, inventoryItemIds: string[]) {
+    const levels = await this.readQuantities(['available'], locationId, inventoryItemIds);
+    return new Map([...levels].map(([id, q]) => [id, q ? (q.available ?? 0) : null]));
   }
 
-  readCommitted(locationId: string, inventoryItemIds: string[]) {
-    return this.readQuantity('committed', locationId, inventoryItemIds);
+  async readLevels(locationId: string, inventoryItemIds: string[]) {
+    const levels = await this.readQuantities(QUANTITY_NAMES, locationId, inventoryItemIds);
+    return new Map(
+      [...levels].map(([id, q]) => [
+        id,
+        q
+          ? {
+              available: q.available ?? 0,
+              committed: q.committed ?? 0,
+              unavailable: UNAVAILABLE_NAMES.reduce((sum, name) => sum + (q[name] ?? 0), 0),
+            }
+          : null,
+      ]),
+    );
   }
 
-  private async readQuantity(
-    name: 'available' | 'committed',
+  private async readQuantities(
+    names: readonly string[],
     locationId: string,
     inventoryItemIds: string[],
-  ): Promise<Map<string, number | null>> {
+  ): Promise<Map<string, Record<string, number> | null>> {
     type Node = {
       id?: string;
       inventoryLevel?: { quantities: { name: string; quantity: number }[] } | null;
     } | null;
-    const result = new Map<string, number | null>();
+    const result = new Map<string, Record<string, number> | null>();
     const unique = [...new Set(inventoryItemIds)];
     for (let i = 0; i < unique.length; i += READ_BATCH_SIZE) {
       const ids = unique.slice(i, i + READ_BATCH_SIZE);
       const data = await this.client.request<{ nodes: Node[] }>(
         GRAPHQL_DOCUMENTS.levels,
-        { ids, locationId, names: [name] },
+        { ids, locationId, names },
         ids.length * 3 + 1,
       );
       ids.forEach((id, idx) => {
-        const node = data.nodes[idx];
-        const quantity = node?.inventoryLevel?.quantities.find((q) => q.name === name);
-        result.set(id, quantity ? quantity.quantity : null);
+        const level = data.nodes[idx]?.inventoryLevel;
+        result.set(
+          id,
+          level ? Object.fromEntries(level.quantities.map((q) => [q.name, q.quantity])) : null,
+        );
       });
     }
     return result;
@@ -390,12 +409,10 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
   async activateInventory(inventoryItemId: string, locationId: string): Promise<void> {
     const data = await this.client.request<{ inventoryActivate: { userErrors: UserError[] } }>(
       GRAPHQL_DOCUMENTS.activate,
-      // Deterministic key: activating the same item at the same location is the same operation.
-      {
-        inventoryItemId,
-        locationId,
-        idempotencyKey: deterministicUuid(`activate:${inventoryItemId}:${locationId}`),
-      },
+      // A fresh key per attempt: a key reused within 24h returns the cached answer without
+      // activating again (e.g. after staff stopped stocking the item there). The read that
+      // follows tells us whether it worked; the client reuses the key for its own retries.
+      { inventoryItemId, locationId, idempotencyKey: randomUUID() },
     );
     const errors = data.inventoryActivate.userErrors;
     if (errors.length) {
@@ -424,7 +441,11 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
     const data = await this.client.request<{
       webhookSubscriptionCreate: { userErrors: UserError[] };
     }>(GRAPHQL_DOCUMENTS.webhookCreate, { topic, uri });
-    const errors = data.webhookSubscriptionCreate.userErrors;
+    // Webhook mutations have no idempotency key, so a retried request (after a timeout or 5xx
+    // that hid a success) finds its own subscription already there: that's fine.
+    const errors = data.webhookSubscriptionCreate.userErrors.filter(
+      (e) => !/already been taken/i.test(e.message),
+    );
     if (errors.length) {
       throw new ShopifyApiError(
         `webhookSubscriptionCreate(${topic}) failed: ${errors.map((e) => e.message).join('; ')}`,
@@ -437,7 +458,9 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
     const data = await this.client.request<{
       webhookSubscriptionDelete: { userErrors: UserError[] };
     }>(GRAPHQL_DOCUMENTS.webhookDelete, { id });
-    const errors = data.webhookSubscriptionDelete.userErrors;
+    const errors = data.webhookSubscriptionDelete.userErrors.filter(
+      (e) => !/does not exist|not found/i.test(e.message),
+    );
     if (errors.length) {
       throw new ShopifyApiError(
         `webhookSubscriptionDelete failed: ${errors.map((e) => e.message).join('; ')}`,
@@ -463,12 +486,6 @@ function toVariant(
     tracked: inventoryItem.tracked,
     isBundle: n.requiresComponents,
   };
-}
-
-/** UUID-formatted SHA-1 digest of `name` (stable across retries and restarts). */
-export function deterministicUuid(name: string): string {
-  const hex = createHash('sha1').update(name).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 export function interpretSetResult(userErrors: UserError[]): SetAvailableResult {

@@ -7,7 +7,13 @@ export type Queryable = Pick<pg.Pool, 'query'> | Pick<pg.PoolClient, 'query'>;
 
 // Return BIGINT (int8) columns as JS numbers. All our bigint columns (ids, quantities) are far
 // below Number.MAX_SAFE_INTEGER.
-pg.types.setTypeParser(20, (value) => Number(value));
+pg.types.setTypeParser(pg.types.builtins.INT8, (value) => Number(value));
+// ...and BIGINT[] (int8 array, OID 1016, not in the builtins enum) as arrays of numbers.
+const INT8_ARRAY = 1016 as Parameters<typeof pg.types.setTypeParser>[0];
+const parseBigintArray = pg.types.getTypeParser(INT8_ARRAY);
+pg.types.setTypeParser(INT8_ARRAY, (value: string) =>
+  (parseBigintArray(value) as (string | null)[]).map((v) => (v === null ? null : Number(v))),
+);
 
 export function createDb(connectionString: string, max = 10): Db {
   return new pg.Pool({ connectionString, max });

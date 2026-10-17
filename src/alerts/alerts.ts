@@ -85,6 +85,11 @@ export async function setAlert(
     itemId?: number | null;
     storeId?: number | null;
     details?: unknown;
+    /**
+     * For alerts about an event (not an ongoing condition): a new occurrence while the alert is
+     * still open counts as a new incident, so it is notified again.
+     */
+    renotify?: boolean;
   },
 ): Promise<void> {
   if (a.open) {
@@ -92,7 +97,9 @@ export async function setAlert(
       `INSERT INTO alerts (kind, dedupe_key, item_id, store_id, message, details)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (dedupe_key) WHERE resolved_at IS NULL
-       DO UPDATE SET message = EXCLUDED.message, details = EXCLUDED.details`,
+       DO UPDATE SET message = EXCLUDED.message, details = EXCLUDED.details,
+                     notified_at = CASE WHEN $7 THEN NULL ELSE alerts.notified_at END,
+                     created_at = CASE WHEN $7 THEN now() ELSE alerts.created_at END`,
       [
         a.kind,
         a.dedupeKey,
@@ -100,6 +107,7 @@ export async function setAlert(
         a.storeId ?? null,
         a.message,
         JSON.stringify(a.details ?? null),
+        a.renotify ?? false,
       ],
     );
   } else {

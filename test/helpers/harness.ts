@@ -66,8 +66,8 @@ export class Harness {
     const shop = new FakeShop(domain, name);
     const locationId = shop.addLocation('Main');
     const { rows } = await this.db.query<{ id: number }>(
-      `INSERT INTO stores (name, shop_domain, auth_mode, access_token_enc, safety_buffer)
-       VALUES ($1, $2, 'access_token', 'unused', $3) RETURNING id`,
+      `INSERT INTO stores (name, shop_domain, auth_mode, access_token_enc, safety_buffer, catalog_pending)
+       VALUES ($1, $2, 'access_token', 'unused', $3, false) RETURNING id`,
       [name, domain, buffer],
     );
     const id = rows[0]!.id;

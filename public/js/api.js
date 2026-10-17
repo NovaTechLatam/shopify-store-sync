@@ -18,7 +18,9 @@ export const isAbort = (err) => err?.name === 'AbortError';
  * (forms that show the error inline); failed reads are rendered by the view that asked.
  */
 export async function api(path, { method = 'GET', body, signal, toastErrors } = {}) {
-  const headers = { Accept: 'application/json' };
+  // The server refuses changes without this header: another website can't add it to a form
+  // post, so it can't act with the merchant's saved login (CSRF).
+  const headers = { Accept: 'application/json', 'X-Requested-With': 'store-sync' };
   const init = { method, headers, signal, credentials: 'same-origin', cache: 'no-store' };
   // Only send a JSON content type with a body: Fastify rejects an empty JSON body.
   if (body !== undefined) {

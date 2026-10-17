@@ -10,6 +10,14 @@ export interface ShopInfo {
   scopes: string[];
 }
 
+export interface LevelQuantities {
+  available: number;
+  /** Held for open (unfulfilled) orders. */
+  committed: number;
+  /** On the shelf but not for sale: reserved + damaged + safety_stock + quality_control. */
+  unavailable: number;
+}
+
 export interface ShopifyLocation {
   id: string; // gid://shopify/Location/1
   name: string;
@@ -80,11 +88,11 @@ export interface ShopifyAdmin {
     locationId: string,
     inventoryItemIds: string[],
   ): Promise<Map<string, number | null>>;
-  /** Units committed to open (unfulfilled) orders, same shape as `readAvailable`. */
-  readCommitted(
+  /** All quantities of each item at one location, read together (one consistent snapshot). */
+  readLevels(
     locationId: string,
     inventoryItemIds: string[],
-  ): Promise<Map<string, number | null>>;
+  ): Promise<Map<string, LevelQuantities | null>>;
   setAvailable(input: SetAvailableInput): Promise<SetAvailableResult>;
   /** Stocks an item at a location (no-op if already stocked). */
   activateInventory(inventoryItemId: string, locationId: string): Promise<void>;

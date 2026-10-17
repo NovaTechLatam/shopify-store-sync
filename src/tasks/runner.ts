@@ -5,7 +5,7 @@ import { WorkLoop } from '../util/work-loop.js';
 import type { TaskDeps, TaskHandler } from './handlers.js';
 import { TASK_HANDLERS, TASK_PAYLOAD_SCHEMAS } from './handlers.js';
 import type { ClaimedTask, TaskKind } from './queue.js';
-import { claimTasks, completeTask, failTask } from './queue.js';
+import { claimTasks, completeTask, extendTaskLease, failTask } from './queue.js';
 
 /** A catalog sync of a big store can take minutes; an expired lease lets another worker retry. */
 export const TASK_LEASE_MS = 10 * 60_000;
@@ -66,6 +66,14 @@ export async function runTasksOnce(
 /** Runs one claimed task and settles it: done, or retried with exponential backoff. Never throws. */
 async function runTask(db: Db, deps: TaskDeps, task: ClaimedTask, logger: Logger): Promise<void> {
   const log = logger.child({ taskId: task.id, kind: task.kind, attempt: task.attempts });
+  // Keep the lease alive while the task runs (a big catalog can take longer than one lease), so
+  // no other worker starts the same task concurrently.
+  const heartbeat = setInterval(() => {
+    extendTaskLease(db, task, TASK_LEASE_MS).catch((err: unknown) =>
+      log.warn({ err }, 'could not extend task lease'),
+    );
+  }, TASK_LEASE_MS / 3);
+  heartbeat.unref();
   try {
     // Unknown kinds (e.g. queued by a newer release during a deploy) fail and are retried later.
     if (!Object.hasOwn(TASK_HANDLERS, task.kind)) throw new Error(`Unknown task kind ${task.kind}`);
@@ -87,5 +95,7 @@ async function runTask(db: Db, deps: TaskDeps, task: ClaimedTask, logger: Logger
     await failTask(db, task, message, delayMs).catch((e: unknown) =>
       log.error({ err: e }, 'failed to release task'),
     );
+  } finally {
+    clearInterval(heartbeat);
   }
 }
