@@ -31,7 +31,8 @@ descriptions.
 - **Activity log.** Every change is recorded with the store it came from and the number before and
   after.
 - **Stock tools in the dashboard.** You can set the stock to a number, add units when a delivery
-  arrives, or remove units.
+  arrives, remove units, or enter a shelf count (units sold but not shipped yet are subtracted for
+  you).
 - **Several warehouses**, if your stock is split across places.
 - Runs anywhere Docker runs: one small server plus a Postgres database.
 

@@ -38,7 +38,7 @@ Reviews of these apps keep reporting the same failures. Version 1 was designed a
 | A 15-minute comparison of every store, re-created notifications and automatic store health checks                  | ✅     |
 | Activity log of every change, plus Store Sync's updates tagged in Shopify's own inventory history                  | ✅     |
 | Alerts (low stock, oversold, store problems, missed notifications, deliveries entered twice) to Slack or a webhook | ✅     |
-| Stock tools: set the stock, add or remove units, and (through the API) a shelf count                               | ✅     |
+| Stock tools: set the stock, add or remove units, or enter a shelf count (unshipped and set-aside units subtracted) | ✅     |
 | Several warehouses (one location per store per warehouse)                                                          | ✅     |
 | New products start syncing on their own                                                                            | ✅     |
 | Two ways to connect a store: Dev Dashboard app, or an existing custom app                                          | ✅     |
