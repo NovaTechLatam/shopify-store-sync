@@ -48,6 +48,7 @@ export type FakeOp =
   | 'publishProduct'
   | 'unpublishProduct'
   | 'updateVariantPrices'
+  | 'readVariantPrices'
   | 'updateInventoryItemCost'
   | 'getOrder'
   | 'listOrdersUpdatedSince'
@@ -91,6 +92,11 @@ interface VariantDetails {
   requiresShipping: boolean;
   weight: { unit: WeightUnit; value: number } | null;
   unitCost: number | null;
+  /**
+   * Every barcode, with its type (Shopify keeps up to 20); undefined = just `barcode`, untyped.
+   * `barcode` is always the first one, like Shopify's.
+   */
+  barcodes?: { value: string; type?: string }[];
 }
 
 /** For `addOrder`: everything optional; a line with only `variantId` takes its SKU from the shop. */
@@ -384,6 +390,20 @@ export class FakeShop implements ShopifyAdmin {
   async listProductVariants(productId: string): Promise<ShopifyVariant[] | null> {
     const variants = this.variants.filter((v) => v.productId === productId);
     return variants.length ? variants.map((v) => ({ ...v })) : null;
+  }
+
+  async readVariantPrices(
+    variantIds: string[],
+  ): Promise<Map<string, { price: number; compareAtPrice: number | null }>> {
+    this.calls.push({ op: 'readVariantPrices', args: { variantIds } });
+    this.fault('readVariantPrices', 'throw_before');
+    const prices = new Map<string, { price: number; compareAtPrice: number | null }>();
+    for (const v of this.variants) {
+      if (variantIds.includes(v.variantId) && v.price !== null) {
+        prices.set(v.variantId, { price: v.price, compareAtPrice: v.compareAtPrice });
+      }
+    }
+    return prices;
   }
 
   async listVariantsByInventoryItem(inventoryItemId: string): Promise<ShopifyVariant[]> {
@@ -684,6 +704,24 @@ export class FakeShop implements ShopifyAdmin {
       ]);
     }
     this.detailsOf(variant).unitCost = value;
+  }
+
+  /** A variant's whole barcode set, as Shopify keeps it (the first is `barcode`). */
+  barcodesOf(variantId: string): { value: string; type?: string }[] {
+    const variant = this.variants.find((v) => v.variantId === variantId)!;
+    const d = this.detailsOf(variant);
+    return d.barcodes
+      ? d.barcodes.map((b) => ({ ...b }))
+      : variant.barcode
+        ? [{ value: variant.barcode }]
+        : [];
+  }
+
+  /** Gives a variant several barcodes (what the admin allows since 2026-10). */
+  setBarcodes(variantId: string, barcodes: { value: string; type?: string }[]): void {
+    const variant = this.variants.find((v) => v.variantId === variantId)!;
+    this.detailsOf(variant).barcodes = barcodes.map((b) => ({ ...b }));
+    variant.barcode = barcodes[0]?.value ?? null;
   }
 
   // ---- orders --------------------------------------------------------------------------------
@@ -1154,7 +1192,11 @@ export class FakeShop implements ShopifyAdmin {
         }
         const d = this.detailsOf(variant);
         if (v.sku !== undefined) variant.sku = v.sku;
-        if (v.barcodes !== undefined) variant.barcode = v.barcodes[0]?.value ?? null;
+        // `barcodes` replaces the whole set, types included.
+        if (v.barcodes !== undefined) {
+          d.barcodes = v.barcodes.map((b) => ({ ...b }));
+          variant.barcode = v.barcodes[0]?.value ?? null;
+        }
         if (plan.price !== undefined) variant.price = plan.price;
         else if (variant.price === null) variant.price = 0;
         if (v.compareAtPrice !== undefined)

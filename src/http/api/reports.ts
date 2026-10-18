@@ -12,7 +12,7 @@ import {
   type ProductRow,
   type ReportContext,
 } from '../../sales/reports.js';
-import { requireFeature } from '../../shopify/scopes.js';
+import { missingScopes, requireFeature } from '../../shopify/scopes.js';
 import { enqueueTask } from '../../tasks/queue.js';
 import { currencyDecimals, roundMoney } from '../../util/money.js';
 import { conflict, notFound, parseId } from '../errors.js';
@@ -22,7 +22,7 @@ import type { AppDeps } from '../server.js';
 const optional = <T extends z.ZodType>(schema: T) =>
   z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
 
-const DateParam = z.string().refine(isDate, 'Use a date like 2026-10-17');
+const DateParam = z.string().refine(isDate, 'Use a date like 2026-10-17, from 1970 to 2999');
 
 const PeriodQuery = z.object({
   from: optional(DateParam),
@@ -169,12 +169,24 @@ function productsCsv(ctx: ReportContext, rows: ProductRow[]): string {
     'Units',
     `Revenue (${base})`,
     `Cost (${base})`,
+    // Cost and margin only cover these sales: revenue − cost over every sale would count the ones
+    // without a cost as pure profit.
+    `Revenue with a cost (${base})`,
     'Margin (%)',
     'Shared stock',
     'Units a day',
     'Days of stock left',
     'Sell-through (%)',
   ];
+  // A store whose orders Store Sync may not read has empty cells, not 0 sold (its sales read
+  // before the permission went still show).
+  const unread = new Set(
+    ctx.stores
+      .filter(
+        (s) => s.grantedScopes !== null && missingScopes(s.grantedScopes, ['read_orders']).length,
+      )
+      .map((s) => s.id),
+  );
   const body = rows.map((r) => {
     const byStore = new Map(r.byStore.map((s) => [s.storeId, s]));
     return [
@@ -182,11 +194,13 @@ function productsCsv(ctx: ReportContext, rows: ProductRow[]): string {
       r.itemId === null ? 'Not one of your products' : r.title,
       ...ctx.stores.flatMap((s) => {
         const sold = byStore.get(s.id);
+        if (!sold && unread.has(s.id)) return [null, null];
         return [sold?.units ?? 0, inCurrency(sold?.revenue ?? 0, s.currencyCode)];
       }),
       r.units,
       inCurrency(r.revenue, base),
-      inCurrency(r.cost, base),
+      r.cost === null ? null : inCurrency(r.cost, base),
+      inCurrency(r.revenueWithCost, base),
       percent(r.margin),
       r.stock,
       r.velocity,

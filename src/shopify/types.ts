@@ -353,6 +353,13 @@ export interface ShopifyAdmin {
   publishProduct(productId: string, publicationId: string): Promise<void>;
   unpublishProduct(productId: string, publicationId: string): Promise<void>;
   /**
+   * What some variants charge now, by id (any number, read 250 at a time). Variants that no longer
+   * exist are left out.
+   */
+  readVariantPrices(
+    variantIds: string[],
+  ): Promise<Map<string, { price: number; compareAtPrice: number | null }>>;
+  /**
    * Sets the prices of variants of one product. Variants Shopify refuses are returned; the others
    * are updated (partial updates allowed).
    */

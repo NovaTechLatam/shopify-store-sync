@@ -831,7 +831,7 @@ function orderCsv(order) {
     if (v === null || v === undefined) return '';
     if (typeof v === 'number') return String(v);
     const text = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    return /[",;\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   const rows = [
     ['Order', 'Supplier', 'Status', 'Currency', 'SKU', 'Supplier SKU', 'Product', 'Ordered'],
@@ -1036,15 +1036,16 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
     case 'GET /purchasing/item-search': {
       const search = query.get('search') ?? '';
       const supplierId = Number(query.get('supplierId') ?? 0);
-      return state.items
+      const found = state.items
         .map((item) => ({
           item,
           si: p.supplierItems.find((x) => x.supplierId === supplierId && x.itemId === item.id),
         }))
         .filter(({ item, si }) => matches(search, item.sku, item.title, si?.supplierSku))
-        .sort((a, b) => Number(!a.si) - Number(!b.si) || a.item.sku.localeCompare(b.item.sku))
-        .slice(0, Number(query.get('limit') ?? 20))
-        .map(({ item, si }) => ({
+        .sort((a, b) => Number(!a.si) - Number(!b.si) || a.item.sku.localeCompare(b.item.sku));
+      return {
+        total: found.length,
+        items: found.slice(0, Number(query.get('limit') ?? 20)).map(({ item, si }) => ({
           itemId: item.id,
           sku: item.sku,
           title: item.title,
@@ -1054,7 +1055,8 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
           supplierSku: si?.supplierSku ?? null,
           supplierUnitCost: si?.unitCost ?? null,
           soldBySupplier: Boolean(si),
-        }));
+        })),
+      };
     }
 
     // ---- purchase orders

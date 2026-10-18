@@ -425,7 +425,8 @@ async function startSale(
   const percentOff = s.percent_off!;
   const previous: SalePrevious[] = [];
   for (const store of stores) {
-    if (!store.currencyKnown) continue;
+    // Its update fails and says why (createPriceRun): there's no price to take a percentage off.
+    if (!store.currencyKnown || (store.rule?.enabled && store.exchangeRateUnset)) continue;
     const decimals = currencyDecimals(store.currencyCode);
     const restoreOf = new Map((restoring.get(store.id) ?? []).map((r) => [r.itemId, r]));
     for (const item of items.values()) {

@@ -11,7 +11,7 @@ import { checkConnection, checkStoreHealth } from '../src/sync/health.js';
 import type { TaskDeps } from '../src/tasks/handlers.js';
 import { TASK_HANDLERS, TASK_PAYLOAD_SCHEMAS } from '../src/tasks/handlers.js';
 import type { TaskKind } from '../src/tasks/queue.js';
-import { defaultDedupeKey, enqueueTask } from '../src/tasks/queue.js';
+import { CORE_TASK_KINDS, claimTasks, defaultDedupeKey, enqueueTask } from '../src/tasks/queue.js';
 import { TaskRunner, runTasksOnce } from '../src/tasks/runner.js';
 import { WEBHOOK_TOPICS } from '../src/webhooks/topics.js';
 import { FakeShop } from './fakes/fake-shopify.js';
@@ -239,6 +239,25 @@ describe('task runner', () => {
     await enqueueTask(h.db, 'catalog_sync', { storeId: h.stores[0]!.id });
     await runTasksOnce(h.db, taskDeps(), silentLogger);
     expect(leaseSecs).toBe(600);
+  });
+
+  it('keeps the stock sync’s tasks in a lane of their own, apart from long feature tasks', async () => {
+    h = await harness(1);
+    const store = h.stores[0]!.id;
+    // Two feature tasks queued first (a price update, a publish), then a new variant to link.
+    await enqueueTask(h.db, 'apply_prices', { runId: 1, storeId: store });
+    await enqueueTask(h.db, 'publish_product', { masterProductId: 1, storeId: store });
+    await h.db.query(`UPDATE tasks SET run_after = now() - interval '1 minute'`);
+    await enqueueTask(h.db, 'refresh_inventory_item', {
+      storeId: store,
+      inventoryItemId: 'gid://shopify/InventoryItem/1',
+    });
+    const core = await claimTasks(h.db, 2, 60_000, 'core');
+    expect(core.map((t) => t.kind)).toEqual(['refresh_inventory_item']);
+    const feature = await claimTasks(h.db, 2, 60_000, 'feature');
+    expect(feature.map((t) => t.kind).sort()).toEqual(['apply_prices', 'publish_product']);
+    expect(CORE_TASK_KINDS).toContain('store_health');
+    expect(CORE_TASK_KINDS).not.toContain('apply_prices');
   });
 
   it('TaskRunner runs queued tasks as soon as it is nudged', async () => {

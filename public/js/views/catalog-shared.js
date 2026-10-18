@@ -1,7 +1,7 @@
 import { api, isAbort, qs } from '../api.js';
 import { formDialog } from '../dialog.js';
 import { debounce, h, icon, replace, uid } from '../dom.js';
-import { plural } from '../format.js';
+import { num, plural } from '../format.js';
 import { toast } from '../toast.js';
 import { badge, field, input, muted, select } from '../ui.js';
 
@@ -181,7 +181,11 @@ export async function importDialog({ stores, storeId, search = '' }) {
         `/api/catalog/import/search${qs({ storeId: storeSelect.value, search: searchInput.value.trim() })}`,
         { signal: controller.signal },
       );
-      announcer.textContent = `${plural(data.products.length, 'product')} found`;
+      const total = data.total ?? data.products.length;
+      const cut = total > data.products.length;
+      announcer.textContent = cut
+        ? `${plural(total, 'product')} found, ${num(data.products.length)} listed`
+        : `${plural(total, 'product')} found`;
       replace(
         results,
         data.products.length === 0
@@ -196,6 +200,12 @@ export async function importDialog({ stores, storeId, search = '' }) {
               h('legend', { class: 'sr-only' }, 'Products'),
               data.products.map((p) => importOption(p, radioName)),
             ),
+        cut &&
+          h(
+            'p',
+            { class: 'muted small picker-more' },
+            `Showing ${num(data.products.length)} of ${num(total)}, by name. Search to find the others.`,
+          ),
       );
     } catch (err) {
       if (!isAbort(err)) replace(results, h('p', { class: 'field-error' }, err.message));

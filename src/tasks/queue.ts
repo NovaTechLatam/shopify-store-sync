@@ -39,6 +39,25 @@ export type CoreTaskPayloads = {
 
 export type TaskKind = keyof TaskPayloads;
 
+/**
+ * The stock sync's own tasks. They run in a lane of their own (see TaskRunner): a price update
+ * writing thousands of prices, a burst of publishes or a long history import must not keep a
+ * variant the merchant just added from being linked, or a store in error from being tested.
+ */
+export const CORE_TASK_KINDS = Object.keys({
+  catalog_sync: true,
+  sync_locations: true,
+  refresh_inventory_item: true,
+  remove_inventory_item: true,
+  remove_product: true,
+  ensure_webhooks: true,
+  drift_scan: true,
+  store_health: true,
+} satisfies Record<keyof CoreTaskPayloads, true>) as (keyof CoreTaskPayloads)[];
+
+/** Which tasks a runner claims: the stock sync's, the features', or (undefined) any. */
+export type TaskLane = 'core' | 'feature';
+
 export interface ClaimedTask<K extends TaskKind = TaskKind> {
   id: number;
   kind: K;
@@ -91,6 +110,7 @@ export async function claimTasks(
   db: Queryable,
   limit: number,
   leaseMs: number,
+  lane?: TaskLane,
 ): Promise<ClaimedTask[]> {
   const { rows } = await db.query<{
     id: number;
@@ -107,11 +127,12 @@ export async function claimTasks(
       WHERE t.id IN (
         SELECT id FROM tasks
          WHERE run_after <= now() AND (leased_until IS NULL OR leased_until < now())
+           AND ($3::text IS NULL OR (kind = ANY($4::text[])) = ($3 = 'core'))
          ORDER BY run_after
          LIMIT $1
          FOR UPDATE SKIP LOCKED)
       RETURNING t.id, t.kind, t.payload, t.lease_token, t.generation, t.attempts`,
-    [limit, leaseMs],
+    [limit, leaseMs, lane ?? null, CORE_TASK_KINDS],
   );
   return rows.map((r) => ({
     id: r.id,

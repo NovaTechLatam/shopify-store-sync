@@ -1,7 +1,7 @@
 import { api, isAbort, qs } from '../api.js';
 import { formDialog } from '../dialog.js';
 import { debounce, h, icon, replace, uid } from '../dom.js';
-import { money, plural } from '../format.js';
+import { money, num, plural } from '../format.js';
 import { toast } from '../toast.js';
 import { button, dataTable, emptyState, field, input, loadInto, muted } from '../ui.js';
 import {
@@ -395,9 +395,16 @@ async function scheduleDialog(kind, schedule, ctx, reload) {
  * Search and pick products (several), for sales and price changes. With `withPrices`, each chosen
  * product gets inputs for its new base price and compare-at price.
  */
+/** Products listed at once in the picker; more are reached by searching, or by "Tick all". */
+const PICKER_PAGE = 20;
+/** At most this many products in one sale or price change (the server's limit). */
+const MAX_TICKED = 5000;
+
 function productPicker(chosen, { base, withPrices }) {
   const search = input({ type: 'search', placeholder: 'SKU or product name', autocomplete: 'off' });
   const results = h('div', { class: 'picker-results' });
+  // When more products match than are listed: says so, and offers to tick them all.
+  const more = h('div', { class: 'picker-more' });
   const announcer = h('p', { class: 'sr-only', 'aria-live': 'polite' });
   const summary = h('div', { class: 'chosen-products' });
   let controller = null;
@@ -485,10 +492,28 @@ function productPicker(chosen, { base, withPrices }) {
     controller = new AbortController();
     results.setAttribute('aria-busy', 'true');
     try {
-      const data = await api(`/api/prices${qs({ search: search.value.trim(), pageSize: 20 })}`, {
+      const term = search.value.trim();
+      const data = await api(`/api/prices${qs({ search: term, pageSize: PICKER_PAGE })}`, {
         signal: controller.signal,
       });
-      announcer.textContent = `${plural(data.total, 'product')} found`;
+      const cut = data.total > data.items.length;
+      announcer.textContent = cut
+        ? `${plural(data.total, 'product')} found, ${num(data.items.length)} listed`
+        : `${plural(data.total, 'product')} found`;
+      replace(
+        more,
+        cut && [
+          h(
+            'p',
+            { class: 'muted small' },
+            `Showing ${num(data.items.length)} of ${num(data.total)}. Search to narrow it down, or tick them all.`,
+          ),
+          button(`Tick all ${num(data.total)}`, {
+            size: 'small',
+            onClick: (event) => tickAll(term, data.total, event.currentTarget),
+          }),
+        ],
+      );
       replace(
         results,
         data.items.length === 0
@@ -506,6 +531,37 @@ function productPicker(chosen, { base, withPrices }) {
       results.removeAttribute('aria-busy');
     }
   };
+  /** Ticks every product matching `term`, reading them a page at a time. */
+  const tickAll = async (term, total, trigger) => {
+    trigger.disabled = true;
+    try {
+      for (let page = 1; (page - 1) * 200 < Math.min(total, MAX_TICKED); page++) {
+        const data = await api(`/api/prices${qs({ search: term, pageSize: 200, page })}`);
+        for (const item of data.items) {
+          if (chosen.size >= MAX_TICKED) break;
+          if (!chosen.has(item.itemId)) chosen.set(item.itemId, chosenOf(item));
+        }
+        if (data.items.length < 200) break;
+      }
+      for (const box of results.querySelectorAll('input[type="checkbox"]')) {
+        box.checked = chosen.has(Number(box.value));
+      }
+      renderChosen();
+      announcer.textContent = `${plural(chosen.size, 'product')} chosen`;
+    } catch (err) {
+      replace(more, h('p', { class: 'field-error' }, err.message));
+    } finally {
+      trigger.disabled = false;
+    }
+  };
+  const chosenOf = (item) => ({
+    itemId: item.itemId,
+    sku: item.sku,
+    title: item.title,
+    basePrice: item.basePrice,
+    newBase: item.basePrice,
+    newCompareAt: item.baseCompareAtPrice,
+  });
   const option = (item) => {
     const id = uid('product');
     const box = h('input', {
@@ -516,14 +572,7 @@ function productPicker(chosen, { base, withPrices }) {
     });
     box.addEventListener('change', () => {
       if (box.checked) {
-        chosen.set(item.itemId, {
-          itemId: item.itemId,
-          sku: item.sku,
-          title: item.title,
-          basePrice: item.basePrice,
-          newBase: item.basePrice,
-          newCompareAt: item.baseCompareAtPrice,
-        });
+        chosen.set(item.itemId, chosenOf(item));
       } else {
         chosen.delete(item.itemId);
       }
@@ -562,6 +611,7 @@ function productPicker(chosen, { base, withPrices }) {
       field({ label: 'Find products', control: search, hint: 'Tick every product to include.' }),
       announcer,
       results,
+      more,
       summary,
     ),
     stop: () => controller?.abort(),

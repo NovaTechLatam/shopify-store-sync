@@ -516,7 +516,10 @@ export async function loadItemPurchasing(db: Queryable, itemId: number, settings
   };
 }
 
-/** Products for the order editor's picker, with what the chosen supplier charges for them. */
+/**
+ * Products for the order editor's picker (the supplier's first), with what the chosen supplier
+ * charges for them, and how many match in all.
+ */
 export async function searchItemsForOrder(
   db: Queryable,
   opts: { search?: string; supplierId?: number; limit: number },
@@ -538,8 +541,9 @@ export async function searchItemsForOrder(
     supplier_sku: string | null;
     supplier_unit_cost: number | null;
     sold_by_supplier: boolean;
+    total: number;
   }>(
-    `SELECT i.id, i.sku, i.title, i.cost, i.supplier_id,
+    `SELECT i.id, i.sku, i.title, i.cost, i.supplier_id, count(*) OVER ()::int AS total,
             (SELECT sum(quantity)::int FROM pool_levels WHERE item_id = i.id) AS available,
             EXISTS (SELECT 1 FROM pool_levels WHERE item_id = i.id AND quantity IS NOT NULL) AS started,
             si.supplier_sku, si.unit_cost AS supplier_unit_cost, si.item_id IS NOT NULL AS sold_by_supplier
@@ -550,15 +554,19 @@ export async function searchItemsForOrder(
       LIMIT $2`,
     params,
   );
-  return rows.map((r) => ({
-    itemId: r.id,
-    sku: r.sku,
-    title: r.title,
-    cost: r.cost,
-    preferredSupplierId: r.supplier_id,
-    available: r.started ? r.available : null,
-    supplierSku: r.supplier_sku,
-    supplierUnitCost: r.supplier_unit_cost,
-    soldBySupplier: r.sold_by_supplier,
-  }));
+  return {
+    // How many match: the picker says when it lists only some of them.
+    total: rows[0]?.total ?? 0,
+    items: rows.map((r) => ({
+      itemId: r.id,
+      sku: r.sku,
+      title: r.title,
+      cost: r.cost,
+      preferredSupplierId: r.supplier_id,
+      available: r.started ? r.available : null,
+      supplierSku: r.supplier_sku,
+      supplierUnitCost: r.supplier_unit_cost,
+      soldBySupplier: r.sold_by_supplier,
+    })),
+  };
 }

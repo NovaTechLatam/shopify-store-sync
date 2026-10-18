@@ -1,7 +1,7 @@
 import { api, latestOnly, qs } from '../api.js';
 import { confirmDialog, isDialogOpen } from '../dialog.js';
 import { debounce, h, icon, replace, srOnly, uid } from '../dom.js';
-import { dateOnly, days, money, num, percent, plural, timeAgo } from '../format.js';
+import { dateOnly, days, money, num, pace, percent, plural, timeAgo } from '../format.js';
 import { toast } from '../toast.js';
 import {
   badge,
@@ -426,6 +426,8 @@ function customRange(onApply) {
 /** What's wrong with a custom range, in words; null when it's fine. */
 export function rangeProblem(from, to) {
   if (!DATE.test(from ?? '') || !DATE.test(to ?? '')) return 'Enter a start and an end date.';
+  // The server takes the same years (src/sales/period.ts).
+  if (!realDate(from) || !realDate(to)) return 'Enter real dates, from 1970 to 2999.';
   if (from > to) return 'The start date must be on or before the end date.';
   if (daysBetween(from, to) > 3660) return 'Choose a period of at most 10 years.';
   return null;
@@ -1212,7 +1214,7 @@ function productsTable(list, state, status, { onSort, onPage }) {
     {
       label: 'Per day',
       align: 'end',
-      render: (r) => (r.velocity ? num(r.velocity) : '—'),
+      render: (r) => (r.velocity ? pace(r.velocity) : '—'),
     },
     { label: 'Days left', align: 'end', render: daysLeftCell },
     { label: 'Sell-through', align: 'end', render: (r) => percent(r.sellThrough) },
@@ -1352,6 +1354,18 @@ export function todayIn(timeZone) {
   } catch {
     return new Date().toISOString().slice(0, 10);
   }
+}
+
+/** A calendar date that exists ('2026-02-30' doesn't), in a year reports accept. */
+function realDate(date) {
+  const year = Number(date.slice(0, 4));
+  const time = Date.parse(`${date}T00:00:00Z`);
+  return (
+    year >= 1970 &&
+    year <= 2999 &&
+    Number.isFinite(time) &&
+    new Date(time).toISOString().slice(0, 10) === date
+  );
 }
 
 export function addDays(date, n) {

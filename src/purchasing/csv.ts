@@ -1,15 +1,11 @@
+import { csvCell } from '../sales/csv.js';
+
 /**
- * CSV for spreadsheets (RFC 4180: comma separated, CRLF line ends, fields with commas, quotes or
- * line breaks quoted, quotes doubled). Text that starts like a formula (= + - @, tab, CR) gets a
- * leading ' so a spreadsheet shows it instead of running it. Numbers are written as they are.
+ * CSV for spreadsheets, cell by cell like Reports' export (src/sales/csv.ts: formulas
+ * neutralised, text with a comma, semicolon, quote or line break quoted). No byte order mark: the
+ * purchase order file goes to suppliers' own systems as much as to spreadsheets.
  */
-export function csvCell(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
-  let text = value;
-  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
+export { csvCell };
 
 export function toCsv(rows: (string | number | null | undefined)[][]): string {
   return rows.map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';

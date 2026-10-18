@@ -33,6 +33,15 @@ export function storeProblems(store: StoreContext): string[] {
     problems.push(
       `We don’t know ${store.name}’s currency yet. Click “Test connection” on its page first.`,
     );
+  } else if (store.exchangeRateUnset) {
+    problems.push(
+      `${store.name}’s exchange rate isn’t set yet, so its prices can’t be worked out. Set it on its page first.`,
+    );
+  }
+  if (store.catalogReading) {
+    problems.push(
+      `We’re still reading ${store.name}’s products, to find the ones it already has. Publish again in a few minutes.`,
+    );
   }
   if (store.locationIds.length === 0) {
     problems.push(

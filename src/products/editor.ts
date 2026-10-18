@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { EnsuredItem } from '../catalog/catalog.js';
-import { ensureItemsLocked, lockCatalog } from '../catalog/catalog.js';
+import { dropNewProductStarts, ensureItemsLocked, lockCatalog } from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
 import { lockItemRows } from '../db/locks.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
@@ -307,10 +307,19 @@ export async function updateProduct(db: Db, productId: number, raw: unknown): Pr
 
 export async function deleteProduct(db: Db, productId: number): Promise<void> {
   await withTransaction(db, async (client) => {
+    const { rows: variants } = await client.query<{ item_id: number }>(
+      'SELECT item_id FROM master_variants WHERE master_product_id = $1',
+      [productId],
+    );
     const { rowCount } = await client.query('DELETE FROM master_products WHERE id = $1', [
       productId,
     ]);
     if (!rowCount) throw new CatalogNotFoundError('This product isn’t in the catalog any more.');
+    // A publish that was interrupted may have left starts at 0 that no publish will use now.
+    await dropNewProductStarts(
+      client,
+      variants.map((v) => v.item_id),
+    );
     // Its publishing problems are gone with it.
     await client.query(
       `UPDATE alerts SET resolved_at = now()

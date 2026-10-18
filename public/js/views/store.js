@@ -203,9 +203,20 @@ const rateFormat = new Intl.NumberFormat('en-US', {
 /** "1 USD = 4,100.00 COP" */
 const rateText = (rate, base, currency) => `1 ${base} = ${rateFormat.format(rate)} ${currency}`;
 
+/**
+ * A store in another currency whose rate is still the default 1 nobody chose (the server's
+ * exchangeRateUnset): nothing that converts base prices or costs runs for it until it's set.
+ */
+export const rateUnset = (store, base) =>
+  store.currencyCode !== null &&
+  store.currencyCode !== base &&
+  store.exchangeRate === 1 &&
+  !store.exchangeRateSetAt;
+
 function currencyCard(store, settings, reload) {
   const base = settings.baseCurrency;
   const converts = store.currencyCode !== null && store.currencyCode !== base;
+  const unset = rateUnset(store, base);
   return card(
     {
       title: 'Currency and time zone',
@@ -217,8 +228,20 @@ function currencyCard(store, settings, reload) {
       facts([
         ['Currency', store.currencyCode ?? muted('Not read yet')],
         ['Time zone', store.timezone ?? muted('Not read yet')],
-        converts && ['Exchange rate', rateText(store.exchangeRate, base, store.currencyCode)],
+        converts && [
+          'Exchange rate',
+          unset ? muted('Not set yet') : rateText(store.exchangeRate, base, store.currencyCode),
+        ],
       ]),
+      unset &&
+        banner(
+          { tone: 'warning', title: 'Set the exchange rate' },
+          h(
+            'p',
+            {},
+            `Until you do, Store Sync doesn’t publish catalog products to ${store.name}, import them from it, update its prices with a rule or copy costs to it: it would count 1 ${base} as 1 ${store.currencyCode}.`,
+          ),
+        ),
       converts && exchangeRateForm(store, base, reload),
     ),
   );
@@ -268,7 +291,8 @@ function exchangeRateForm(store, base, reload) {
       rate.focus();
       return;
     }
-    if (value === store.exchangeRate) {
+    // A rate never set can be saved as it is (1 for a currency pegged to the base one).
+    if (value === store.exchangeRate && !rateUnset(store, base)) {
       toast('Nothing to save: no changes.', { tone: 'info' });
       return;
     }
@@ -601,9 +625,29 @@ function removeCard(store) {
   );
 }
 
+/** What removing a store deletes in Store Sync, as list items (empty when nothing). */
+function removalLosses(removal) {
+  if (!removal) return [];
+  return [
+    removal.brandVersions > 0 &&
+      `Its own texts or images in ${plural(removal.brandVersions, 'catalog product')}${
+        removal.brandImages > 0 ? ` (${plural(removal.brandImages, 'image')})` : ''
+      }.`,
+    removal.priceRule && 'Its price rule.',
+    removal.fixedPrices > 0 && `${plural(removal.fixedPrices, 'fixed price')}.`,
+    removal.orders > 0 &&
+      `Its sales history: ${plural(removal.orders, 'order')}. Reports and the sales pace change, and Shopify may only give the last 60 days back.`,
+  ].filter(Boolean);
+}
+
 async function removeStore(store) {
   const confirmId = uid('confirm');
   const nameInput = input({ id: confirmId, autocomplete: 'off', spellcheck: 'false' });
+  // Not knowing what goes with it doesn't stop the removal: the dialog then says less.
+  const removal = await api(`/api/stores/${store.id}/removal`, { toastErrors: false }).catch(
+    () => null,
+  );
+  const losses = removalLosses(removal);
   const removed = await confirmDialog({
     title: `Remove ${store.name}?`,
     message: [
@@ -612,6 +656,24 @@ async function removeStore(store) {
         {},
         'The store stops syncing right away. Its stock in Shopify isn’t changed. You can connect it again later; it then takes the shared numbers.',
       ),
+      losses.length > 0 && [
+        h(
+          'p',
+          {},
+          'This also deletes from Store Sync, and connecting the store again doesn’t bring it back:',
+        ),
+        h(
+          'ul',
+          {},
+          losses.map((text) => h('li', {}, text)),
+        ),
+      ],
+      removal?.brandVersions > 0 &&
+        h(
+          'p',
+          {},
+          `If you connect it again and publish those catalog products to it, its products in Shopify take the catalog’s texts and images.`,
+        ),
       field({ label: `Type “${store.name}” to confirm`, control: nameInput }),
     ],
     confirmLabel: 'Remove store',

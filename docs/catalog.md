@@ -47,7 +47,9 @@ Nothing is sent to your stores yet. When you're ready, click **Publish…**.
 
 A SKU no store sells yet starts at **0** units, in every store, when the product is first
 published. Add stock with a purchase order (**Purchasing**): a delivery received before the first
-publish is added then. A SKU a store already sells keeps its stock.
+publish is added then. A SKU a store already sells keeps its stock. This start covers the
+warehouses the stores you publish to stock: a warehouse no store uses yet starts the usual way
+(**Start syncing**) once a location is mapped to it, so that location's stock isn't replaced.
 
 If you create the SKU directly in a store before publishing it from the catalog, that store's
 number is kept: the product doesn't start on its own (even with automatic start on in
@@ -71,7 +73,10 @@ the product. Once it was published, a variant deleted from that brand in Shopify
 - **What gets deleted**, in red: a brand's product becomes exactly what you see in the catalog, so
   variants and images it has that the catalog product doesn't are deleted from that store. Deleting
   a variant also deletes its stock in that store. Read this part before you publish.
-- Why a brand **can't** be published to right now, and what to do about it.
+- Why a brand **can't** be published to right now, and what to do about it. For example: the
+  store is paused, it is in another currency and its exchange rate isn't set yet (on its page),
+  or Store Sync is still reading its products (just connected, or just resumed): publishing then
+  could create a second copy of a product the store already has, so wait a few minutes.
 
 Tick the brands to publish to and click **Publish**. Each brand is updated in the background; the
 page shows **Waiting to publish**, **Publishing…**, then **Published** or **Failed** with the
@@ -87,7 +92,9 @@ If a brand already has a product with exactly the catalog product's SKUs (and no
 publishing **updates that product** instead of creating a second one, and says so. If the SKUs are
 in a product that has other variants too, or spread over several products, publishing refuses: a
 SKU can only be in a store once, or its stock stops syncing. Import that product instead (below),
-or fix the SKUs in Shopify first.
+or fix the SKUs in Shopify first. Whether such a product shows in the brand's Online Store stays as
+it is in Shopify (like for an imported product), until you change **Show in … Online Store** for
+that brand.
 
 ## Importing a product a store already sells
 
@@ -99,7 +106,8 @@ If your brands already sell a product, don't create it again: **import** it.
 3. Click **Import**.
 
 Store Sync copies the product's texts, options, variants, prices (where the base price isn't set
-yet, converted with the store's exchange rate), costs and images. Then it looks for the same SKUs in
+yet, converted with the store's exchange rate), costs and images. A store in another currency
+needs its exchange rate set first. Then it looks for the same SKUs in
 your other brands. Where one product has them, it is **linked**: its own title, description, tags
 and images become that brand's version, so nothing is lost. Nothing changes in your stores.
 
@@ -167,6 +175,9 @@ Importing only reads products, which every store already allows.
 - Videos and 3D models of a brand's product aren't shown in the publish preview, and publishing
   removes them: add them back in Shopify afterwards, or keep such products out of the catalog.
 - An image Shopify couldn't process (a broken file or address) is sent again on the next publish.
+- The catalog keeps one barcode per variant, the store's first. Publishing leaves a variant's
+  barcodes in Shopify (and their types) as they are while that first one matches; if you change it
+  in the catalog, the variant gets just the new one.
 - The description preview shows simple formatting only; the full HTML is sent to Shopify as you
   wrote it.
 - Some of Shopify's behaviour was only tested against a stand-in for Shopify, not a real store:
@@ -187,10 +198,18 @@ Importing only reads products, which every store already allows.
   variant would get a new inventory item), images already there by media id, so the plan knows
   exactly what Shopify will delete; the preview uses the same code. `inventoryQuantities` (0 at the
   synced locations) are only sent for variants being created, and `inventoryItem.cost` only with
-  the `pushCostsToShopify` setting on. Just before the write, the SKUs being added that no store
-  sells get their start at 0 (`startUnsoldAtZero` in `src/catalog/catalog.ts`, under the catalog
-  lock: levels not started, no start pending, no live variant linked in any store); a write
-  Shopify refuses removes those starts again. After the write every returned variant is linked at
+  the `pushCostsToShopify` setting on. Just before the write, the SKUs being added get their start
+  at 0 (`startUnsoldAtZero` in `src/catalog/catalog.ts`, under the catalog lock: the levels of the
+  warehouses the store's mapped locations stock, not started, no start pending, and no store
+  selling the item in that warehouse). Written before the write, it is still there when an
+  interrupted write is retried. Every way a publish ends without a product (Shopify refuses it for
+  good, the brand is switched off before the task runs, the catalog product is deleted) takes the
+  starts back (`dropNewProductStarts`), unless a store sells the item there, another brand of the
+  product is still waiting to publish or publishing, or a delivery is waiting to be added. Each
+  publish records its own outcome first, so the last brand to finish sees the others'. A publish
+  also holds the store's price lock (`withStorePriceLock` in `src/pricing/runs.ts`) from working
+  out its prices until it has sent them, so a price update (a sale starting or ending) never lands
+  in between. After the write every returned variant is linked at
   once (`refreshInventoryItem`), so stock syncing starts without waiting for the next catalog read.
 - **Products page.** An item of a catalog product with no live variant in any store has
   `notPublished: true` (and `catalogProduct`) in `/api/items`; the "Not started" filter and the

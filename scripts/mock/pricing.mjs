@@ -384,6 +384,12 @@ function cell(state, item, store) {
   };
 }
 
+/** In another currency, with the default rate of 1 nobody set (the server's exchangeRateUnset). */
+const rateUnset = (state, store) =>
+  store.currencyCode !== state.settings.baseCurrency &&
+  store.exchangeRate === 1 &&
+  !store.exchangeRateSetAt;
+
 function priceStoreView(state, store) {
   return {
     id: store.id,
@@ -392,6 +398,7 @@ function priceStoreView(state, store) {
     currencyCode: store.currencyCode,
     currencyKnown: true,
     exchangeRate: store.exchangeRate,
+    exchangeRateUnset: rateUnset(state, store),
     ruleEnabled: Boolean(state.pricing.rules[store.id]?.enabled),
     canUpdate: store.features.pricing.available,
     missingScopes: store.features.pricing.missingScopes,
@@ -441,6 +448,7 @@ function ruleView(state, store) {
     currencyCode: store.currencyCode,
     currencyKnown: true,
     exchangeRate: store.exchangeRate,
+    exchangeRateUnset: rateUnset(state, store),
     canUpdate: store.features.pricing.available,
     missingScopes: store.features.pricing.missingScopes,
     saved: Boolean(saved),

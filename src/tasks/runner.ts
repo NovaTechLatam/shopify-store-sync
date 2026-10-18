@@ -4,7 +4,7 @@ import { retryDelayMs } from '../sync/queue.js';
 import { WorkLoop } from '../util/work-loop.js';
 import type { TaskDeps, TaskHandler } from './handlers.js';
 import { TASK_HANDLERS, TASK_PAYLOAD_SCHEMAS } from './handlers.js';
-import type { ClaimedTask, TaskKind } from './queue.js';
+import type { ClaimedTask, TaskKind, TaskLane } from './queue.js';
 import { claimTasks, completeTask, extendTaskLease, failTask } from './queue.js';
 
 /** A catalog sync of a big store can take minutes; an expired lease lets another worker retry. */
@@ -19,6 +19,8 @@ export interface TaskRunnerOptions {
   concurrency: number;
   /** Poll interval when there is nothing to do. */
   idleMs?: number;
+  /** Only the stock sync's tasks, or only the features' (CORE_TASK_KINDS); default any. */
+  lane?: TaskLane;
 }
 
 /** Background loop: keeps up to `concurrency` tasks running while there is work. */
@@ -28,11 +30,11 @@ export class TaskRunner {
   constructor(opts: TaskRunnerOptions) {
     const { db, deps, logger } = opts;
     this.loop = new WorkLoop({
-      name: 'task runner',
+      name: opts.lane ? `task runner (${opts.lane})` : 'task runner',
       concurrency: opts.concurrency,
       idleMs: opts.idleMs ?? 2000,
       logger,
-      claim: (limit) => claimTasks(db, limit, TASK_LEASE_MS),
+      claim: (limit) => claimTasks(db, limit, TASK_LEASE_MS, opts.lane),
       run: (task) => runTask(db, deps, task, logger),
     });
   }

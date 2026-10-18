@@ -98,6 +98,7 @@ const REPLIES: Record<string, unknown> = {
   StoreSyncPublish: { publishablePublish: { userErrors: [] } },
   StoreSyncUnpublish: { publishableUnpublish: { userErrors: [] } },
   StoreSyncVariantPrices: { productVariantsBulkUpdate: { userErrors: [] } },
+  StoreSyncVariantPricesRead: { nodes: [] },
   StoreSyncInventoryItemCost: { inventoryItemUpdate: { userErrors: [] } },
   StoreSyncBulkRun: {
     bulkOperationRunQuery: {
@@ -212,6 +213,7 @@ describe('GraphQL variables', () => {
       { id: 'gid://shopify/ProductVariant/3', price: '12.00', compareAtPrice: '15.00' },
     ]);
     await admin.updateInventoryItemCost('gid://shopify/InventoryItem/1', '4.50');
+    await admin.readVariantPrices(['gid://shopify/ProductVariant/1']);
     await admin.startOrdersBulkExport('2026-08-18T00:00:00Z');
     await admin.listOrdersUpdatedSince('2026-08-18T00:00:00Z', null);
     await admin.getOrder('gid://shopify/Order/1');

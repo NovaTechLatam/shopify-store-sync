@@ -605,11 +605,11 @@ describe('editing an order', () => {
     const first = await order(supplierId, [], { exchangeRate: 0.92 });
     expect((await loadOrder(h.db, first, settings)).exchangeRate).toBe(0.92);
     expect(await suggestedExchangeRate(h.db, 'EUR', 'USD')).toBe(0.92);
-    // A store selling in COP gives its rate until an order in COP exists.
-    await h.db.query(
-      `UPDATE stores SET currency_code = 'COP', exchange_rate = 4100 WHERE id = $1`,
-      [h.stores[0]!.id],
-    );
+    // A store selling in COP gives its rate until an order in COP exists, once the rate is set:
+    // its default of 1 would book 600,000 COP as 600,000 USD.
+    await h.db.query(`UPDATE stores SET currency_code = 'COP' WHERE id = $1`, [h.stores[0]!.id]);
+    expect(await suggestedExchangeRate(h.db, 'COP', 'USD')).toBeNull();
+    await h.db.query(`UPDATE stores SET exchange_rate = 4100 WHERE id = $1`, [h.stores[0]!.id]);
     expect(await suggestedExchangeRate(h.db, 'COP', 'USD')).toBe(4100);
     expect(await suggestedExchangeRate(h.db, 'USD', 'USD')).toBe(1);
     // The base currency is always 1.

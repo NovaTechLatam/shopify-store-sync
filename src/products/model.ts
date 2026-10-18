@@ -2,7 +2,9 @@ import { normalizeSku } from '../catalog/sku.js';
 import type { Db, Queryable } from '../db/pool.js';
 import type { PriceRule, PriceRuleRow } from '../pricing/compute.js';
 import { rowToPriceRule } from '../pricing/compute.js';
+import { getSettings } from '../settings.js';
 import type { WeightUnit } from '../shopify/types.js';
+import { exchangeRateUnset } from '../util/money.js';
 import type { PublishedSnapshot } from './desired.js';
 
 /**
@@ -328,6 +330,13 @@ export interface StoreContext {
   /** null until the store was read once. */
   currencyCode: string | null;
   exchangeRate: number;
+  /** In another currency than the base, with a rate nobody set (see exchangeRateUnset). */
+  exchangeRateUnset: boolean;
+  /**
+   * Its products are being read (a new store, or one coming back from paused or error): until
+   * then `variants` doesn't know what it sells, so a product could be created twice.
+   */
+  catalogReading: boolean;
   grantedScopes: string[] | null;
   onlineStorePublicationId: string | null;
   productIdDefinitionAt: Date | null;
@@ -350,7 +359,8 @@ export async function loadStoreContexts(
 ): Promise<StoreContext[]> {
   const filter = storeIds ? 'WHERE s.id = ANY($1::bigint[])' : '';
   const params = storeIds ? [storeIds] : [];
-  const [stores, overrides, locations] = await Promise.all([
+  const [settings, stores, overrides, locations] = await Promise.all([
+    getSettings(db),
     db.query<
       {
         id: number;
@@ -359,6 +369,8 @@ export async function loadStoreContexts(
         shop_domain: string;
         currency_code: string | null;
         exchange_rate: number;
+        exchange_rate_set_at: Date | null;
+        catalog_reading: boolean;
         granted_scopes: string[] | null;
         online_store_publication_id: string | null;
         product_id_definition_at: Date | null;
@@ -366,6 +378,8 @@ export async function loadStoreContexts(
       } & PriceRuleRow
     >(
       `SELECT s.id, s.name, s.status, s.shop_domain, s.currency_code, s.exchange_rate,
+              s.exchange_rate_set_at,
+              s.catalog_pending AS catalog_reading,
               s.granted_scopes, s.online_store_publication_id, s.product_id_definition_at,
               r.store_id IS NOT NULL AS has_rule, r.enabled, r.multiplier, r.add_amount,
               r.round_mode, r.round_step, r.round_ending, r.round_direction, r.compare_at_mode,
@@ -399,6 +413,15 @@ export async function loadStoreContexts(
     shopDomain: s.shop_domain,
     currencyCode: s.currency_code,
     exchangeRate: Number(s.exchange_rate),
+    exchangeRateUnset: exchangeRateUnset(
+      {
+        currencyCode: s.currency_code,
+        exchangeRate: s.exchange_rate,
+        exchangeRateSetAt: s.exchange_rate_set_at,
+      },
+      settings.baseCurrency,
+    ),
+    catalogReading: s.catalog_reading,
     grantedScopes: s.granted_scopes,
     onlineStorePublicationId: s.online_store_publication_id,
     productIdDefinitionAt: s.product_id_definition_at,

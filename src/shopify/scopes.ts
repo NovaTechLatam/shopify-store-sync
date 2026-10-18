@@ -92,7 +92,8 @@ export async function requireFeature(
 /**
  * Saves what we learned from getShop(): the granted scopes (when they were read), the store's
  * currency and time zone. Called wherever the shop is read (connection tests, health checks,
- * webhook registration).
+ * webhook registration). A store whose currency changed in Shopify loses its exchange rate: it
+ * was the rate of the old currency, and must be set again.
  */
 export async function recordShopInfo(
   db: Queryable,
@@ -101,7 +102,10 @@ export async function recordShopInfo(
 ): Promise<void> {
   await db.query(
     `UPDATE stores SET granted_scopes = $2, scopes_checked_at = now(), currency_code = $3,
-                       iana_timezone = $4
+                       iana_timezone = $4,
+                       exchange_rate = CASE WHEN currency_code <> $3 THEN 1 ELSE exchange_rate END,
+                       exchange_rate_set_at = CASE WHEN currency_code <> $3 THEN NULL
+                                                   ELSE exchange_rate_set_at END
       WHERE id = $1`,
     [storeId, shop.scopes, shop.currencyCode, shop.ianaTimezone],
   );

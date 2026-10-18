@@ -379,6 +379,7 @@ function productRows(state, ctx) {
         units: 0,
         revenue: 0,
         cost: 0,
+        costed: false,
         withCost: 0,
         stock: item ? item.quantity : null,
         byStore: new Map(),
@@ -396,6 +397,7 @@ function productRows(state, ctx) {
     row.revenue += revenueBase;
     if (l.unitCost !== null) {
       row.cost += l.unitCost * l.units;
+      row.costed = true;
       row.withCost += revenueBase;
     }
     const s = row.byStore.get(l.storeId) ?? {
@@ -418,7 +420,8 @@ function productRows(state, ctx) {
       title: r.title,
       units: r.units,
       revenue: round(r.revenue, 4),
-      cost: round(r.cost, 4),
+      cost: r.costed ? round(r.cost, 4) : null,
+      revenueWithCost: round(r.withCost, 4),
       margin: r.withCost > 0 ? round((r.withCost - r.cost) / r.withCost, 4) : null,
       stock: r.stock,
       velocity: round(velocity, 2),
@@ -507,7 +510,7 @@ function csv(state, ctx, rows) {
     if (v === null || v === undefined) return '';
     if (typeof v === 'number') return String(v);
     const text = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    return /[",;\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   const header = [
     'SKU',
@@ -516,6 +519,7 @@ function csv(state, ctx, rows) {
     'Units',
     `Revenue (${base})`,
     `Cost (${base})`,
+    `Revenue with a cost (${base})`,
     'Margin (%)',
     'Shared stock',
     'Units a day',
@@ -527,11 +531,14 @@ function csv(state, ctx, rows) {
     r.itemId === null ? 'Not one of your products' : r.title,
     ...ctx.stores.flatMap((s) => {
       const own = r.byStore.find((x) => x.storeId === s.id);
+      // A store whose orders can't be read: empty, not 0 sold.
+      if (!own && s.features?.sales?.available === false) return [null, null];
       return [own?.units ?? 0, round(own?.revenue ?? 0, s.currencyCode === 'CLP' ? 0 : 2)];
     }),
     r.units,
     round(r.revenue, 2),
-    round(r.cost, 2),
+    r.cost === null ? null : round(r.cost, 2),
+    round(r.revenueWithCost, 2),
     r.margin === null ? null : round(r.margin * 100, 1),
     r.stock,
     r.velocity,

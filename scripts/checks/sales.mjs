@@ -71,7 +71,31 @@ export async function flows(ctx) {
       'the dates are marked invalid',
     );
     await shoot(page, 'reports-range-error-1280-light', { fullPage: false });
+    // Past 9999 a date can't be written as YYYY-MM-DD: the server would refuse it.
+    await form.getByLabel('From').fill('9999-12-31');
+    await form.getByLabel('To').fill('9999-12-31');
+    await form.getByRole('button', { name: 'Show' }).click();
+    expect(
+      (await error.textContent()) === 'Enter real dates, from 1970 to 2999.',
+      'a year past 2999 is refused in words',
+    );
+    expect(requests === 0, 'nothing is asked of the server for a far-off year');
     page.off('request', count);
+    // The same range in a shared address falls back to the last 30 days.
+    const asked = [];
+    const record = (req) => {
+      if (req.url().includes('/api/reports/')) asked.push(req.url());
+    };
+    page.on('request', record);
+    await go('#/reports?period=custom&from=9999-12-31&to=9999-12-31');
+    page.off('request', record);
+    expect(
+      (await page.getByRole('button', { name: 'Last 30 days' }).getAttribute('aria-pressed')) ===
+        'true' && asked.every((u) => !u.includes('9999')),
+      `a far-off year in the address isn't asked for (${asked.join(' ')})`,
+    );
+    await page.getByRole('button', { name: 'Custom range' }).click();
+    await form.waitFor();
 
     // Over 3 months: the chart shows weeks.
     await form.getByLabel('From').fill(dayFromToday(-200));
@@ -163,7 +187,12 @@ export async function flows(ctx) {
       res.status() === 200 && res.headers()['content-type'].startsWith('text/csv'),
       'the CSV downloads',
     );
-    expect((await res.text()).split('\r\n')[0].includes('SKU,Product'), 'the CSV has its header');
+    const csvHeader = (await res.text()).split('\r\n')[0];
+    expect(
+      csvHeader.includes('SKU,Product') &&
+        csvHeader.includes('Cost (USD),Revenue with a cost (USD)'),
+      `the CSV has its header, with the revenue cost and margin cover (${csvHeader})`,
+    );
     await shoot(page, 'reports-sorted-1280-light');
   });
 

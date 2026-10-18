@@ -136,8 +136,9 @@ async function nextNumber(client: Queryable): Promise<string> {
 
 /**
  * The exchange rate to suggest for an order in `currency` (units of it per 1 base currency): 1 for
- * the base currency, else the rate of the latest order in that currency, else the rate of a store
- * that sells in it, else null (the merchant has to enter it).
+ * the base currency, else the rate of the latest order in that currency, else the rate a store
+ * that sells in it was given (not the default 1 nobody set: see exchangeRateUnset), else null
+ * (the merchant has to enter it).
  */
 export async function suggestedExchangeRate(
   db: Queryable,
@@ -149,7 +150,9 @@ export async function suggestedExchangeRate(
     `SELECT COALESCE(
               (SELECT exchange_rate FROM purchase_orders WHERE currency_code = $1
                 ORDER BY created_at DESC, id DESC LIMIT 1),
-              (SELECT exchange_rate FROM stores WHERE currency_code = $1 ORDER BY id LIMIT 1)) AS rate`,
+              (SELECT exchange_rate FROM stores
+                WHERE currency_code = $1 AND (exchange_rate <> 1 OR exchange_rate_set_at IS NOT NULL)
+                ORDER BY id LIMIT 1)) AS rate`,
     [currency],
   );
   return rows[0]?.rate ?? null;

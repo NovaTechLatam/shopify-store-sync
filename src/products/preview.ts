@@ -99,11 +99,13 @@ async function previewStore(
   if (prepared.adopted) {
     notes.push(
       `${store.name} already has “${prepared.adopted.title}” with these SKUs: it’s updated ` +
-        'instead of creating a copy.',
+        'instead of creating a copy. Whether it shows in the Online Store stays as it is there.',
     );
   }
+  // Like publish(): an imported or adopted product's Online Store visibility stays as found.
   const asFound =
-    !prepared.recreated && !prepared.adopted && leavesOnlineStore(ps.publishedSnapshot, content);
+    !prepared.recreated &&
+    (prepared.adopted !== null || leavesOnlineStore(ps.publishedSnapshot, content));
   if (content.onlineStore && content.status === 'ACTIVE' && !asFound) {
     const publishing = featureStatus(store.grantedScopes).publishing;
     if (!publishing.available) {

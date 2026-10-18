@@ -1210,6 +1210,10 @@ function validate(model, mode, base) {
   return payload(model, mode, base);
 }
 
+/** Products the picker lists at first; "Show all" lists up to PICKER_MAX. */
+const PICKER_PAGE = 20;
+const PICKER_MAX = 200;
+
 /** Search-and-tick dialog: returns the chosen products (with the supplier's prices) or null. */
 async function pickItems(supplier, onOrder) {
   const searchInput = input({
@@ -1218,20 +1222,39 @@ async function pickItems(supplier, onOrder) {
     autocomplete: 'off',
   });
   const results = h('div', { class: 'picker-results' });
+  // When more products match than are listed: says so, and offers to show them all.
+  const more = h('div', { class: 'picker-more' });
   const announcer = h('p', { class: 'sr-only', 'aria-live': 'polite' });
   const chosenNote = h('p', { class: 'muted small', 'aria-live': 'polite' });
   const chosen = new Map();
   let controller = null;
-  const search = async () => {
+  const search = async (limit = PICKER_PAGE) => {
     controller?.abort();
     controller = new AbortController();
     results.setAttribute('aria-busy', 'true');
     try {
-      const items = await api(
-        `/api/purchasing/item-search${qs({ search: searchInput.value.trim(), supplierId: supplier.id })}`,
+      const { items, total } = await api(
+        `/api/purchasing/item-search${qs({ search: searchInput.value.trim(), supplierId: supplier.id, limit })}`,
         { signal: controller.signal },
       );
-      announcer.textContent = `${plural(items.length, 'product')} found`;
+      const cut = total > items.length;
+      announcer.textContent = cut
+        ? `${plural(total, 'product')} found, ${num(items.length)} listed`
+        : `${plural(total, 'product')} found`;
+      replace(
+        more,
+        cut && [
+          h(
+            'p',
+            { class: 'muted small' },
+            total <= PICKER_MAX
+              ? `Showing ${num(items.length)} of ${num(total)}. Search to narrow it down, or show them all.`
+              : `Showing ${num(items.length)} of ${num(total)}. Search to narrow it down.`,
+          ),
+          total <= PICKER_MAX &&
+            button(`Show all ${num(total)}`, { size: 'small', onClick: () => search(total) }),
+        ],
+      );
       replace(
         results,
         items.length === 0
@@ -1290,7 +1313,10 @@ async function pickItems(supplier, onOrder) {
       results.removeAttribute('aria-busy');
     }
   };
-  searchInput.addEventListener('input', debounce(search, 250));
+  searchInput.addEventListener(
+    'input',
+    debounce(() => search(), 250),
+  );
   searchInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -1309,6 +1335,7 @@ async function pickItems(supplier, onOrder) {
       field({ label: 'Search products', control: searchInput }),
       announcer,
       results,
+      more,
       chosenNote,
     ],
     initialFocus: () => searchInput,

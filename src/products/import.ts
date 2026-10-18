@@ -49,7 +49,7 @@ export async function searchStoreProducts(
   storeId: number,
   search: string | undefined,
   limit = 30,
-): Promise<ImportCandidate[]> {
+): Promise<{ products: ImportCandidate[]; total: number }> {
   const pattern = search ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const { rows } = await db.query<{
     shopify_product_id: string;
@@ -57,8 +57,10 @@ export async function searchStoreProducts(
     variants: number;
     skus: string[] | null;
     in_catalog: { id: number; title: string } | null;
+    total: number;
   }>(
     `SELECT v.shopify_product_id, min(v.product_title) AS title, count(*)::int AS variants,
+            count(*) OVER ()::int AS total,
             array_agg(v.sku ORDER BY v.id) FILTER (WHERE v.sku IS NOT NULL) AS skus,
             (SELECT json_build_object('id', mp.id, 'title', mp.title)
                FROM master_products mp
@@ -82,13 +84,17 @@ export async function searchStoreProducts(
       LIMIT $3`,
     [storeId, pattern, limit],
   );
-  return rows.map((r) => ({
-    productId: r.shopify_product_id,
-    title: r.title,
-    variants: r.variants,
-    skus: r.skus ?? [],
-    inCatalog: r.in_catalog,
-  }));
+  return {
+    products: rows.map((r) => ({
+      productId: r.shopify_product_id,
+      title: r.title,
+      variants: r.variants,
+      skus: r.skus ?? [],
+      inCatalog: r.in_catalog,
+    })),
+    // How many match: the dialog says when it lists only some of them.
+    total: rows[0]?.total ?? 0,
+  };
 }
 
 /** A variant the master gets, with the store it came from (prices and cost are read from it). */
@@ -103,8 +109,11 @@ interface ImportedVariant {
   price: number;
   compareAtPrice: number | null;
   unitCost: number | null;
-  /** The store it came from: its exchange rate converts the prices. */
-  exchangeRate: number;
+  /**
+   * The store it came from: its exchange rate converts the prices. null when that store's rate
+   * isn't known: its prices and cost are left out.
+   */
+  exchangeRate: number | null;
 }
 
 /** Another store's product found by SKU, to link. */
@@ -122,6 +131,19 @@ export async function importProduct(
   const stores = await loadStoreContexts(db, []);
   const source = stores.find((s) => s.id === storeId);
   if (!source) throw new CatalogNotFoundError('This store doesn’t exist.');
+  // Base prices and costs are worked out from the store's: a rate of 1 nobody set would take
+  // 119,900 COP for 119,900 USD.
+  if (!source.currencyCode) {
+    throw new CatalogInputError(
+      `We don’t know ${source.name}’s currency yet. Click “Test connection” on its page first.`,
+    );
+  }
+  if (source.exchangeRateUnset) {
+    throw new CatalogInputError(
+      `${source.name}’s exchange rate isn’t set yet, so its prices can’t be turned into base ` +
+        'prices. Set it on its page, then import the product.',
+    );
+  }
   const product = await readProduct(deps, source, productId);
   if (!product) throw new CatalogNotFoundError(`This product isn’t in ${source.name} any more.`);
 
@@ -203,7 +225,14 @@ export async function importProduct(
       values.forEach((value, i) => {
         if (!options[i]!.values.includes(value)) options[i]!.values.push(value);
       });
-      variants.push(importedVariant(v, options, store.exchangeRate));
+      const rateKnown = store.currencyCode !== null && !store.exchangeRateUnset;
+      if (!rateKnown) {
+        warnings.push(
+          `${v.sku} comes from ${store.name}, whose exchange rate isn’t set yet, so its price ` +
+            'wasn’t used. Give it a base price on the Prices page.',
+        );
+      }
+      variants.push(importedVariant(v, options, rateKnown ? store.exchangeRate : null));
     }
     linked.push({ store, product: found });
   }
@@ -526,7 +555,7 @@ function fitOptions(
 function importedVariant(
   v: ShopifyProduct['variants'][number],
   options: MasterOption[],
-  exchangeRate: number,
+  exchangeRate: number | null,
 ): ImportedVariant {
   return {
     sku: v.sku!.trim(),
@@ -543,9 +572,9 @@ function importedVariant(
   };
 }
 
-/** Store amount → base currency, with numeric(18,4)'s precision. */
-function toBase(amount: number, exchangeRate: number): number {
-  return roundMoney(amount / exchangeRate, 4);
+/** Store amount → base currency, with numeric(18,4)'s precision; null without a rate. */
+function toBase(amount: number, exchangeRate: number | null): number | null {
+  return exchangeRate === null ? null : roundMoney(amount / exchangeRate, 4);
 }
 
 /** A brand's fields where they differ from the master's (null = same). */

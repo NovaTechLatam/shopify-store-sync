@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { h } from '../dom.js';
-import { days, money, num, plural } from '../format.js';
+import { days, money, num, pace, plural } from '../format.js';
 import { card, facts, linkButton, muted } from '../ui.js';
 import { seriesClass } from '../views/reports.js';
 
@@ -46,7 +46,7 @@ export async function section(item, { signal }) {
         [
           ['Units sold', num(t.units)],
           [`Revenue (${base})`, money(t.revenue, base)],
-          ['Per day', report.velocity ? num(report.velocity) : '—'],
+          ['Per day', report.velocity ? pace(report.velocity) : '—'],
           ['Days of stock left', daysLeft(report)],
         ],
         { numbers: true },

@@ -2,7 +2,7 @@ import { setAlert } from '../alerts/alerts.js';
 import { ShopifyApiError } from '../shopify/client.js';
 import type { TaskDeps } from '../tasks/types.js';
 import { getSettings } from '../settings.js';
-import { roundMoney, toMoneyString } from '../util/money.js';
+import { exchangeRateUnset, roundMoney, toMoneyString } from '../util/money.js';
 
 export type CostMethod = 'average' | 'last';
 
@@ -53,9 +53,26 @@ export async function pushItemCosts(
     name: string;
     currency_code: string | null;
     exchange_rate: number;
-  }>('SELECT name, currency_code, exchange_rate FROM stores WHERE id = $1', [storeId]);
+    exchange_rate_set_at: Date | null;
+  }>('SELECT name, currency_code, exchange_rate, exchange_rate_set_at FROM stores WHERE id = $1', [
+    storeId,
+  ]);
   const store = stores[0];
   if (!store) return { updated: 0, failed: 0, skipped: itemIds.length };
+  // Without a rate the costs (base currency) can't be converted: the store keeps its own until the
+  // rate is set and costs are sent again.
+  const rateUnset = exchangeRateUnset(
+    {
+      currencyCode: store.currency_code,
+      exchangeRate: store.exchange_rate,
+      exchangeRateSetAt: store.exchange_rate_set_at,
+    },
+    settings.baseCurrency,
+  );
+  if (rateUnset) {
+    logger.info({ storeId }, 'costs not copied: the store’s exchange rate isn’t set');
+    return { updated: 0, failed: 0, skipped: itemIds.length };
+  }
   const currency = store.currency_code ?? settings.baseCurrency;
   const { rows } = await db.query<{
     item_id: number;

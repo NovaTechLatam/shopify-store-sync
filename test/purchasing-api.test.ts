@@ -568,14 +568,22 @@ describe('reorder API', () => {
       unitCost: 3,
     });
     const res = await api('GET', `/api/purchasing/item-search?search=tee&supplierId=${acme.id}`);
-    expect(res.body.map((r: { sku: string }) => r.sku)).toEqual(['TEE-1', 'TEE-2']);
-    expect(res.body[0]).toMatchObject({ supplierSku: 'ZZ-9', supplierUnitCost: 3, available: 5 });
+    expect(res.body.total).toBe(2);
+    expect(res.body.items.map((r: { sku: string }) => r.sku)).toEqual(['TEE-1', 'TEE-2']);
+    expect(res.body.items[0]).toMatchObject({
+      supplierSku: 'ZZ-9',
+      supplierUnitCost: 3,
+      available: 5,
+    });
     const bySupplierSku = await api('GET', '/api/purchasing/item-search?search=zz-9');
-    expect(bySupplierSku.body).toEqual([]); // supplier SKUs need the supplier
+    expect(bySupplierSku.body).toEqual({ total: 0, items: [] }); // supplier SKUs need the supplier
     const withSupplier = await api(
       'GET',
       `/api/purchasing/item-search?search=zz-9&supplierId=${acme.id}`,
     );
-    expect(withSupplier.body.map((r: { sku: string }) => r.sku)).toEqual(['TEE-1']);
+    expect(withSupplier.body.items.map((r: { sku: string }) => r.sku)).toEqual(['TEE-1']);
+    // Fewer listed than match: the total says how many more there are.
+    const one = await api('GET', '/api/purchasing/item-search?search=tee&limit=1');
+    expect(one.body).toMatchObject({ total: 2, items: [{ sku: 'TEE-1' }] });
   });
 });

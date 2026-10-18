@@ -995,7 +995,8 @@ const PLAIN_ROUNDING = {
 async function baseFromStoreDialog(data, onDone) {
   if (!data) return;
   const base = data.baseCurrency;
-  const stores = data.stores.filter((s) => s.currencyKnown);
+  // A store whose rate was never set can't be converted back to base prices.
+  const stores = data.stores.filter((s) => s.currencyKnown && !s.exchangeRateUnset);
   const storeSelect = select(
     stores.map((s) => ({ value: s.id, label: `${s.name} (${s.currencyCode})` })),
     { value: stores[0]?.id },

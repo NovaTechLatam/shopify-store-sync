@@ -92,6 +92,7 @@ export function createMockState() {
       currencyCode: 'USD',
       timezone: 'America/New_York',
       exchangeRate: 1,
+      exchangeRateSetAt: null,
       features: features(),
       scopesCheckedAt: minutesAgo(60 * 24 * 2),
       locations: [
@@ -132,6 +133,7 @@ export function createMockState() {
       currencyCode: 'COP',
       timezone: 'America/Bogota',
       exchangeRate: 4100,
+      exchangeRateSetAt: minutesAgo(60 * 24 * 30),
       features: features({ sales: ['read_orders'] }),
       scopesCheckedAt: minutesAgo(60 * 24 * 2),
       locations: [
@@ -172,6 +174,7 @@ export function createMockState() {
       currencyCode: 'CLP',
       timezone: 'America/Santiago',
       exchangeRate: 950,
+      exchangeRateSetAt: minutesAgo(60 * 24 * 10),
       // Never checked: the API reports every feature as available (Shopify decides).
       features: features(),
       scopesCheckedAt: null,
@@ -822,6 +825,7 @@ function handle(state, method, pathname, query, body, contentType) {
         currencyCode: 'USD',
         timezone: 'America/New_York',
         exchangeRate: 1,
+        exchangeRateSetAt: null,
         features: features(),
         scopesCheckedAt: new Date().toISOString(),
         locations: [],
@@ -850,8 +854,27 @@ function handle(state, method, pathname, query, body, contentType) {
       }
       for (const key of ['name', 'safetyBuffer', 'status', 'exchangeRate'])
         if (body[key] !== undefined) store[key] = body[key];
+      if (body.exchangeRate !== undefined) store.exchangeRateSetAt = new Date().toISOString();
       if (body.status === 'active') store.lastError = null;
       return storeView(state, store);
+    }
+    case 'GET /stores/:id/removal': {
+      const store = findOr404(state.stores, id, 'Store');
+      const products = state.catalog?.products ?? [];
+      const ownImages = (p) => (p.media ?? []).filter((m) => m.storeId === store.id).length;
+      return {
+        brandVersions: products.filter((p) => {
+          const brand = p.brands?.[store.id];
+          const overlay = brand?.overlay && Object.values(brand.overlay).some((v) => v !== null);
+          return overlay || brand?.extraTags?.length > 0 || ownImages(p) > 0;
+        }).length,
+        brandImages: products.reduce((n, p) => n + ownImages(p), 0),
+        priceRule: Boolean(state.pricing?.rules[store.id]?.enabled),
+        fixedPrices: (state.pricing?.overrides ?? []).filter((o) => o.storeId === store.id).length,
+        orders: new Set(
+          (state.sales?.lines ?? []).filter((l) => l.storeId === store.id).map((l) => l.orderId),
+        ).size,
+      };
     }
     case 'DELETE /stores/:id':
       findOr404(state.stores, id, 'Store');

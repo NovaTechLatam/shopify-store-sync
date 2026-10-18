@@ -1,7 +1,7 @@
 import { ApiError, api } from './api.js';
 import { confirmDialog, formDialog } from './dialog.js';
 import { h } from './dom.js';
-import { days, num, plural } from './format.js';
+import { days, pace, plural } from './format.js';
 import { badge, field, input } from './ui.js';
 
 /** Pieces shared by the purchasing pages (views/purchasing.js, views/purchase-order.js) and the
@@ -36,12 +36,11 @@ export function uuid() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** "3 a day" ("3/day" short), "0.5 a day", "None" (one decimal below 10). */
+/** "3 a day" ("3/day" short), "0.5 a day", "None" (rounded like Reports: see `pace`). */
 export function perDay(velocity, { short = false } = {}) {
   if (velocity === null || velocity === undefined) return '—';
   if (velocity === 0) return 'None';
-  const rounded = velocity >= 10 ? Math.round(velocity) : Math.round(velocity * 10) / 10;
-  return short ? `${num(rounded)}/day` : `${num(rounded)} a day`;
+  return short ? `${pace(velocity)}/day` : `${pace(velocity)} a day`;
 }
 
 /**

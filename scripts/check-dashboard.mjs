@@ -483,12 +483,54 @@ async function flows(browser, baseUrl, server) {
     await page.locator('.toast', { hasText: 'Exchange rate saved' }).waitFor();
     await settle(page);
     expect(server.state.stores[1].exchangeRate === 4250.5, 'rate saved');
+
     const permissions = await page
       .locator('.card', { hasText: 'Permissions for extra features' })
       .textContent();
     expect(
       permissions.includes('read_orders') && permissions.includes('For Reports'),
       'missing permission listed with the feature it turns on',
+    );
+
+    // A rate still at the default 1 isn't a rate: the page says so, and 1 can be saved as it is.
+    Object.assign(server.state.stores[2], { exchangeRate: 1, exchangeRateSetAt: null });
+    await go('#/');
+    await go('#/stores/3');
+    expect(
+      (await page.locator('.fact', { hasText: 'Exchange rate' }).textContent()).includes(
+        'Not set yet',
+      ) && (await page.locator('.banner', { hasText: 'Set the exchange rate' }).count()) === 1,
+      'a rate never set is shown as not set, with what waits for it',
+    );
+    await shoot(page, 'store-rate-unset-1280-light');
+    await page.getByRole('button', { name: 'Save rate' }).click();
+    await page.locator('.toast', { hasText: 'Exchange rate saved' }).waitFor();
+    await settle(page);
+    expect(server.state.stores[2].exchangeRateSetAt !== null, 'a rate of 1 can be confirmed');
+    expect(
+      (await page.locator('.banner', { hasText: 'Set the exchange rate' }).count()) === 0,
+      'the warning goes once the rate is set',
+    );
+    server.state.stores[2].exchangeRate = 950;
+  });
+
+  await step('store: removing it lists what goes with it', async () => {
+    await go('#/stores/2');
+    await page.getByRole('button', { name: 'Remove store' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.locator('li').first().waitFor();
+    const text = await dialog.textContent();
+    expect(
+      /Its own texts or images in \d+ catalog products? \(1 image\)/.test(text) &&
+        text.includes('Its price rule.') &&
+        text.includes('take the catalog’s texts and images'),
+      `the brand's catalog version and prices are named (${text})`,
+    );
+    await shoot(page, 'store-remove-1280-light', { fullPage: false });
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    expect(
+      server.state.stores.some((s) => s.id === 2),
+      'cancelling keeps the store',
     );
   });
 

@@ -1,5 +1,6 @@
 import { setAlert } from '../alerts/alerts.js';
 import type { Queryable } from '../db/pool.js';
+import { loadPace } from '../sales/pace.js';
 import { getSettings, reportTimezone, type Settings } from '../settings.js';
 import { todayIn } from '../util/time.js';
 
@@ -111,13 +112,20 @@ export function computeReorder(input: ReorderInputs): ReorderFigures {
   };
 }
 
+/** Past this many days a stock-out date means nothing (and a JS Date can't hold it for long). */
+const STOCKOUT_HORIZON_DAYS = 36_500;
+
 /**
  * The calendar day (YYYY-MM-DD) the stock runs out, `daysLeft` days after `now`, in `timeZone`
- * (the report time zone, like every "today").
+ * (the report time zone, like every "today"). null when it doesn't sell, or not within 100 years
+ * (millions of units that sell one a month): such a date would overflow Date and break the list.
  */
 export function stockoutDate(daysLeft: number | null, now: Date, timeZone = 'UTC'): string | null {
-  if (daysLeft === null || !Number.isFinite(daysLeft)) return null;
-  return todayIn(timeZone, new Date(now.getTime() + Math.floor(daysLeft) * 86_400_000));
+  if (daysLeft === null || !Number.isFinite(daysLeft) || daysLeft > STOCKOUT_HORIZON_DAYS) {
+    return null;
+  }
+  const day = new Date(now.getTime() + Math.floor(daysLeft) * 86_400_000);
+  return Number.isNaN(day.getTime()) ? null : todayIn(timeZone, day);
 }
 
 export type LeadTimeSource = 'item' | 'supplier' | 'default';
@@ -165,20 +173,16 @@ interface ReorderSqlRow {
   available: number | null;
   started_levels: number;
   on_order: number;
-  units_sold: number;
-  window_days: number;
   alert_open: boolean;
 }
 
 /**
- * The reorder figures of every item that syncs (or of `itemIds`), from one query. An item whose
- * reorder alert is open keeps needing a reorder until it clears the line by reorderCloseMargin,
- * so the Reorder tab and the alerts agree.
+ * The reorder figures of every item that syncs (or of `itemIds`). An item whose reorder alert is
+ * open keeps needing a reorder until it clears the line by reorderCloseMargin, so the Reorder tab
+ * and the alerts agree.
  *
- * The sales window is the last `reorderLookbackDays`, but starts no earlier than the first order
- * we have (any store) and than the item's first appearance (created in Store Sync, or its first
- * recorded sale if that is earlier): a product launched 5 days ago isn't diluted over 30 days,
- * and products that already sold before Store Sync was installed keep their history.
+ * The pace is the one Reports shows (src/sales/pace.ts): the last `reorderLookbackDays`, starting
+ * no earlier than the first order we have and than the item's first appearance.
  */
 export async function loadReorderRows(
   db: Queryable,
@@ -188,21 +192,15 @@ export async function loadReorderRows(
   const now = opts.now ?? new Date();
   const timeZone = await reportTimezone(db, settings);
   const { rows } = await db.query<ReorderSqlRow>(
-    `WITH bounds AS (
-       SELECT $2::timestamptz - make_interval(days => $1) AS lookback_start,
-              (SELECT min(processed_at) FROM sales_orders WHERE NOT test) AS first_order
-     )
-     SELECT i.id, i.sku, i.title, i.reorder_enabled, i.lead_time_days, i.reorder_cover_days, i.cost,
+    `SELECT i.id, i.sku, i.title, i.reorder_enabled, i.lead_time_days, i.reorder_cover_days, i.cost,
             sup.id AS supplier_id, sup.name AS supplier_name, sup.currency_code AS supplier_currency,
             sup.lead_time_days AS supplier_lead_time_days,
             si.supplier_sku, si.unit_cost AS supplier_unit_cost, si.min_order_qty, si.pack_size,
-            lv.available, lv.started_levels, oo.on_order, s.units_sold,
-            GREATEST(1, EXTRACT(EPOCH FROM ($2::timestamptz - w.start)) / 86400)::float8 AS window_days,
+            lv.available, lv.started_levels, oo.on_order,
             EXISTS (SELECT 1 FROM alerts a
                      WHERE a.kind = 'reorder' AND a.dedupe_key = 'reorder:' || i.id
                        AND a.resolved_at IS NULL) AS alert_open
        FROM items i
-       CROSS JOIN bounds b
        LEFT JOIN suppliers sup ON sup.id = i.supplier_id AND sup.archived_at IS NULL
        LEFT JOIN supplier_items si ON si.supplier_id = sup.id AND si.item_id = i.id
        -- Units added but not applied to the stock yet (a delivery the sync engine hasn't reached,
@@ -222,22 +220,15 @@ export async function loadReorderRows(
            FROM purchase_order_lines l
            JOIN purchase_orders po ON po.id = l.purchase_order_id
           WHERE l.item_id = i.id AND po.status IN ('ordered', 'partial')) oo
-       CROSS JOIN LATERAL (
-         SELECT min(processed_at) AS first_sold FROM sales_lines WHERE item_id = i.id) fs
-       -- GREATEST/LEAST skip NULLs: no orders at all, or no sale of this item, just don't count.
-       CROSS JOIN LATERAL (
-         SELECT LEAST(GREATEST(b.lookback_start, b.first_order, LEAST(i.created_at, fs.first_sold)),
-                      $2::timestamptz) AS start) w
-       CROSS JOIN LATERAL (
-         SELECT COALESCE(sum(sl.current_quantity), 0)::int AS units_sold
-           FROM sales_lines sl
-           JOIN sales_orders so ON so.id = sl.order_id
-          WHERE sl.item_id = i.id AND sl.processed_at >= w.start AND sl.processed_at <= $2::timestamptz
-            AND NOT so.test AND so.cancelled_at IS NULL AND NOT sl.is_gift_card) s
-      WHERE i.sync_enabled AND ($3::bigint[] IS NULL OR i.id = ANY($3::bigint[]))
+      WHERE i.sync_enabled AND ($1::bigint[] IS NULL OR i.id = ANY($1::bigint[]))
       ORDER BY i.sku`,
-    [settings.reorderLookbackDays, now, opts.itemIds ?? null],
+    [opts.itemIds ?? null],
   );
+  const pace = await loadPace(db, {
+    lookbackDays: settings.reorderLookbackDays,
+    now,
+    itemIds: rows.map((r) => r.id),
+  });
   return rows.map((r) => {
     const leadTimeSource: LeadTimeSource =
       r.lead_time_days !== null
@@ -250,9 +241,10 @@ export async function loadReorderRows(
     const coverDays = r.reorder_cover_days ?? settings.reorderCoverDays;
     const stockKnown = r.started_levels > 0;
     const available = r.available ?? 0;
+    const { unitsSold, windowDays } = pace.get(r.id) ?? { unitsSold: 0, windowDays: 1 };
     const figures = computeReorder({
-      unitsSold: r.units_sold,
-      windowDays: r.window_days,
+      unitsSold,
+      windowDays,
       available,
       onOrder: r.on_order,
       leadTimeDays,
@@ -274,8 +266,8 @@ export async function loadReorderRows(
       reorderEnabled: r.reorder_enabled,
       stockKnown,
       available,
-      unitsSold: r.units_sold,
-      windowDays: r.window_days,
+      unitsSold,
+      windowDays,
       onOrder: r.on_order,
       leadTimeDays,
       leadTimeSource,

@@ -5,9 +5,11 @@ import {
   syncStoreCatalog,
   withCatalogLock,
 } from '../src/catalog/catalog.js';
-import { createProduct, updateProduct } from '../src/products/editor.js';
+import { LOCK_CLASSES } from '../src/db/locks.js';
+import { createProduct, deleteProduct, updateProduct } from '../src/products/editor.js';
 import { saveImage } from '../src/products/media.js';
 import { loadMasterProduct, loadStoreContexts } from '../src/products/model.js';
+import { previewPublish } from '../src/products/preview.js';
 import { loadCurrentPrices, storeState } from '../src/products/views.js';
 import type { ProductSetRequest } from '../src/shopify/types.js';
 import { updateSettings } from '../src/settings.js';
@@ -321,6 +323,110 @@ describe('when a new SKU starts at 0', () => {
     expect(h.stores.map((s) => shows(s, 'TEE-S'))).toEqual([12, 12]);
   });
 
+  it('takes the start back when a retried publish is refused for good', async () => {
+    const [a] = h.stores;
+    const id = await createProduct(h.db, tee({ handle: 'linen-tee' }));
+    a!.shop.failNext('productSet', 'throw_before');
+    await publish(id, [a!]);
+    await runOnce();
+    // Kept while the write is retried.
+    expect(await pendingStarts()).toEqual(['TEE-M', 'TEE-S']);
+    // Meanwhile the web address got taken in that store: the retry is refused.
+    a!.shop.addProduct({ title: 'Other', handle: 'linen-tee' });
+    await settle();
+    expect((await brandRow(id, a!.id)).publish_state).toBe('failed');
+    expect(await pendingStarts()).toEqual([]);
+    // A TEE-S the merchant then makes by hand keeps its 7.
+    const own = a!.shop.addVariant('TEE-S', { productTitle: 'Linen tee' });
+    a!.shop.stock(own.inventoryItemId, a!.locationId, 7);
+    await refreshInventoryItem(
+      { db: h.db, shopify: h.registry, logger: silentLogger },
+      a!.id,
+      own.inventoryItemId,
+    );
+    await h.drain();
+    expect(shows(a!, 'TEE-S')).toBe(7);
+  });
+
+  it('takes the start back when the product is deleted, or the brand switched off, before the retry', async () => {
+    const [a, b] = h.stores;
+    const gone = await createProduct(h.db, tee());
+    a!.shop.failNext('productSet', 'throw_before');
+    await publish(gone, [a!]);
+    await runOnce();
+    expect(await pendingStarts()).toEqual(['TEE-M', 'TEE-S']);
+    await deleteProduct(h.db, gone);
+    await settle();
+    expect(await pendingStarts()).toEqual([]);
+
+    const off = await createProduct(h.db, tee());
+    b!.shop.failNext('productSet', 'throw_before');
+    await publish(off, [b!]);
+    await runOnce();
+    expect(await pendingStarts()).toEqual(['TEE-M', 'TEE-S']);
+    await h.db.query(
+      `UPDATE master_product_stores SET enabled = false WHERE master_product_id = $1 AND store_id = $2`,
+      [off, b!.id],
+    );
+    await settle();
+    expect(await pendingStarts()).toEqual([]);
+  });
+
+  it('keeps the start another brand counts on when one brand refuses the product', async () => {
+    const [a, b] = h.stores;
+    const id = await createProduct(h.db, tee({ handle: 'linen-tee' }));
+    a!.shop.addProduct({ title: 'Other', handle: 'linen-tee' }); // a refuses the product
+    // a makes the starts and holds its write; b, published meanwhile, finds them made.
+    const held = (s: TestStore) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const state = { reached: false, release };
+      const write = s.shop.productSet.bind(s.shop);
+      vi.spyOn(s.shop, 'productSet').mockImplementation(async (request) => {
+        state.reached = true;
+        await gate;
+        return write(request);
+      });
+      return state;
+    };
+    const writeA = held(a!);
+    const writeB = held(b!);
+    await publish(id, [a!]);
+    const runA = runOnce();
+    await vi.waitFor(() => expect(writeA.reached).toBe(true));
+    await publish(id, [b!]);
+    const runB = runOnce();
+    await vi.waitFor(() => expect(writeB.reached).toBe(true));
+    writeA.release();
+    await runA;
+    expect((await brandRow(id, a!.id)).publish_state).toBe('failed');
+    expect(await pendingStarts()).toEqual(['TEE-M', 'TEE-S']);
+    writeB.release();
+    await runB;
+    await settle();
+    expect((await brandRow(id, b!.id)).publish_state).toBe('published');
+    expect([await shared('TEE-S'), await shared('TEE-M')]).toEqual([0, 0]);
+  });
+
+  it('starts only the warehouses the store stocks, not one no store uses yet', async () => {
+    const [a] = h.stores;
+    await h.db.query(`INSERT INTO warehouses (name) VALUES ('Outlet')`);
+    const id = await createProduct(h.db, tee());
+    await publish(id, [a!]);
+    await settle();
+    const { rows } = await h.db.query<{ warehouse: string; quantity: number | null }>(
+      `SELECT w.name AS warehouse, pl.quantity FROM pool_levels pl
+         JOIN warehouses w ON w.id = pl.warehouse_id JOIN items i ON i.id = pl.item_id
+        WHERE i.sku = 'TEE-S' ORDER BY w.id`,
+    );
+    expect(rows).toEqual([
+      { warehouse: 'Main warehouse', quantity: 0 },
+      { warehouse: 'Outlet', quantity: null },
+    ]);
+    // Nothing waits there to replace a location's stock with 0 once one is mapped to it.
+    expect(await pendingStarts()).toEqual([]);
+  });
+
   it('leaves no start behind when the store refuses the product', async () => {
     const id = await createProduct(h.db, tee({ handle: 'linen-tee' }));
     // The web address is taken in that store: Shopify refuses the product.
@@ -388,10 +494,83 @@ describe('retries never make a second copy', () => {
   });
 });
 
+describe('publishing and price updates of the same store', () => {
+  it('take turns: neither lands in the middle of the other and overwrites its prices', async () => {
+    const [a] = h.stores;
+    const id = await createProduct(h.db, tee());
+    const probe = await h.db.connect();
+    const tryLock = async () => {
+      const { rows } = await probe.query<{ ok: boolean }>(
+        'SELECT pg_try_advisory_lock($1, $2::integer) AS ok',
+        [LOCK_CLASSES.priceApply, a!.id],
+      );
+      return rows[0]!.ok;
+    };
+    try {
+      // A price update is writing the store's prices (a sale just ended): the publish waits.
+      expect(await tryLock()).toBe(true);
+      await publish(id, [a!]);
+      await runOnce();
+      const waiting = await brandRow(id, a!.id);
+      expect(waiting.publish_state).toBe('queued');
+      expect(waiting.last_error).toMatch(/writing this store’s prices/);
+      expect(productSets(a!)).toHaveLength(0);
+      await probe.query('SELECT pg_advisory_unlock($1, $2::integer)', [
+        LOCK_CLASSES.priceApply,
+        a!.id,
+      ]);
+      // While the publish sends the prices it worked out, a price update can't start.
+      let freeDuringWrite: boolean | null = null;
+      const write = a!.shop.productSet.bind(a!.shop);
+      vi.spyOn(a!.shop, 'productSet').mockImplementation(async (request) => {
+        freeDuringWrite = await tryLock();
+        return write(request);
+      });
+      await settle();
+      expect(freeDuringWrite).toBe(false);
+      expect((await brandRow(id, a!.id)).publish_state).toBe('published');
+      expect(await tryLock()).toBe(true);
+    } finally {
+      probe.release(true);
+    }
+  });
+});
+
 describe('a store that already has the product', () => {
   async function readCatalog(s: TestStore) {
     await syncStoreCatalog({ db: h.db, shopify: h.registry, logger: silentLogger }, s.id);
   }
+
+  it('leaves an adopted product’s Online Store visibility as the store has it', async () => {
+    const [a] = h.stores;
+    // Kept off the Online Store on purpose (sold in person only).
+    const existing = a!.shop.addProduct({
+      title: 'Linen tee',
+      status: 'ACTIVE',
+      productOptions: [{ name: 'Size', values: [{ name: 'S' }, { name: 'M' }] }],
+      variants: [
+        { sku: 'TEE-S', optionValues: [{ optionName: 'Size', name: 'S' }], price: '10' },
+        { sku: 'TEE-M', optionValues: [{ optionName: 'Size', name: 'M' }], price: '12' },
+      ],
+    });
+    await readCatalog(a!);
+    const id = await createProduct(h.db, tee()); // "Show in Online Store" is on by default
+    const [preview] = await previewPublish(
+      deps,
+      (await loadMasterProduct(h.db, id))!,
+      await loadStoreContexts(h.db, [], [a!.id]),
+    );
+    expect(preview!.notes[0]).toContain('Whether it shows in the Online Store stays as it is');
+    await publish(id, [a!]);
+    await settle();
+    expect((await brandRow(id, a!.id)).shopify_product_id).toBe(existing.productId);
+    expect(a!.shop.isPublished(existing.productId)).toBe(false);
+    // Another edit doesn't show it either; only the merchant's own choice in the catalog does.
+    await updateProduct(h.db, id, { title: 'Linen tee (new)' });
+    await publish(id, [a!]);
+    await settle();
+    expect(a!.shop.isPublished(existing.productId)).toBe(false);
+  });
 
   it('updates the product holding exactly our SKUs instead of creating a copy', async () => {
     const [a] = h.stores;
@@ -638,6 +817,41 @@ describe('updating a published product', () => {
     await publish(id, [a!]);
     await settle();
     expect(await state()).toEqual({ state: 'published', changedReason: null });
+  });
+});
+
+describe('barcodes', () => {
+  it('leaves a variant’s barcodes alone until the catalog’s barcode changes', async () => {
+    const [a] = h.stores;
+    const id = await createProduct(
+      h.db,
+      tee({
+        variants: [
+          { sku: 'TEE-S', optionValues: ['S'], basePrice: 10, barcode: '4006381333931' },
+          { sku: 'TEE-M', optionValues: ['M'], basePrice: 12 },
+        ],
+      }),
+    );
+    await publish(id, [a!]);
+    await settle();
+    const v = a!.shop.variants.find((x) => x.sku === 'TEE-S')!;
+    expect(a!.shop.barcodesOf(v.variantId)).toEqual([{ value: '4006381333931' }]);
+    // The merchant types it and adds a UPC in Shopify; the catalog's barcode is still the first.
+    const own = [
+      { value: '4006381333931', type: 'EAN' },
+      { value: '012345678905', type: 'UPC' },
+    ];
+    a!.shop.setBarcodes(v.variantId, own);
+    await updateProduct(h.db, id, { title: 'Linen tee (new)' });
+    await publish(id, [a!]);
+    await settle();
+    expect(productSets(a!).at(-1)!.input.variants![0]!.barcodes).toBeUndefined();
+    expect(a!.shop.barcodesOf(v.variantId)).toEqual(own);
+    // A barcode changed in the catalog is sent, and becomes the variant's barcode.
+    await h.db.query(`UPDATE master_variants SET barcode = '5901234123457' WHERE sku = 'TEE-S'`);
+    await publish(id, [a!]);
+    await settle();
+    expect(a!.shop.barcodesOf(v.variantId)).toEqual([{ value: '5901234123457' }]);
   });
 });
 

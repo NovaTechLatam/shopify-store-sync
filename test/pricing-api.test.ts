@@ -553,6 +553,32 @@ describe('updating the stores', () => {
     expect(c.reason).toContain('doesn’t manage prices');
   });
 
+  it('doesn’t convert base prices with an exchange rate nobody set', async () => {
+    // Harbor's rate is still the default 1: a 10 USD base price would be sent as 10.99 COP.
+    await h.db.query('UPDATE stores SET exchange_rate = 1 WHERE id = $1', [cop.id]);
+    await api('PUT', `/api/prices/rules/${cop.id}`, RULE);
+    const tee = await item('TEE', { base: 10, cop: 41000 });
+    const message =
+      '“Harbor”’s exchange rate isn’t set yet, so its prices can’t be worked out. Set it on its page, then update prices again.';
+    const preview = await api('GET', '/api/prices/apply/preview');
+    expect(preview.body.stores[1]).toMatchObject({ canUpdate: false, reason: message });
+    const rules = await api('GET', '/api/prices/rules');
+    expect(rules.body.rules[1]).toMatchObject({ exchangeRateUnset: true });
+    const res = await api('POST', '/api/prices/apply', { storeIds: [cop.id] });
+    expect(res).toEqual({ status: 409, body: { error: message } });
+    await settle();
+    expect(shopVariant(cop, tee).price).toBe(41000);
+    // Nor its prices back into base prices.
+    const back = await api('POST', '/api/prices/base-from-store', { storeId: cop.id });
+    expect(back.status).toBe(409);
+    expect(back.body.error).toContain('exchange rate isn’t set yet');
+
+    await api('PATCH', `/api/stores/${cop.id}`, { exchangeRate: 4100 });
+    expect((await api('POST', '/api/prices/apply', { storeIds: [cop.id] })).status).toBe(202);
+    await settle();
+    expect(shopVariant(cop, tee).price).toBe(41000.99);
+  });
+
   it('starts a run, writes the prices, and records it in the history', async () => {
     await api('PUT', `/api/prices/rules/${usd.id}`, RULE);
     const tee = await item('TEE', { base: 10, usd: 9.5 });

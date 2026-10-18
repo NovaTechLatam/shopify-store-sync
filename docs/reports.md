@@ -83,15 +83,15 @@ per store, units per day, and days of stock left, with a link to the product in 
 
 ## How each number is worked out
 
-| Number             | What it means                                                                                                                                 |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Revenue            | What customers paid for products after discounts and refunds, **before tax and shipping**.                                                    |
-| Units sold         | Units ordered, minus the ones refunded or removed from the order.                                                                             |
-| Orders             | Orders placed in the period. Test and cancelled orders are left out.                                                                          |
-| Margin             | (Revenue − cost) ÷ revenue, only over the sales that have a cost. The tile tells you how much revenue had no cost.                            |
-| Per day            | Units sold per day over the last 30 days (Settings > Reorder planning, sales pace), in **every** store, whatever period or stores you picked. |
-| Days of stock left | The shared stock now ÷ units per day. "Out of stock" when there is none left.                                                                 |
-| Sell-through       | Units sold in the period ÷ (units sold + stock now): how much of what you had sold. 80% means a fifth is left.                                |
+| Number             | What it means                                                                                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Revenue            | What customers paid for products after discounts and refunds, **before tax and shipping**.                                                                                        |
+| Units sold         | Units ordered, minus the ones refunded or removed from the order.                                                                                                                 |
+| Orders             | Orders placed in the period. Test and cancelled orders are left out.                                                                                                              |
+| Margin             | (Revenue − cost) ÷ revenue, only over the sales that have a cost. The tile tells you how much revenue had no cost.                                                                |
+| Per day            | Units sold per day over the last 30 days (Settings > Reorder planning, sales pace), in **every** store, whatever period or stores you picked. The Reorder tab uses the same pace. |
+| Days of stock left | The shared stock now ÷ units per day. "Out of stock" when there is none left.                                                                                                     |
+| Sell-through       | Units sold in the period ÷ (units sold + stock now): how much of what you had sold. 80% means a fifth is left.                                                                    |
 
 Some details:
 
@@ -108,9 +108,13 @@ Some details:
   change of cost doesn't rewrite past margins. Sales that came in before the product had any cost
   take the first cost you give it.
 - **Left out:** test orders, cancelled orders and gift cards (they aren't products you stock).
-- **Per day** doesn't spread a new product's sales over days before it existed, nor over days
-  before your history starts. It is shown with 2 decimals, so a product selling less than one unit
-  in 200 days shows "—".
+- **A store you remove** takes its sales history with it (see
+  [Removing a store](operations.md#removing-a-store)).
+- **Per day** doesn't spread a product's sales over days before it first appeared (added to Store
+  Sync, or its first sale if that is earlier), nor over days before your history starts, and it
+  only counts the sales of those days. Right after you install Store Sync, a product sold for
+  months is measured over the history read so far. It is shown like on the Purchasing card: one
+  decimal below 10 a day, and "<0.1" for a product that sells only now and then.
 - **Days of stock left** use the shared stock as the sync has it. A delivery you just received
   counts a few seconds later (or when syncing resumes, if it's paused), while the Reorder tab
   counts it at once.
@@ -152,8 +156,11 @@ an import never starts.
 - **Deleted orders** disappear from Reports when they are deleted in Shopify.
 - **A paused store** keeps its past sales; new ones come in again when you resume it.
 - **The CSV** opens in Excel, Numbers and Google Sheets. Text that starts like a formula (`=`,
-  `+`, `-`, `@`) gets an apostrophe in front, so opening the file can never run anything. Money is
-  in each currency's own decimals.
+  `+`, `-`, `@`) gets an apostrophe in front, and text with a semicolon is quoted (for spreadsheets
+  that split on semicolons), so opening the file can never run anything. Money is in each
+  currency's own decimals. **Cost** only covers the sales that have a cost, and is empty when none
+  has: work out profit as **Revenue with a cost** − **Cost**, not from the whole revenue. A store
+  whose orders Store Sync may not read has empty cells.
 
 ## Under the hood
 
@@ -224,6 +231,6 @@ bounds are local midnights turned into instants, so the `(store_id, processed_at
 `sales_lines` and `sales_orders` are used. Orders are counted from `sales_orders` (counting
 distinct orders of the lines needs a big sort). Amounts are summed per store, then divided by the
 store's exchange rate. The products report sums lines per item and store, adds the stock (Σ
-started pool levels) and the pace (units over `reorderLookbackDays` in every store, divided by the
-days the window really covers), then sorts and pages. On 600,000 lines (3 stores, a year), the
+started pool levels) and the pace (`src/sales/pace.ts`, shared with the Reorder tab: units over
+`reorderLookbackDays` in every store, divided by the days the window really covers), then sorts and pages. On 600,000 lines (3 stores, a year), the
 summary took about 0.1 s for 30 days and 0.5 s for a year, and the products report 0.3 to 0.7 s.

@@ -220,7 +220,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, deps: AppDeps)
     const q = ImportSearchQuery.parse(request.query);
     const store = await db.query('SELECT 1 FROM stores WHERE id = $1', [q.storeId]);
     if (!store.rowCount) throw notFound('Store');
-    return { products: await searchStoreProducts(db, q.storeId, q.search) };
+    return searchStoreProducts(db, q.storeId, q.search);
   });
 
   app.post('/api/catalog/import', async (request, reply) => {

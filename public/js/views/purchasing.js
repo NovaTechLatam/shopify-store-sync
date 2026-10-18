@@ -1260,11 +1260,14 @@ async function supplierItemDialog(supplier, existing, reload) {
     controller = new AbortController();
     results.setAttribute('aria-busy', 'true');
     try {
-      const items = await api(
+      const { items, total } = await api(
         `/api/purchasing/item-search${qs({ search: searchInput.value.trim(), supplierId: supplier.id })}`,
         { signal: controller.signal },
       );
-      announcer.textContent = `${plural(items.length, 'product')} found`;
+      const cut = total > items.length;
+      announcer.textContent = cut
+        ? `${plural(total, 'product')} found, ${num(items.length)} listed`
+        : `${plural(total, 'product')} found`;
       replace(
         results,
         items.length === 0
@@ -1304,6 +1307,12 @@ async function supplierItemDialog(supplier, existing, reload) {
                 );
               }),
             ),
+        cut &&
+          h(
+            'p',
+            { class: 'muted small picker-more' },
+            `Showing ${num(items.length)} of ${num(total)}. Search to narrow it down.`,
+          ),
       );
     } catch (err) {
       if (!isAbort(err)) replace(results, h('p', { class: 'field-error' }, err.message));

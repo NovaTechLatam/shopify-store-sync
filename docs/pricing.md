@@ -70,7 +70,10 @@ The Rules tab shows live examples while you edit a rule, with a few of your own 
    app (see [Setting up Shopify](setup-shopify.md#permissions-for-the-extra-features)). A store
    without it shows a warning on the Prices page and can't be chosen when updating.
 2. **Choose the base currency** in Settings > Currency, and set each store's **exchange rate** on
-   its page when its currency is different.
+   its page when its currency is different. Until you save it, a store in another currency shows
+   "Not set yet": its rule can't update its prices, its prices can't become base prices, and
+   catalog products aren't published to it (a rate of 1 would send 25 USD as 25 COP). Save 1 if
+   that really is the rate.
 3. **Enter base prices.** Type them in the list, or use **Set base prices from a store…** to copy
    the prices one store charges now (divided by its exchange rate). Pick the store whose prices the
    others follow. Leave "Only products without a base price" on to keep the ones you already set.
@@ -107,7 +110,8 @@ typo doesn't go live unnoticed. These counts use the prices we last read from ea
 
 When you confirm, for each store:
 
-1. Store Sync **reads the store's current prices again** from Shopify.
+1. Store Sync **reads the store's current prices again** from Shopify: only the products the
+   update covers (a sale's, one product's), or every product for an update of all of them.
 2. It works out each price again (with any change you made in the meantime) and sends **only the
    prices that differ**. Prices are sent as amounts ("set to 12.99"), never as changes ("add
    10%"), so a repeated update can never apply twice.

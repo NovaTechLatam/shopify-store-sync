@@ -23,6 +23,7 @@ import {
   RUN_CREATE_LOCK,
   busyStores,
   createPriceRun,
+  exchangeRateUnsetMessage,
   loadRuns,
   pendingRestores,
   storeUnavailableMessage,
@@ -215,6 +216,7 @@ function storeView(s: PricingStore) {
     currencyCode: s.currencyCode,
     currencyKnown: s.currencyKnown,
     exchangeRate: s.exchangeRate,
+    exchangeRateUnset: s.exchangeRateUnset,
     ruleEnabled: s.rule?.enabled ?? false,
     /** Store Sync may write this store's prices (write_products, as far as we know). */
     canUpdate: s.pricingMissingScopes.length === 0,
@@ -257,6 +259,7 @@ function ruleView(store: PricingStore) {
     currencyCode: store.currencyCode,
     currencyKnown: store.currencyKnown,
     exchangeRate: store.exchangeRate,
+    exchangeRateUnset: store.exchangeRateUnset,
     canUpdate: store.pricingMissingScopes.length === 0,
     missingScopes: store.pricingMissingScopes,
     saved: store.rule !== null,
@@ -503,6 +506,11 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
     if (!store.currencyKnown) {
       throw conflict(
         `We don’t know “${store.name}”’s currency yet. Click “Test connection” on its page first.`,
+      );
+    }
+    if (store.exchangeRateUnset) {
+      throw conflict(
+        `“${store.name}”’s exchange rate isn’t set yet, so its prices can’t be turned into base prices. Set it on its page first.`,
       );
     }
     const decimals = currencyDecimals(baseCurrency);
@@ -763,9 +771,11 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
                 'Add the permission in the app’s settings, then click “Test connection” on the store’s page.'
               : !store.currencyKnown
                 ? `We don’t know “${store.name}”’s currency yet. Click “Test connection” on its page.`
-                : isBusy
-                  ? `Prices are already being updated in “${store.name}”. Wait until that finishes.`
-                  : null));
+                : store.rule?.enabled && store.exchangeRateUnset
+                  ? exchangeRateUnsetMessage(store.name)
+                  : isBusy
+                    ? `Prices are already being updated in “${store.name}”. Wait until that finishes.`
+                    : null));
         drops.sort((a, b) => a.change - b.change);
         return {
           storeId: store.id,

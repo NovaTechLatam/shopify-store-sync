@@ -9,6 +9,24 @@ import { z } from 'zod';
 /** An ISO 4217 currency code, e.g. 'USD'. */
 export const CURRENCY_CODE = z.string().regex(/^[A-Z]{3}$/, 'Use a 3-letter currency code');
 
+/**
+ * Whether a store's exchange rate must be set before base amounts (base prices, costs) can be
+ * converted to its currency, or its amounts back: its currency is known and isn't the base
+ * currency, and its rate is still the default 1 nobody chose (stores.exchange_rate_set_at NULL).
+ * Used as it is, a 25 USD base price would go to a COP store as 25 COP.
+ */
+export function exchangeRateUnset(
+  store: { currencyCode: string | null; exchangeRate: number; exchangeRateSetAt: Date | null },
+  baseCurrency: string,
+): boolean {
+  return (
+    store.currencyCode !== null &&
+    store.currencyCode !== baseCurrency &&
+    Number(store.exchangeRate) === 1 &&
+    store.exchangeRateSetAt === null
+  );
+}
+
 const decimalsCache = new Map<string, number>();
 
 /** Decimals a currency is written with: USD 2, CLP and JPY 0, KWD 3. Unknown codes get 2. */

@@ -393,17 +393,18 @@ export function handle(req, tools) {
       const storeId = Number(query.get('storeId'));
       if (!state.stores.some((s) => s.id === storeId)) throw new HttpError(404, 'Store not found');
       const search = query.get('search');
+      const found = storeProducts(state, storeId).filter((g) =>
+        matches(search, g.title, ...g.skus),
+      );
       return {
-        products: storeProducts(state, storeId)
-          .filter((g) => matches(search, g.title, ...g.skus))
-          .slice(0, 30)
-          .map((g) => ({
-            productId: g.productId,
-            title: g.title,
-            variants: g.variants.length,
-            skus: g.skus,
-            inCatalog: g.inCatalog,
-          })),
+        total: found.length,
+        products: found.slice(0, 30).map((g) => ({
+          productId: g.productId,
+          title: g.title,
+          variants: g.variants.length,
+          skus: g.skus,
+          inCatalog: g.inCatalog,
+        })),
       };
     }
     case 'POST /catalog/import': {

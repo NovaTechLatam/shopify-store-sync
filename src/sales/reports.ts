@@ -2,7 +2,8 @@ import type { Queryable } from '../db/pool.js';
 import { getSettings, reportTimezone, type Settings } from '../settings.js';
 import { missingScopes } from '../shopify/scopes.js';
 import { roundMoney } from '../util/money.js';
-import { paceDays, productFigures } from './metrics.js';
+import { productFigures } from './metrics.js';
+import { loadPace } from './pace.js';
 import { datesBetween, resolvePeriod } from './period.js';
 
 /**
@@ -106,7 +107,6 @@ const COUNTED = `l.processed_at >= $1 AND l.processed_at < $2 AND l.store_id = A
   AND o.processed_at >= $1 AND o.processed_at < $2 AND o.store_id = ANY($3::bigint[])
   AND NOT l.is_gift_card AND NOT o.test AND o.cancelled_at IS NULL`;
 
-const DAY_MS = 24 * 60 * 60_000;
 const money = (n: number) => roundMoney(n, 4);
 const fraction = (n: number | null) => (n === null ? null : Math.round(n * 10_000) / 10_000);
 const marginOf = (revenueWithCost: number, cost: number) =>
@@ -311,7 +311,10 @@ export interface ProductRow {
   units: number;
   /** Base currency. */
   revenue: number;
-  cost: number;
+  /** Σ unit cost × units of the lines that have a cost (base currency); null when none has. */
+  cost: number | null;
+  /** Revenue of the lines that have a cost: what `cost` and `margin` compare with. */
+  revenueWithCost: number;
   margin: number | null;
   /** Shared stock now (every warehouse); null when the product hasn't started syncing. */
   stock: number | null;
@@ -350,18 +353,19 @@ export async function loadProductRows(
     [ctx.start, ctx.end, ctx.stores.map((s) => s.id)],
   );
   const soldItemIds = [...new Set(sold.flatMap((r) => (r.item_id === null ? [] : [r.item_id])))];
-  const lookback = ctx.settings.reorderLookbackDays;
-  const [items, recent, first] = await Promise.all([
-    db.query<{ id: number; sku: string; title: string; created_at: Date; stock: number | null }>(
-      `SELECT i.id, i.sku, i.title, i.created_at, sum(pl.quantity)::int AS stock
-         FROM items i LEFT JOIN pool_levels pl ON pl.item_id = i.id
-        GROUP BY i.id
-       HAVING i.id = ANY($1::bigint[]) OR sum(pl.quantity) > 0`,
-      [soldItemIds],
-    ),
-    recentUnits(db, ctx, now),
-    firstOrderAt(db),
-  ]);
+  const items = await db.query<{ id: number; sku: string; title: string; stock: number | null }>(
+    `SELECT i.id, i.sku, i.title, sum(pl.quantity)::int AS stock
+       FROM items i LEFT JOIN pool_levels pl ON pl.item_id = i.id
+      GROUP BY i.id
+     HAVING i.id = ANY($1::bigint[]) OR sum(pl.quantity) > 0`,
+    [soldItemIds],
+  );
+  // Every store: the pace is the product's, whatever stores the report shows.
+  const pace = await loadPace(db, {
+    lookbackDays: ctx.settings.reorderLookbackDays,
+    now,
+    itemIds: items.rows.map((i) => i.id),
+  });
 
   const rate = new Map(ctx.allStores.map((s) => [s.id, s.exchangeRate]));
   interface Acc {
@@ -369,10 +373,11 @@ export async function loadProductRows(
     sku: string | null;
     title: string;
     stock: number | null;
-    createdAt: Date | null;
     units: number;
     revenue: number;
     cost: number;
+    /** Some line has a cost. */
+    costed: boolean;
     revenueWithCost: number;
     byStore: ProductRow['byStore'];
   }
@@ -383,10 +388,10 @@ export async function loadProductRows(
       sku: i.sku,
       title: i.title,
       stock: i.stock,
-      createdAt: i.created_at,
       units: 0,
       revenue: 0,
       cost: 0,
+      costed: false,
       revenueWithCost: 0,
       byStore: [],
     });
@@ -401,10 +406,10 @@ export async function loadProductRows(
         sku: r.other_sku,
         title: '',
         stock: null,
-        createdAt: null,
         units: 0,
         revenue: 0,
         cost: 0,
+        costed: false,
         revenueWithCost: 0,
         byStore: [],
       };
@@ -414,7 +419,10 @@ export async function loadProductRows(
     const revenueBase = r.revenue / storeRate;
     row.units += r.units;
     row.revenue += revenueBase;
-    row.cost += r.cost ?? 0;
+    if (r.cost !== null) {
+      row.cost += r.cost;
+      row.costed = true;
+    }
     row.revenueWithCost += (r.revenue_with_cost ?? 0) / storeRate;
     row.byStore.push({
       storeId: r.store_id,
@@ -425,14 +433,15 @@ export async function loadProductRows(
   }
 
   return [...acc.values()].map((a) => {
+    const itemPace = a.itemId === null ? undefined : pace.get(a.itemId);
     const figures = productFigures({
       units: a.units,
       revenue: a.revenue,
       cost: a.cost,
       revenueWithCost: a.revenueWithCost,
       stock: a.stock,
-      recentUnits: a.itemId === null ? 0 : (recent.get(a.itemId) ?? 0),
-      paceDays: paceDays(now, lookback, a.createdAt, first),
+      recentUnits: itemPace?.unitsSold ?? 0,
+      paceDays: itemPace?.windowDays ?? 1,
     });
     return {
       itemId: a.itemId,
@@ -440,7 +449,8 @@ export async function loadProductRows(
       title: a.title,
       units: a.units,
       revenue: money(a.revenue),
-      cost: money(a.cost),
+      cost: a.costed ? money(a.cost) : null,
+      revenueWithCost: money(a.revenueWithCost),
       margin: fraction(figures.margin),
       stock: a.stock,
       velocity: Math.round(figures.velocity * 100) / 100,
@@ -449,45 +459,6 @@ export async function loadProductRows(
       byStore: a.byStore.sort((x, y) => x.storeId - y.storeId),
     };
   });
-}
-
-/** Units sold per item over the last `days`, every store (the pace). */
-async function recentUnits(
-  db: Queryable,
-  ctx: ReportContext,
-  now: Date,
-  itemId?: number,
-): Promise<Map<number, number>> {
-  // Every store: the pace is the product's, whatever stores the report shows.
-  const params: unknown[] = [
-    new Date(now.getTime() - ctx.settings.reorderLookbackDays * DAY_MS),
-    now,
-    ctx.allStores.map((s) => s.id),
-  ];
-  const { rows } = await db.query<{ item_id: number; units: number }>(
-    itemId === undefined
-      ? `SELECT l.item_id, sum(l.current_quantity)::int AS units
-           FROM sales_lines l JOIN sales_orders o ON o.id = l.order_id
-          WHERE l.item_id IS NOT NULL AND ${COUNTED}
-          GROUP BY l.item_id`
-      : `SELECT l.item_id, sum(l.current_quantity)::int AS units
-           FROM sales_lines l JOIN sales_orders o ON o.id = l.order_id
-          WHERE l.item_id = $4 AND ${COUNTED}
-          GROUP BY l.item_id`,
-    itemId === undefined ? params : [...params, itemId],
-  );
-  return new Map(rows.map((r) => [r.item_id, r.units]));
-}
-
-/** The oldest order we have of any store (where the history starts). */
-async function firstOrderAt(db: Queryable): Promise<Date | null> {
-  // Per store, so each lookup is one step down the (store_id, processed_at) index.
-  const { rows } = await db.query<{ first_at: Date | null }>(
-    `SELECT min(f.first_at) AS first_at FROM stores s
-       CROSS JOIN LATERAL (SELECT min(processed_at) AS first_at FROM sales_orders
-                            WHERE store_id = s.id AND deleted_at IS NULL) f`,
-  );
-  return rows[0]?.first_at ?? null;
 }
 
 // ---- one product ------------------------------------------------------------------------------
@@ -502,10 +473,9 @@ export async function loadItemReport(
   const { rows: found } = await db.query<{
     sku: string;
     title: string;
-    created_at: Date;
     stock: number | null;
   }>(
-    `SELECT i.sku, i.title, i.created_at,
+    `SELECT i.sku, i.title,
             (SELECT sum(quantity)::int FROM pool_levels WHERE item_id = i.id) AS stock
        FROM items i WHERE i.id = $1`,
     [itemId],
@@ -528,15 +498,15 @@ export async function loadItemReport(
     [ctx.start, ctx.end, ctx.stores.map((s) => s.id), itemId, ctx.timezone],
   );
   const lookback = ctx.settings.reorderLookbackDays;
-  const [recent, first] = await Promise.all([recentUnits(db, ctx, now, itemId), firstOrderAt(db)]);
+  const pace = (await loadPace(db, { lookbackDays: lookback, now, itemIds: [itemId] })).get(itemId);
   const figures = productFigures({
     units: 0,
     revenue: 0,
     cost: 0,
     revenueWithCost: 0,
     stock: item.stock,
-    recentUnits: recent.get(itemId) ?? 0,
-    paceDays: paceDays(now, lookback, item.created_at, first),
+    recentUnits: pace?.unitsSold ?? 0,
+    paceDays: pace?.windowDays ?? 1,
   });
 
   const perStore = new Map(ctx.stores.map((s) => [s.id, { orders: 0, units: 0, revenue: 0 }]));

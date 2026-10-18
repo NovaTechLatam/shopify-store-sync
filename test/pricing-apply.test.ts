@@ -226,17 +226,24 @@ describe('apply_prices', () => {
     });
   });
 
-  it('reads only the products in scope when the run covers a few items', async () => {
+  it('reads only the variants in scope when the run covers some items, however many', async () => {
     await setRule(usd.id, ENDING_99);
-    const tee = await pricedItem('TEE', 10, [9, 1]);
+    const items: TestItem[] = [];
+    // More products than a few product reads: still never the whole store.
+    for (let i = 0; i < 30; i++) items.push(await pricedItem(`TEE-${i}`, 10, [9, 1]));
     await pricedItem('CAP', 20, [9, 1]);
     const listAll = vi.spyOn(usd.shop, 'listVariants');
-    const listOne = vi.spyOn(usd.shop, 'listProductVariants');
-    await newRun({ itemIds: [tee.itemId], storeIds: [usd.id] });
+    await newRun({ itemIds: items.map((i) => i.itemId), storeIds: [usd.id] });
     await settle();
     expect(listAll).not.toHaveBeenCalled();
-    expect(listOne).toHaveBeenCalledTimes(1);
-    expect(priceCalls(usd)).toHaveLength(1);
+    const reads = usd.shop.calls.filter((c) => c.op === 'readVariantPrices');
+    expect(reads).toHaveLength(1);
+    expect((reads[0]!.args as { variantIds: string[] }).variantIds).toHaveLength(30);
+    expect(priceCalls(usd)).toHaveLength(30);
+    // A run over every product reads the whole store (and keeps every price for the list).
+    await newRun({ storeIds: [usd.id] });
+    await settle();
+    expect(listAll).toHaveBeenCalledTimes(1);
   });
 
   it('sends compare-at prices, and leaves them out when the rule keeps the store’s', async () => {
@@ -415,7 +422,7 @@ describe('apply_prices', () => {
       expect((await runStores(run!.runId))[0]!.status).toBe('queued');
       expect(shopVariant(usd, tee).price).toBe(9);
       const { rows } = await h.db.query<{ last_error: string }>('SELECT last_error FROM tasks');
-      expect(rows[0]!.last_error).toContain('still running');
+      expect(rows[0]!.last_error).toContain('writing this store’s prices');
     } finally {
       await other.query('SELECT pg_advisory_unlock($1, $2::integer)', [
         LOCK_CLASSES.priceApply,

@@ -11,9 +11,9 @@ export interface ProductSums {
   revenueWithCost: number;
   /** Shared stock now: Σ of the item's started pool levels; null when none is started. */
   stock: number | null;
-  /** Units sold in the pace window (all stores). */
+  /** Units sold in the pace window (all stores; see src/sales/pace.ts). */
   recentUnits: number;
-  /** Days the pace window really covers (see paceDays). */
+  /** Days the pace window really covers. */
   paceDays: number;
 }
 
@@ -26,25 +26,6 @@ export interface ProductFigures {
   daysLeft: number | null;
   /** Units ÷ (units + stock): how much of what was there sold in the period. */
   sellThrough: number | null;
-}
-
-const DAY_MS = 24 * 60 * 60_000;
-
-/**
- * How many days the pace window really covers: the last `lookbackDays`, but not before the item
- * existed nor before the oldest order we have (a product added 5 days ago, or a store whose
- * history only starts today, isn't diluted over 30 days). At least 1.
- */
-export function paceDays(
-  now: Date,
-  lookbackDays: number,
-  itemCreatedAt: Date | null,
-  firstOrderAt: Date | null,
-): number {
-  let start = now.getTime() - lookbackDays * DAY_MS;
-  if (itemCreatedAt) start = Math.max(start, itemCreatedAt.getTime());
-  if (firstOrderAt) start = Math.max(start, firstOrderAt.getTime());
-  return Math.max(1, (now.getTime() - start) / DAY_MS);
 }
 
 export function productFigures(s: ProductSums): ProductFigures {

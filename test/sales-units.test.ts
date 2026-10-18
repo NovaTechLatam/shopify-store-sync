@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { csvCell, toCsv } from '../src/sales/csv.js';
 import { historyWindow, readLines } from '../src/sales/history.js';
-import { paceDays, productFigures, sortRows } from '../src/sales/metrics.js';
+import { productFigures, sortRows } from '../src/sales/metrics.js';
 import {
   addDays,
   datesBetween,
@@ -20,6 +20,11 @@ describe('CSV', () => {
     }
     expect(csvCell('=HYPERLINK("http://x")')).toBe(`"'=HYPERLINK(""http://x"")"`);
     expect(csvCell('TEE-1')).toBe('TEE-1');
+    // Excel where ';' separates lists splits there: the formula after it would run.
+    expect(csvCell('Linen tee;=HYPERLINK("http://x");x')).toBe(
+      '"Linen tee;=HYPERLINK(""http://x"");x"',
+    );
+    expect(toCsv([['TEE-1', 'a;=1+2;b', 3]])).toBe('﻿TEE-1,"a;=1+2;b",3\r\n');
   });
 
   it('quotes like RFC 4180 and keeps our numbers as numbers', () => {
@@ -55,6 +60,17 @@ describe('report periods', () => {
       '2026-03-08',
       '2026-03-09',
     ]);
+  });
+
+  it('only takes years it can walk, and always stops walking', () => {
+    expect(isDate('9999-12-31')).toBe(false);
+    expect(isDate('3000-01-01')).toBe(false);
+    expect(isDate('1969-12-31')).toBe(false);
+    expect(isDate('2999-12-31')).toBe(true);
+    expect(isDate('1970-01-01')).toBe(true);
+    // The day after 9999-12-31 is '+010000-01-01': walking by text comparison never ended.
+    expect(datesBetween('9999-12-30', '9999-12-31')).toEqual(['9999-12-30', '9999-12-31']);
+    expect(datesBetween('2026-10-02', '2026-10-01')).toEqual([]);
   });
 
   it('knows what day it is in each time zone', () => {
@@ -164,14 +180,6 @@ describe('product figures', () => {
     // Oversold: nothing left, everything sold.
     expect(productFigures({ ...sums, stock: -4 })).toMatchObject({ daysLeft: 0, sellThrough: 1 });
     expect(productFigures({ ...sums, units: 0, stock: 0 }).sellThrough).toBeNull();
-  });
-
-  it('measures the pace only over days the product and the history existed', () => {
-    const now = new Date('2026-10-18T00:00:00Z');
-    expect(paceDays(now, 30, null, null)).toBe(30);
-    expect(paceDays(now, 30, new Date(now.getTime() - 5 * DAY), null)).toBe(5);
-    expect(paceDays(now, 30, null, new Date(now.getTime() - 12 * DAY))).toBe(12);
-    expect(paceDays(now, 30, new Date(now.getTime() - 3_600_000), null)).toBe(1);
   });
 
   it('sorts with missing figures last in both directions', () => {

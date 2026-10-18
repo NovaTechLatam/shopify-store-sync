@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import { setAlert } from '../alerts/alerts.js';
 import {
+  dropNewProductStarts,
   refreshInventoryItem,
   removeInventoryItem,
   startUnsoldAtZero,
@@ -9,6 +10,7 @@ import {
 import { normalizeSku } from '../catalog/sku.js';
 import type { Db, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
+import { withStorePriceLock } from '../pricing/runs.js';
 import { ShopifyApiError, ShopifyUserErrors } from '../shopify/client.js';
 import { featureStatus, FeatureUnavailableError, requireFeature } from '../shopify/scopes.js';
 import type {
@@ -74,13 +76,19 @@ export async function publishProductTask(
         WHERE master_product_id = $1 AND store_id = $2 AND publish_state IN ('queued', 'publishing')`,
       [masterProductId, storeId],
     );
+    // An earlier attempt that was interrupted may have left starts at 0 for it.
+    await dropStartsOf(db, masterProductId);
     return;
   }
 
   try {
     await requireFeature(db, storeId, 'catalog');
     await setState(db, masterProductId, storeId, 'publishing');
-    const done = await publish(deps, masterProductId, store, log);
+    // Prices are worked out at the start and sent with the product: no price update of the store
+    // (a sale starting or ending) may land in between and be overwritten.
+    const done = await withStorePriceLock(db, storeId, () =>
+      publish(deps, masterProductId, store, log),
+    );
     if (done) {
       await resolveFailure(db, masterProductId, storeId);
       log.info({ warnings: done.warnings.length }, 'product published');
@@ -90,6 +98,9 @@ export async function publishProductTask(
     if (message !== null) {
       log.warn({ err }, 'publishing failed');
       await recordFailure(db, masterProductId, store, message);
+      // No variant was made: the starts at 0 this publish (or an interrupted one) left go, unless
+      // another brand is still publishing the product.
+      await dropStartsOf(db, masterProductId);
       return;
     }
     // Worth retrying (network, Shopify outage, our database): say so while waiting.
@@ -144,6 +155,20 @@ function userErrorsMessage(err: ShopifyUserErrors, store: StoreContext): string 
     return e.message.replace(/\.+$/, '');
   });
   return `${store.name} refused the product: ${[...new Set(parts)].join('; ')}.`;
+}
+
+/** Takes back the starts at 0 of a product's items nothing needs any more (see catalog.ts). */
+async function dropStartsOf(db: Db, productId: number): Promise<void> {
+  await withTransaction(db, async (client) => {
+    const { rows } = await client.query<{ item_id: number }>(
+      'SELECT item_id FROM master_variants WHERE master_product_id = $1',
+      [productId],
+    );
+    await dropNewProductStarts(
+      client,
+      rows.map((r) => r.item_id),
+    );
+  });
 }
 
 async function setState(db: Queryable, productId: number, storeId: number, state: string) {
@@ -253,29 +278,20 @@ async function publish(
     identifier = { customId: String(productId) };
   }
   // A SKU no store sells yet starts at 0 with its first publish: written before the product, so
-  // the start is there when its new variant is linked below. A SKU the merchant created in a
-  // store first keeps that store's number and starts like any other product (startUnsoldAtZero).
+  // the start is there when its new variant is linked below, and still there when an interrupted
+  // write is tried again. A SKU the merchant created in a store first keeps that store's number
+  // and starts like any other product (startUnsoldAtZero). If the store refuses the product for
+  // good, publishProductTask takes the start back (dropNewProductStarts).
   const added = new Set(plan.addedVariants.map((sku) => normalizeSku(sku)));
   const startItems = product.variants
     .filter((v) => added.has(v.normalizedSku))
     .map((v) => v.itemId);
-  const starts = startItems.length
-    ? await withCatalogLock(db, (client) => startUnsoldAtZero(client, { itemIds: startItems }))
-    : [];
-  let result: ProductSetResult;
-  try {
-    result = await admin.productSet({ identifier, input: plan.input, synchronous: true });
-  } catch (err) {
-    // Refused for good: no variant was made, so no start is left waiting for one (a SKU created in
-    // the store by hand later must keep its number). A retried write keeps it.
-    if (starts.length && failureMessage(err, store) !== null) {
-      await db.query(
-        'DELETE FROM pool_adjustments WHERE id = ANY($1::bigint[]) AND applied_at IS NULL',
-        [starts],
-      );
-    }
-    throw err;
+  if (startItems.length) {
+    await withCatalogLock(db, (client) =>
+      startUnsoldAtZero(client, { itemIds: startItems, storeId: store.id }),
+    );
   }
+  const result = await admin.productSet({ identifier, input: plan.input, synchronous: true });
   log.debug(
     { productId: result.productId, mode: plan.mode, removed: plan.removedVariants.length },
     'productSet done',
@@ -346,9 +362,12 @@ async function publish(
 
   await recordSentPrices(db, store.id, plan.input.variants ?? [], result.variants);
 
-  // An imported brand's Online Store stays as it was found until the merchant changes it.
+  // An imported brand's Online Store stays as it was found until the merchant changes it, and so
+  // does a product the store already had (adopted): whether it showed there isn't read, and a
+  // product kept off the Online Store on purpose (sold in person only) must not appear there.
   const asFound =
-    !prepared.recreated && !prepared.adopted && leavesOnlineStore(ps?.publishedSnapshot, content);
+    !prepared.recreated &&
+    (prepared.adopted !== null || leavesOnlineStore(ps?.publishedSnapshot, content));
   if (!asFound) warnings.push(...(await onlineStore(db, admin, ctx, content, result.productId)));
   await db.query(
     `UPDATE master_product_stores

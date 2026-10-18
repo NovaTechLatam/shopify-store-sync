@@ -169,6 +169,20 @@ export const GRAPHQL_DOCUMENTS = {
     }
   `,
 
+  // Prices of some variants by id: about one point each, where reading the variants of every
+  // product of a store costs hundreds per page.
+  variantPricesRead: /* GraphQL */ `
+    query StoreSyncVariantPricesRead($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          price
+          compareAtPrice
+        }
+      }
+    }
+  `,
+
   inventoryItemVariants: /* GraphQL */ `
     query StoreSyncInventoryItemVariants($id: ID!) {
       inventoryItem(id: $id) {
@@ -896,6 +910,8 @@ function productSetCost(input: ProductSetRequest['input']): number {
 
 /** Variants per productVariantsBulkUpdate call (Shopify's limit for input lists). */
 export const PRICE_UPDATE_CHUNK = 250;
+/** Ids per `nodes(ids:)` query (Shopify's limit). */
+const NODES_PER_READ = 250;
 const UPLOAD_TIMEOUT_MS = 120_000;
 
 /** Shopify quantity states that are on the shelf but not for sale. */
@@ -1412,6 +1428,24 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
   }
 
   // ---- prices and costs -----------------------------------------------------------------------
+
+  async readVariantPrices(
+    variantIds: string[],
+  ): Promise<Map<string, { price: number; compareAtPrice: number | null }>> {
+    const prices = new Map<string, { price: number; compareAtPrice: number | null }>();
+    for (let i = 0; i < variantIds.length; i += NODES_PER_READ) {
+      const ids = variantIds.slice(i, i + NODES_PER_READ);
+      const data = await this.client.request<{
+        nodes: ({ id: string; price: string; compareAtPrice: string | null } | null)[];
+      }>(GRAPHQL_DOCUMENTS.variantPricesRead, { ids }, ids.length + 1);
+      for (const n of data.nodes) {
+        // Deleted variants come back as null (or as an empty object for another type).
+        if (n?.id)
+          prices.set(n.id, { price: Number(n.price), compareAtPrice: money(n.compareAtPrice) });
+      }
+    }
+    return prices;
+  }
 
   async updateVariantPrices(
     productId: string,

@@ -15,6 +15,16 @@ export const signed = (n) => (n > 0 ? `+${num(n)}` : n < 0 ? `−${num(-n)}` : '
 
 export const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 
+/**
+ * Units a day, the same on every page (Reports, the product page, Purchasing): one decimal below
+ * 10, whole numbers above ("0.5", "12"); "<0.1" for a product that sells, only slowly.
+ */
+export function pace(velocity) {
+  if (velocity === null || velocity === undefined) return '—';
+  const rounded = velocity >= 10 ? Math.round(velocity) : Math.round(velocity * 10) / 10;
+  return rounded === 0 && velocity > 0 ? '<0.1' : num(rounded);
+}
+
 const moneyFormats = new Map();
 
 /**

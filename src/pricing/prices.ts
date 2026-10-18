@@ -1,5 +1,6 @@
 import type { Queryable } from '../db/pool.js';
 import { missingScopes, FEATURE_SCOPES } from '../shopify/scopes.js';
+import { exchangeRateUnset } from '../util/money.js';
 import type { CurrentPrice, PriceRule, PriceRuleRow, TargetPrice } from './compute.js';
 import { computeTargetPrice, differsFromTarget, marginOf, rowToPriceRule } from './compute.js';
 
@@ -21,6 +22,8 @@ export interface PricingStore {
   currencyKnown: boolean;
   /** Units of the store's currency per 1 unit of the base currency. */
   exchangeRate: number;
+  /** In another currency, with a rate nobody set: base prices can't be converted yet. */
+  exchangeRateUnset: boolean;
   /** null = no rule saved yet (Store Sync doesn't manage this store's prices). */
   rule: PriceRule | null;
   ruleUpdatedAt: Date | null;
@@ -83,6 +86,7 @@ type StoreRow = PriceRuleRow & {
   status: string;
   currency_code: string | null;
   exchange_rate: number;
+  exchange_rate_set_at: Date | null;
   granted_scopes: string[] | null;
   has_rule: boolean;
   rule_updated_at: Date | null;
@@ -94,8 +98,8 @@ export async function loadPricingStores(
   storeIds?: number[],
 ): Promise<PricingStore[]> {
   const { rows } = await db.query<StoreRow>(
-    `SELECT s.id, s.name, s.status, s.currency_code, s.exchange_rate, s.granted_scopes,
-            r.store_id IS NOT NULL AS has_rule, r.enabled, r.multiplier, r.add_amount,
+    `SELECT s.id, s.name, s.status, s.currency_code, s.exchange_rate, s.exchange_rate_set_at,
+            s.granted_scopes, r.store_id IS NOT NULL AS has_rule, r.enabled, r.multiplier, r.add_amount,
             r.round_mode, r.round_step, r.round_ending, r.round_direction, r.compare_at_mode,
             r.compare_at_markup, r.updated_at AS rule_updated_at
        FROM stores s LEFT JOIN price_rules r ON r.store_id = s.id
@@ -110,6 +114,14 @@ export async function loadPricingStores(
     currencyCode: s.currency_code ?? baseCurrency,
     currencyKnown: s.currency_code !== null,
     exchangeRate: s.exchange_rate,
+    exchangeRateUnset: exchangeRateUnset(
+      {
+        currencyCode: s.currency_code,
+        exchangeRate: s.exchange_rate,
+        exchangeRateSetAt: s.exchange_rate_set_at,
+      },
+      baseCurrency,
+    ),
     rule: s.has_rule ? rowToPriceRule(s) : null,
     ruleUpdatedAt: s.rule_updated_at,
     pricingMissingScopes: missingScopes(s.granted_scopes, FEATURE_SCOPES.pricing),

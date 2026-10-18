@@ -292,6 +292,31 @@ export async function flows(ctx) {
     expect((await page.locator('tbody').textContent()).includes('Spring sale'), 'sale listed');
   });
 
+  await step('prices: the sale picker says when it lists only some products', async () => {
+    await go('#/prices?tab=sales');
+    await page.getByRole('button', { name: 'New sale…' }).click();
+    const more = dialog.locator('.picker-more');
+    await more.locator('p').waitFor();
+    const text = await more.textContent();
+    const total = Number(/of (\d+)/.exec(text)?.[1]);
+    expect(
+      text.startsWith('Showing 20 of') && total > 20,
+      `the list says how many it leaves out (${text})`,
+    );
+    await more.getByRole('button', { name: `Tick all ${total}` }).click();
+    await waitUntil(
+      page,
+      `(document.querySelector('dialog .chosen-products .field-label')?.textContent ?? '').includes('${total}')`,
+    );
+    expect(
+      (await dialog.locator('.picker-option input:checked').count()) === 20,
+      'every listed product is ticked too',
+    );
+    await shoot(page, 'dialog-prices-sale-all-1280-light', { fullPage: false });
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await dialog.waitFor({ state: 'detached' });
+  });
+
   await step('prices: an overlapping sale is refused; a planned one can be cancelled', async () => {
     await go('#/prices?tab=sales');
     ctx.setAllowHttpErrors(true);

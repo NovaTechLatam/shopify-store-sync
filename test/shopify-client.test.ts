@@ -351,6 +351,29 @@ describe('GraphqlShopifyAdmin: shop and catalog reads', () => {
     ]);
   });
 
+  it('reads some variants’ prices by id, 250 at a time, skipping deleted ones', async () => {
+    const ids = Array.from({ length: 251 }, (_, i) => `gid://shopify/ProductVariant/${i + 1}`);
+    const { c, requests } = client([
+      ok({
+        nodes: [
+          { id: ids[0], price: '41900.00', compareAtPrice: '49900.00' },
+          null,
+          ...ids.slice(2, 250).map((id) => ({ id, price: '1.00', compareAtPrice: null })),
+        ],
+      }),
+      ok({ nodes: [{ id: ids[250], price: '12.9', compareAtPrice: null }] }),
+    ]);
+    const prices = await new GraphqlShopifyAdmin(c).readVariantPrices(ids);
+    expect(requests).toHaveLength(2);
+    expect(requests.map((r) => JSON.parse(String(r.init.body)).variables.ids.length)).toEqual([
+      250, 1,
+    ]);
+    expect(prices.size).toBe(250);
+    expect(prices.get(ids[0]!)).toEqual({ price: 41900, compareAtPrice: 49900 });
+    expect(prices.has(ids[1]!)).toBe(false);
+    expect(prices.get(ids[250]!)).toEqual({ price: 12.9, compareAtPrice: null });
+  });
+
   it('reads a whole product: every media and variant page, normalised', async () => {
     const variant = (n: number, position: number) => ({
       id: `gid://shopify/ProductVariant/${n}`,

@@ -171,6 +171,10 @@ describe('stockoutDate', () => {
     expect(stockoutDate(9.7, now)).toBe('2026-10-27');
     expect(stockoutDate(0, now)).toBe('2026-10-18');
     expect(stockoutDate(null, now)).toBeNull();
+    // 5,000,000 units selling one a month: no date (it overflowed Date and broke the whole list).
+    expect(stockoutDate(150_000_000, now)).toBeNull();
+    expect(stockoutDate(36_501, now)).toBeNull();
+    expect(stockoutDate(365, now)).toBe('2027-10-18');
   });
 
   it('counts days in the report time zone', () => {
@@ -281,6 +285,8 @@ describe('csv', () => {
     expect(csvCell('-1')).toBe("'-1");
     expect(csvCell('@x')).toBe("'@x");
     expect(csvCell('=a,b')).toBe(`"'=a,b"`);
+    // Excel with ';' as its list separator would run the part after the semicolon.
+    expect(csvCell('TEE-1;=1+2;b')).toBe('"TEE-1;=1+2;b"');
     expect(csvCell(-3.5)).toBe('-3.5');
     expect(csvCell(null)).toBe('');
     expect(

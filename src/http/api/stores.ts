@@ -96,6 +96,7 @@ interface StoreRow {
   currency_code: string | null;
   iana_timezone: string | null;
   exchange_rate: number;
+  exchange_rate_set_at: Date | null;
   granted_scopes: string[] | null;
   scopes_checked_at: Date | null;
   variant_count: number;
@@ -116,7 +117,7 @@ const STORE_SELECT = `
          (s.webhook_secret_enc IS NOT NULL OR s.client_secret_enc IS NOT NULL) AS has_webhook_secret,
          s.client_id, s.last_webhook_at, s.webhooks_registered_at, s.catalog_synced_at,
          s.last_drift_scan_at, s.last_drift_count, s.created_at, s.currency_code, s.iana_timezone,
-         s.exchange_rate, s.granted_scopes, s.scopes_checked_at,
+         s.exchange_rate, s.exchange_rate_set_at, s.granted_scopes, s.scopes_checked_at,
          (SELECT count(*)::int FROM variants v WHERE v.store_id = s.id AND v.deleted_at IS NULL) AS variant_count,
          (SELECT count(*)::int FROM variants v
            WHERE v.store_id = s.id AND v.deleted_at IS NULL AND v.item_id IS NOT NULL) AS linked_count
@@ -165,6 +166,11 @@ function storeView(s: StoreRow, locations: LocationRow[]) {
     timezone: s.iana_timezone,
     /** Units of the store's currency per 1 unit of the base currency (settings.baseCurrency). */
     exchangeRate: s.exchange_rate,
+    /**
+     * The merchant saved the rate (else it is the default 1, which counts as not set for a store
+     * in another currency: see exchangeRateUnset).
+     */
+    exchangeRateSetAt: s.exchange_rate_set_at,
     /** When the app's permissions on the store were last read (null = never). */
     scopesCheckedAt: s.scopes_checked_at,
     /**
@@ -349,10 +355,11 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
     // Only changes what prices are computed from: nothing is sent to Shopify until prices are
     // applied or a product is published.
     if (body.exchangeRate !== undefined) {
-      await db.query('UPDATE stores SET exchange_rate = $2, updated_at = now() WHERE id = $1', [
-        storeId,
-        body.exchangeRate,
-      ]);
+      await db.query(
+        `UPDATE stores SET exchange_rate = $2, exchange_rate_set_at = now(), updated_at = now()
+          WHERE id = $1`,
+        [storeId, body.exchangeRate],
+      );
     }
     if (body.safetyBuffer !== undefined && body.safetyBuffer !== current.safety_buffer) {
       await db.query('UPDATE stores SET safety_buffer = $2, updated_at = now() WHERE id = $1', [
@@ -386,6 +393,45 @@ export async function registerStoreRoutes(app: FastifyInstance, deps: AppDeps): 
     }
     deps.onWork?.();
     return loadStore(db, storeId);
+  });
+
+  // What removing the store deletes with it, for the confirmation (none of it comes back when the
+  // store is connected again).
+  app.get('/api/stores/:id/removal', async (request) => {
+    const storeId = parseId((request.params as { id: string }).id);
+    await loadStore(db, storeId);
+    const { rows } = await db.query<{
+      brand_versions: number;
+      brand_images: number;
+      price_rule: boolean;
+      fixed_prices: number;
+      orders: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM master_product_stores mps
+           WHERE mps.store_id = $1
+             AND (mps.title IS NOT NULL OR mps.description_html IS NOT NULL OR mps.vendor IS NOT NULL
+                  OR mps.product_type IS NOT NULL OR mps.handle IS NOT NULL
+                  OR mps.seo_title IS NOT NULL OR mps.seo_description IS NOT NULL
+                  OR mps.extra_tags <> '{}' OR mps.status IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM master_media m
+                              WHERE m.master_product_id = mps.master_product_id
+                                AND m.store_id = mps.store_id))) AS brand_versions,
+         (SELECT count(*)::int FROM master_media WHERE store_id = $1) AS brand_images,
+         EXISTS (SELECT 1 FROM price_rules WHERE store_id = $1 AND enabled) AS price_rule,
+         (SELECT count(*)::int FROM price_overrides WHERE store_id = $1) AS fixed_prices,
+         (SELECT count(*)::int FROM sales_orders WHERE store_id = $1 AND deleted_at IS NULL)
+           AS orders`,
+      [storeId],
+    );
+    const r = rows[0]!;
+    return {
+      brandVersions: r.brand_versions,
+      brandImages: r.brand_images,
+      priceRule: r.price_rule,
+      fixedPrices: r.fixed_prices,
+      orders: r.orders,
+    };
   });
 
   app.delete('/api/stores/:id', async (request, reply) => {

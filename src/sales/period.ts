@@ -13,10 +13,19 @@ export const MAX_REPORT_DAYS = 3660;
 /** Default period: the last 30 days, today included. */
 export const DEFAULT_REPORT_DAYS = 30;
 
-/** Whether `value` is a real calendar date written as 'YYYY-MM-DD' (no 2026-02-30). */
+/**
+ * Years a report date may be in. Past 9999 a date has no 'YYYY-MM-DD' form (Date writes
+ * '+010000-01-01'), so walking or comparing dates as text would go wrong near it.
+ */
+export const MIN_YEAR = 1970;
+export const MAX_YEAR = 2999;
+
+/** Whether `value` is a real calendar date written as 'YYYY-MM-DD' (no 2026-02-30), 1970 to 2999. */
 export function isDate(value: string): boolean {
   const m = DATE.exec(value);
   if (!m) return false;
+  const year = Number(m[1]);
+  if (year < MIN_YEAR || year > MAX_YEAR) return false;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
   return d.toISOString().slice(0, 10) === value;
 }
@@ -33,10 +42,11 @@ export function daysInPeriod(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS) + 1;
 }
 
-/** Every date from `from` to `to`, both included. */
+/** Every date from `from` to `to`, both included (counted, so it always ends). */
 export function datesBetween(from: string, to: string): string[] {
   const out: string[] = [];
-  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+  const n = daysInPeriod(from, to);
+  for (let i = 0; i < n; i++) out.push(addDays(from, i));
   return out;
 }
 

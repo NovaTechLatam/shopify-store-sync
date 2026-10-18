@@ -107,7 +107,7 @@ const ItemPurchasingBody = z
 const ItemSearchQuery = z.object({
   search: z.string().trim().max(200).optional(),
   supplierId: z.coerce.number().int().positive().optional(),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
 });
 
 const LineBody = z

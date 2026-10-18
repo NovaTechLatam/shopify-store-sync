@@ -167,6 +167,17 @@ describe('reorder figures', () => {
     expect(row!.suggested).toBe(0);
   });
 
+  it('copes with a huge stock that hardly sells: no stock-out date, nothing breaks', async () => {
+    const big = await startedItem('BIG-1', 5_000_000);
+    await sale(h.stores[0]!.id, null, 1, 40); // the history goes back past the window
+    await sale(h.stores[0]!.id, big.itemId, 1, 1);
+    // 1 in 30 days: 150 million days left, past what a date can hold.
+    const [row] = await loadReorderRows(h.db, await getSettings(h.db));
+    expect(row).toMatchObject({ sku: 'BIG-1', stockoutOn: null, needsReorder: false });
+    expect(row!.daysLeft).toBeGreaterThan(1e8);
+    await expect(runReorderCheck(h.db)).resolves.toEqual({ open: 0, resolved: 0 });
+  });
+
   it('never suggests a reorder for products that are switched off or not started', async () => {
     const off = await startedItem('OFF-1', 0);
     const notStarted = await h.addItem('NS-1', [0, 0]);
@@ -326,15 +337,19 @@ describe('push_item_costs', () => {
     const b = await startedItem('B-1', 0);
     const unsold = await h.addItem('U-1', [], []);
     const store = h.stores[1]!;
-    await h.db.query(
-      `UPDATE stores SET currency_code = 'COP', exchange_rate = 4100 WHERE id = $1`,
-      [store.id],
-    );
     await h.db.query('UPDATE items SET cost = 2.5 WHERE id = ANY($1::bigint[])', [
       [a.itemId, unsold.itemId],
     ]);
-    // b has no cost: skipped; unsold isn't in the store: skipped.
     const { pushItemCosts } = await import('../src/purchasing/costs.js');
+    // In COP with the default rate of 1, which nobody set: 2.5 USD isn't 2.5 COP. Nothing is sent.
+    await h.db.query(`UPDATE stores SET currency_code = 'COP' WHERE id = $1`, [store.id]);
+    expect(await pushItemCosts(deps, store.id, [a.itemId])).toEqual({
+      updated: 0,
+      failed: 0,
+      skipped: 1,
+    });
+    await h.db.query(`UPDATE stores SET exchange_rate = 4100 WHERE id = $1`, [store.id]);
+    // b has no cost: skipped; unsold isn't in the store: skipped.
     const result = await pushItemCosts(deps, store.id, [a.itemId, b.itemId, unsold.itemId]);
     expect(result).toEqual({ updated: 1, failed: 0, skipped: 2 });
     expect(store.shop.calls.filter((c) => c.op === 'updateInventoryItemCost')).toEqual([

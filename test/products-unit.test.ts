@@ -80,6 +80,8 @@ const store = (overrides: Partial<StoreContext> = {}): StoreContext => ({
   shopDomain: 'brand-a.myshopify.com',
   currencyCode: 'USD',
   exchangeRate: 1,
+  exchangeRateUnset: false,
+  catalogReading: false,
   grantedScopes: null,
   onlineStorePublicationId: null,
   productIdDefinitionAt: null,

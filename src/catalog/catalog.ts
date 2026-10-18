@@ -421,38 +421,89 @@ export async function ensureItemsLocked(
 const NEW_PRODUCT_START_NOTE = 'new product';
 
 /**
- * Starts a product no store sells yet at 0: an `initialize` (strategy 'value', 0) for each of the
- * given pool levels (or every level of the given items) that hasn't started, has no start pending,
- * and whose item has no live variant in any store. The engine applies it when a store first sells
+ * Starts a product no store sells yet at 0: an `initialize` (strategy 'value', 0) for pool levels
+ * that haven't started and have no start pending. The engine applies it when a store first sells
  * the item, so a new product goes on sale with exactly what was received for it.
  *
- * Used when a catalog product is first published to a store (before the write) and when a delivery
- * arrives for a product no store sells. An item some store already has a variant of is left to the
- * usual start (onboarding, "Start syncing"), so the store's real number is never replaced with 0.
- * The caller holds the catalog lock (lockCatalog), so a store linking the item at this moment
- * can't slip in between. Returns the adjustments created.
+ * - A catalog product first published to a store (`itemIds` and `storeId`, before the write): the
+ *   levels of the warehouses that store stocks (its active mapped locations) that no store sells
+ *   the item in yet. A warehouse no store uses yet waits for the merchant's start, like for any
+ *   other product, instead of replacing the stock of the first location mapped to it months later.
+ * - A delivery for a product no store sells (`poolLevelIds`): those levels, if the item has no
+ *   live variant in any store.
+ *
+ * An item a store already sells there is left to the usual start (onboarding, "Start syncing"),
+ * so the store's real number is never replaced with 0. The caller holds the catalog lock
+ * (lockCatalog), so a store linking the item at this moment can't slip in between. Returns the
+ * adjustments created. A start a publish no longer needs is taken back by dropNewProductStarts.
  */
 export async function startUnsoldAtZero(
   client: Queryable,
-  levels: { itemIds: number[] } | { poolLevelIds: number[] },
+  levels: { itemIds: number[]; storeId: number } | { poolLevelIds: number[] },
 ): Promise<number[]> {
   const byItem = 'itemIds' in levels;
   const ids = byItem ? levels.itemIds : levels.poolLevelIds;
   if (ids.length === 0) return [];
   const { rows } = await client.query<{ id: number }>(
-    `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
-     SELECT pl.id, 'initialize', 'value', 0, $2 FROM pool_levels pl
-      WHERE ${byItem ? 'pl.item_id' : 'pl.id'} = ANY($1::bigint[]) AND pl.quantity IS NULL
-        AND NOT EXISTS (SELECT 1 FROM pool_adjustments a
-                         WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
-                           AND a.applied_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM variants v
-                         WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL)
-      ORDER BY pl.id
-     RETURNING id`,
-    [ids, NEW_PRODUCT_START_NOTE],
+    byItem
+      ? `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
+         SELECT pl.id, 'initialize', 'value', 0, $2 FROM pool_levels pl
+          WHERE pl.item_id = ANY($1::bigint[]) AND pl.quantity IS NULL
+            AND pl.warehouse_id IN (SELECT warehouse_id FROM store_locations
+                                     WHERE store_id = $3 AND is_active AND warehouse_id IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM pool_adjustments a
+                             WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                               AND a.applied_at IS NULL)
+            AND NOT EXISTS (${LEVEL_SOLD})
+          ORDER BY pl.id
+         RETURNING id`
+      : `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
+         SELECT pl.id, 'initialize', 'value', 0, $2 FROM pool_levels pl
+          WHERE pl.id = ANY($1::bigint[]) AND pl.quantity IS NULL
+            AND NOT EXISTS (SELECT 1 FROM pool_adjustments a
+                             WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                               AND a.applied_at IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM variants v
+                             WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL)
+          ORDER BY pl.id
+         RETURNING id`,
+    byItem ? [ids, NEW_PRODUCT_START_NOTE, levels.storeId] : [ids, NEW_PRODUCT_START_NOTE],
   );
   return rows.map((r) => r.id);
+}
+
+/** SQL: a live variant of level `pl`'s item in a store that stocks `pl`'s warehouse. */
+const LEVEL_SOLD = `SELECT 1 FROM variants v
+                     JOIN store_locations sl ON sl.store_id = v.store_id AND sl.is_active
+                                            AND sl.warehouse_id = pl.warehouse_id
+                    WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL`;
+
+/**
+ * Takes back starts at 0 nothing needs any more, for `itemIds`: after a publish that failed for
+ * good, a brand switched off before its publish ran, or a catalog product deleted. Left there, a
+ * start would replace the stock of a SKU the merchant later creates by hand in a store (7 on the
+ * shelf) with 0. A start stays while a store sells the item in its warehouse, while any brand of
+ * the item's catalog product is waiting to publish or publishing (it may be counting on it), and
+ * while a delivery is waiting to be added to it (purchasing's own start). Each caller records its
+ * brand's outcome first, so the last one to finish sees every other brand's. Takes the catalog
+ * lock (pass a client in a transaction).
+ */
+export async function dropNewProductStarts(client: Queryable, itemIds: number[]): Promise<number> {
+  if (itemIds.length === 0) return 0;
+  await lockCatalog(client);
+  const { rowCount } = await client.query(
+    `DELETE FROM pool_adjustments a USING pool_levels pl
+      WHERE a.pool_level_id = pl.id AND pl.item_id = ANY($1::bigint[])
+        AND a.kind = 'initialize' AND a.applied_at IS NULL AND a.note = $2
+        AND NOT EXISTS (${LEVEL_SOLD})
+        AND NOT EXISTS (SELECT 1 FROM pool_adjustments x
+                         WHERE x.pool_level_id = pl.id AND x.kind = 'adjust' AND x.applied_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM master_variants mv
+                          JOIN master_product_stores mps ON mps.master_product_id = mv.master_product_id
+                         WHERE mv.item_id = pl.item_id AND mps.publish_state IN ('queued', 'publishing'))`,
+    [itemIds, NEW_PRODUCT_START_NOTE],
+  );
+  return rowCount ?? 0;
 }
 
 // ---- variants ---------------------------------------------------------------------------------

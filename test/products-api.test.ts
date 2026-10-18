@@ -447,6 +447,75 @@ describe('preview and publish', () => {
     ).toBe(400);
   });
 
+  it('waits for an exchange rate someone set before converting a store’s prices', async () => {
+    const [a, b] = h.stores;
+    // b sells in COP and its rate is still the default 1: 25 USD would be sent as 25 COP.
+    await h.db.query(`UPDATE stores SET currency_code = 'COP' WHERE id = $1`, [b!.id]);
+    const created = (await api('POST', '/api/catalog/products', tee())).body;
+    const preview = (await api('GET', `/api/catalog/products/${created.id}/preview`)).body;
+    expect(preview.stores[0].action).toBe('create');
+    expect(preview.stores[1]).toMatchObject({
+      action: 'blocked',
+      reasons: [
+        'brand1’s exchange rate isn’t set yet, so its prices can’t be worked out. Set it on its page first.',
+      ],
+    });
+    // Importing from it would turn 119,900 COP into a base price of 119,900 USD.
+    const scarf = sizedProduct(b!, 'Scarf', [{ sku: 'SCARF-R', size: 'One', price: '119900' }]);
+    await readCatalog(b!);
+    const refused = await api('POST', '/api/catalog/import', {
+      storeId: b!.id,
+      productId: scarf.productId,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/brand1’s exchange rate isn’t set yet/);
+
+    // Once set, even to 1 (a currency pegged to the base one), it counts.
+    const store = await api('PATCH', `/api/stores/${b!.id}`, { exchangeRate: 4000 });
+    expect(store.body.exchangeRateSetAt).not.toBeNull();
+    const after = (await api('GET', `/api/catalog/products/${created.id}/preview`)).body;
+    expect(after.stores[1].action).toBe('create');
+    expect(after.stores[1].prices.map((p: any) => p.to.price)).toEqual([40_000, 48_000]);
+    const imported = await api('POST', '/api/catalog/import', {
+      storeId: b!.id,
+      productId: scarf.productId,
+    });
+    expect(imported.status).toBe(201);
+    const product = (await api('GET', `/api/catalog/products/${imported.body.id}`)).body;
+    expect(product.variants[0].basePrice).toBe(29.975);
+    // A store whose currency changes in Shopify needs its rate again.
+    b!.shop.currencyCode = 'CLP';
+    expect((await api('POST', `/api/stores/${b!.id}/test`)).status).toBe(200);
+    expect((await api('GET', `/api/stores/${b!.id}`)).body).toMatchObject({
+      currencyCode: 'CLP',
+      exchangeRate: 1,
+      exchangeRateSetAt: null,
+    });
+    void a;
+  });
+
+  it('doesn’t publish to a store whose products are still being read', async () => {
+    const [, b] = h.stores;
+    // b was just connected (or resumed): it already sells TEE-S, but we haven't read it yet.
+    sizedProduct(b!, 'Linen tee', [{ sku: 'TEE-S', size: 'S' }]);
+    await h.db.query(`UPDATE stores SET catalog_pending = true WHERE id = $1`, [b!.id]);
+    const created = (await api('POST', '/api/catalog/products', tee())).body;
+    const preview = (await api('GET', `/api/catalog/products/${created.id}/preview`)).body;
+    expect(preview.stores[1]).toMatchObject({
+      action: 'blocked',
+      reasons: [
+        'We’re still reading brand1’s products, to find the ones it already has. Publish again in a few minutes.',
+      ],
+    });
+    await api('POST', `/api/catalog/products/${created.id}/publish`, { storeIds: [b!.id] });
+    await settle();
+    expect(b!.shop.variants.filter((v) => v.sku === 'TEE-S')).toHaveLength(1);
+    // Read: the store's own product is found and updated instead of a second one.
+    await readCatalog(b!);
+    const ready = (await api('GET', `/api/catalog/products/${created.id}/preview`)).body;
+    expect(ready.stores[1].action).toBe('update');
+  });
+
   it('lists exactly what an update deletes in the store', async () => {
     const [a] = h.stores;
     const created = (await api('POST', '/api/catalog/products', tee())).body;
@@ -539,6 +608,45 @@ describe('preview and publish', () => {
   });
 });
 
+describe('removing a store', () => {
+  it('says what goes with it: the brand’s catalog version, prices and sales history', async () => {
+    const [a, b] = h.stores;
+    const created = (await api('POST', '/api/catalog/products', tee())).body;
+    await h.db.query(
+      `UPDATE master_product_stores SET title = 'Harbor linen tee'
+        WHERE master_product_id = $1 AND store_id = $2`,
+      [created.id, b!.id],
+    );
+    await h.db.query(`INSERT INTO price_rules (store_id, enabled) VALUES ($1, true)`, [b!.id]);
+    await h.db.query(
+      `INSERT INTO price_overrides (store_id, item_id, price)
+       SELECT $1, item_id, 9 FROM master_variants WHERE master_product_id = $2`,
+      [b!.id, created.id],
+    );
+    await h.db.query(
+      `INSERT INTO sales_orders (store_id, shopify_order_id, processed_at, shopify_updated_at,
+                                 currency_code)
+       VALUES ($1, 'gid://shopify/Order/1', now(), now(), 'USD')`,
+      [b!.id],
+    );
+    expect((await api('GET', `/api/stores/${b!.id}/removal`)).body).toEqual({
+      brandVersions: 1,
+      brandImages: 0,
+      priceRule: true,
+      fixedPrices: 2,
+      orders: 1,
+    });
+    expect((await api('GET', `/api/stores/${a!.id}/removal`)).body).toEqual({
+      brandVersions: 0,
+      brandImages: 0,
+      priceRule: false,
+      fixedPrices: 0,
+      orders: 0,
+    });
+    expect((await api('GET', '/api/stores/999/removal')).status).toBe(404);
+  });
+});
+
 describe('import', () => {
   it('imports a store’s product and links the same product in the other brands', async () => {
     const [a, b, c] = h.stores;
@@ -570,6 +678,7 @@ describe('import', () => {
     for (const s of h.stores) await readCatalog(s);
 
     const search = await api('GET', `/api/catalog/import/search?storeId=${a!.id}&search=linen`);
+    expect(search.body.total).toBe(1);
     expect(search.body.products).toEqual([
       {
         productId: source.productId,

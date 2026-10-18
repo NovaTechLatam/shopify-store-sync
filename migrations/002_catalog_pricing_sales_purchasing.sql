@@ -16,6 +16,9 @@ ALTER TABLE stores
   ADD COLUMN currency_code    text,                                  -- 'COP'; NULL until read from Shopify
   ADD COLUMN iana_timezone    text,                                  -- 'America/Bogota'
   ADD COLUMN exchange_rate    numeric(18,8) NOT NULL DEFAULT 1 CHECK (exchange_rate > 0),
+  -- When the merchant last saved the rate. NULL: still the default 1, which is no rate at all for
+  -- a store in another currency (src/util/money.ts, exchangeRateUnset).
+  ADD COLUMN exchange_rate_set_at timestamptz,
   -- Access scopes the app had on this store when we last looked (NULL = never checked). Features
   -- that need optional scopes (write_products, read_orders...) check these before calling Shopify.
   ADD COLUMN granted_scopes   text[],

@@ -1,5 +1,5 @@
 import { LOCK_CLASSES, LOCKS } from '../db/locks.js';
-import type { Queryable } from '../db/pool.js';
+import type { Db, Queryable } from '../db/pool.js';
 import { setAlert } from '../alerts/alerts.js';
 import { getSettings } from '../settings.js';
 import { ShopifyApiError } from '../shopify/client.js';
@@ -7,7 +7,7 @@ import { FeatureUnavailableError, requireFeature } from '../shopify/scopes.js';
 import type { ShopifyAdmin, ShopifyVariant, VariantPriceInput } from '../shopify/types.js';
 import { enqueueTask } from '../tasks/queue.js';
 import type { TaskDeps } from '../tasks/types.js';
-import { currencyDecimals, roundMoney, toMoneyString } from '../util/money.js';
+import { currencyDecimals, exchangeRateUnset, roundMoney, toMoneyString } from '../util/money.js';
 import type { CurrentPrice, TargetPrice } from './compute.js';
 import { differsFromTarget } from './compute.js';
 import {
@@ -39,8 +39,6 @@ const APPLY_LOCK_CLASS = LOCK_CLASSES.priceApply;
 export const RUN_CREATE_LOCK = LOCKS.priceRunCreate;
 /** A store whose prices can't be written for this long (Shopify unreachable) fails the run. */
 const GIVE_UP_AFTER_MS = 60 * 60_000;
-/** Up to this many products are read one by one; more and the whole store is read at once. */
-const PRODUCT_READS = 25;
 /** Errors kept per store and run. */
 const MAX_ERRORS = 50;
 
@@ -110,6 +108,10 @@ export function storeUnavailableMessage(name: string, status: string): string | 
 const currencyUnknownMessage = (name: string) =>
   `We don’t know “${name}”’s currency yet. Click “Test connection” on its page, then update prices again.`;
 
+/** A store whose rule converts base prices, with a rate nobody set (see exchangeRateUnset). */
+export const exchangeRateUnsetMessage = (name: string) =>
+  `“${name}”’s exchange rate isn’t set yet, so its prices can’t be worked out. Set it on its page, then update prices again.`;
+
 /**
  * Creates a run for the stores (all if null) that Store Sync manages prices in, with every
  * restore entry given, and queues one task per store that can be updated now. Stores that can't
@@ -126,17 +128,20 @@ export async function createPriceRun(
     restore?: Map<number, RestoreEntry[]>;
   },
 ): Promise<CreatedRun | null> {
+  const baseCurrency = (await getSettings(client)).baseCurrency;
   const { rows: stores } = await client.query<{
     id: number;
     name: string;
     status: string;
     currency_code: string | null;
+    exchange_rate: number;
+    exchange_rate_set_at: Date | null;
     granted_scopes: string[] | null;
     rule_enabled: boolean;
     has_overrides: boolean;
   }>(
-    `SELECT s.id, s.name, s.status, s.currency_code, s.granted_scopes,
-            COALESCE(r.enabled, false) AS rule_enabled,
+    `SELECT s.id, s.name, s.status, s.currency_code, s.exchange_rate, s.exchange_rate_set_at,
+            s.granted_scopes, COALESCE(r.enabled, false) AS rule_enabled,
             EXISTS (SELECT 1 FROM price_overrides o
                      WHERE o.store_id = s.id
                        AND ($1::bigint[] IS NULL OR o.item_id = ANY($1::bigint[]))) AS has_overrides
@@ -170,6 +175,16 @@ export async function createPriceRun(
       }
     }
     if (!error && !s.currency_code) error = currencyUnknownMessage(s.name);
+    // Fixed prices and prices put back are in the store's currency; only the rule converts.
+    const rateUnset = exchangeRateUnset(
+      {
+        currencyCode: s.currency_code,
+        exchangeRate: s.exchange_rate,
+        exchangeRateSetAt: s.exchange_rate_set_at,
+      },
+      baseCurrency,
+    );
+    if (!error && s.rule_enabled && rateUnset) error = exchangeRateUnsetMessage(s.name);
     plans.push({
       storeId: s.id,
       storeName: s.name,
@@ -341,8 +356,43 @@ async function loadJob(db: Queryable, runId: number, storeId: number): Promise<R
 /** Thrown when another task holds the store's lock: the task is retried a little later. */
 class StoreBusyError extends Error {
   constructor() {
-    super('another price update for this store is still running');
+    super('another task is writing this store’s prices right now');
     this.name = 'StoreBusyError';
+  }
+}
+
+/**
+ * Runs `fn` holding the store's price lock, a session lock: one task writes a store's prices at a
+ * time. Price updates take it, and so does publishing a catalog product, which sends prices too:
+ * a publish that worked out its prices just before a sale ended must not land after the sale's
+ * update and put the sale price back. When another task holds it, throws StoreBusyError (the
+ * task is retried a little later). The lock dies with its connection if this process does.
+ */
+export async function withStorePriceLock<T>(
+  db: Db,
+  storeId: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lock = await db.connect();
+  let broken = false;
+  try {
+    const { rows } = await lock.query<{ ok: boolean }>(
+      'SELECT pg_try_advisory_lock($1, $2::integer) AS ok',
+      [APPLY_LOCK_CLASS, storeId],
+    );
+    if (!rows[0]!.ok) throw new StoreBusyError();
+    try {
+      return await fn();
+    } finally {
+      await lock
+        .query('SELECT pg_advisory_unlock($1, $2::integer)', [APPLY_LOCK_CLASS, storeId])
+        .catch(() => {
+          broken = true;
+        });
+    }
+  } finally {
+    // A connection we couldn't unlock is closed instead of going back to the pool locked.
+    lock.release(broken);
   }
 }
 
@@ -358,6 +408,11 @@ export async function applyPrices(
     storeUnavailableMessage(job.storeName, job.storeStatus) ??
     (job.currencyCode ? null : currencyUnknownMessage(job.storeName));
   if (unavailable) return finishJob(db, job, { error: unavailable });
+  // The rate may have been unset since the run was created (the store's currency changed).
+  const [store] = await loadPricingStores(db, (await getSettings(db)).baseCurrency, [job.storeId]);
+  if (store?.rule?.enabled && store.exchangeRateUnset) {
+    return finishJob(db, job, { error: exchangeRateUnsetMessage(job.storeName) });
+  }
   try {
     await requireFeature(db, job.storeId, 'pricing');
   } catch (err) {
@@ -367,30 +422,12 @@ export async function applyPrices(
 
   // One store's prices are written by one task at a time: a run that computed its targets must
   // not be overtaken by a later run (a sale ending right after it started), or the older prices
-  // would be written last. A session lock dies with its connection if this process does.
-  const lock = await db.connect();
-  let broken = false;
-  try {
-    const { rows } = await lock.query<{ ok: boolean }>(
-      'SELECT pg_try_advisory_lock($1, $2::integer) AS ok',
-      [APPLY_LOCK_CLASS, job.storeId],
-    );
-    if (!rows[0]!.ok) throw new StoreBusyError();
-    try {
-      const fresh = await loadJob(db, job.runId, job.storeId);
-      if (!fresh || fresh.status === 'done' || fresh.status === 'failed') return;
-      await runJob(deps, fresh);
-    } finally {
-      await lock
-        .query('SELECT pg_advisory_unlock($1, $2::integer)', [APPLY_LOCK_CLASS, job.storeId])
-        .catch(() => {
-          broken = true;
-        });
-    }
-  } finally {
-    // A connection we couldn't unlock is closed instead of going back to the pool locked.
-    lock.release(broken);
-  }
+  // would be written last.
+  await withStorePriceLock(db, job.storeId, async () => {
+    const fresh = await loadJob(db, job.runId, job.storeId);
+    if (!fresh || fresh.status === 'done' || fresh.status === 'failed') return;
+    await runJob(deps, fresh);
+  });
 }
 
 async function runJob(deps: TaskDeps, job: RunStoreJob): Promise<void> {
@@ -620,15 +657,11 @@ export async function readCurrentPrices(
   scope: StoreVariant[],
   scoped: boolean,
 ): Promise<Map<string, CurrentPrice>> {
-  const products = [...new Set(scope.map((v) => v.productId))];
-  let listed: ShopifyVariant[] = [];
-  if (products.length === 0) listed = [];
-  else if (scoped && products.length <= PRODUCT_READS) {
-    for (const productId of products)
-      listed.push(...((await admin.listProductVariants(productId)) ?? []));
-  } else {
-    listed = await admin.listVariants();
-  }
+  if (scope.length === 0) return new Map();
+  // Some products (a sale, a product's prices): just those variants, by id. Reading every variant
+  // of the store instead would cost minutes of its rate limit, which the stock sync shares.
+  if (scoped) return admin.readVariantPrices(scope.map((v) => v.variantId));
+  const listed: ShopifyVariant[] = await admin.listVariants();
   const prices = new Map<string, CurrentPrice>();
   for (const v of listed) {
     if (v.price !== null)

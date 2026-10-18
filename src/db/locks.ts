@@ -24,7 +24,10 @@ export const LOCKS = {
 
 /** Two-key lock classes: `pg_advisory_lock(class, storeId)`, one lock per store. */
 export const LOCK_CLASSES = {
-  /** Session lock: one task writes a store's prices at a time (src/pricing/runs.ts). */
+  /**
+   * Session lock: one task writes a store's prices at a time, a price update or a catalog publish
+   * (withStorePriceLock in src/pricing/runs.ts).
+   */
   priceApply: 727_004,
   /** Session lock: one check of a store's order history import at a time (src/sales/sync.ts). */
   salesBackfill: 727_005,

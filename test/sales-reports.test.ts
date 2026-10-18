@@ -2,8 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, type Db } from '../src/db/pool.js';
 import { buildServer } from '../src/http/server.js';
+import { loadReorderRows } from '../src/purchasing/reorder.js';
 import { ingestOrders } from '../src/sales/ingest.js';
-import { updateSettings } from '../src/settings.js';
+import { getSettings, updateSettings } from '../src/settings.js';
 import type { ShopifyOrder, ShopifyOrderLine } from '../src/shopify/types.js';
 import { SecretBox } from '../src/util/crypto.js';
 import { FakeRegistry, TEST_DATABASE_URL, resetDatabase, silentLogger } from './helpers/harness.js';
@@ -264,6 +265,13 @@ describe('GET /api/reports/summary', () => {
     expect((await get('/api/reports/summary?from=2026-02-30')).status).toBe(400);
     expect((await get('/api/reports/summary?from=10/09/2026')).status).toBe(400);
     expect((await get('/api/reports/summary?storeIds=1;DROP')).status).toBe(400);
+    // A year whose next day can't be written as YYYY-MM-DD (it used to hang the server).
+    for (const q of ['from=9999-12-31&to=9999-12-31', 'to=9999-12-31', 'from=1969-12-31']) {
+      const far = await get(`/api/reports/summary?${q}`);
+      expect(far.status).toBe(400);
+      expect((await get(`/api/reports/items/1?${q}`)).status).toBe(400);
+      expect((await get(`/api/reports/products?${q}`)).status).toBe(400);
+    }
     const long = await get('/api/reports/summary?from=2000-01-01&to=2026-01-01');
     expect(long.body.error).toBe('Choose a period of at most 10 years.');
     // Empty values (an untouched form) mean "not given".
@@ -344,6 +352,23 @@ describe('GET /api/reports/products', () => {
     expect(row).toMatchObject({ sku: 'TEE-1', units: 30, velocity: 2, daysLeft: 22.5 });
   });
 
+  it('measures the pace like the Reorder tab, for a product Store Sync saw only today', async () => {
+    // Just installed: the product was created 2 hours ago, the imported history is a month old.
+    const a = await addStore('Brand A');
+    const tee = await addItem('TEE-1', { stock: 60 });
+    await db.query(`UPDATE items SET created_at = now() - interval '2 hours' WHERE id = $1`, [tee]);
+    const days = (n: number) => new Date(Date.now() - n * 24 * 60 * 60_000).toISOString();
+    for (let d = 1; d <= 29; d++) await sell(a, days(d - 0.5), [line('TEE-1', 2, 20)]);
+    const [reorder] = await loadReorderRows(db, await getSettings(db));
+    // 58 units over the 28.5 days the history covers, not over the 2 hours since it was created.
+    expect(reorder!.velocity).toBeCloseTo(58 / 28.5, 2);
+    const item = (await get(`/api/reports/items/${tee}`)).body;
+    expect(item.velocity).toBeCloseTo(reorder!.velocity, 2);
+    expect(item.daysLeft).toBeCloseTo(reorder!.daysLeft!, 0);
+    const [row] = (await get('/api/reports/products')).body.products;
+    expect(row).toMatchObject({ velocity: item.velocity, daysLeft: item.daysLeft });
+  });
+
   it('downloads every row as a CSV that spreadsheets can’t be tricked by', async () => {
     const a = await addStore('Brand A');
     const b = await addStore('Marca, “Ñ”', { currency: 'CLP', rate: 950 });
@@ -365,18 +390,36 @@ describe('GET /api/reports/products', () => {
     expect(lines.pop()).toBe('');
     expect(lines[0]).toBe(
       'SKU,Product,Brand A: units,Brand A: revenue (USD),"Marca, “Ñ”: units","Marca, “Ñ”: revenue (CLP)",' +
-        'Units,Revenue (USD),Cost (USD),Margin (%),Shared stock,Units a day,Days of stock left,Sell-through (%)',
+        'Units,Revenue (USD),Cost (USD),Revenue with a cost (USD),Margin (%),Shared stock,Units a day,' +
+        'Days of stock left,Sell-through (%)',
     );
     expect(lines).toHaveLength(4);
     // Money in each currency's decimals (CLP has none); a negative stock stays a number.
     expect(lines[1]).toMatch(
-      /^TEE-1,"Tee, ""classic""",2,21.5,1,9990,3,32.02,6,81.3,-2,[\d.]+,0,100$/,
+      /^TEE-1,"Tee, ""classic""",2,21.5,1,9990,3,32.02,6,32.02,81.3,-2,[\d.]+,0,100$/,
     );
     // Text that starts like a formula can't run as one.
-    expect(lines[2]).toBe(`'@CMD,Not one of your products,1,1,0,0,1,1,0,,,0,,`);
+    // No cost known: an empty cell, not a cost of 0 (which would read as pure profit).
+    expect(lines[2]).toBe(`'@CMD,Not one of your products,1,1,0,0,1,1,,0,,,0,,`);
     expect(lines[3]).toBe(
-      `"'=HYPERLINK(""http://evil.example"",""x"")","'+SUM(1,2)",0,0,0,0,0,0,0,,4,0,,0`,
+      `"'=HYPERLINK(""http://evil.example"",""x"")","'+SUM(1,2)",0,0,0,0,0,0,,0,,4,0,,0`,
     );
+  });
+
+  it('gives cost and margin only over the sales with a cost, and nothing for unread stores', async () => {
+    const a = await addStore('Brand A');
+    // Store Sync may not read Harbor's orders: its cells are empty, not 0 sold.
+    await addStore('Harbor', { scopes: ALL_SCOPES });
+    const tee = await addItem('TEE-1', { stock: 5 });
+    await sell(a, '2026-10-10T15:00:00Z', [line('TEE-1', 1, 100)]);
+    await db.query('UPDATE items SET cost = 40 WHERE id = $1', [tee]);
+    await sell(a, '2026-10-11T15:00:00Z', [line('TEE-1', 1, 100)]);
+    const [row] = (await get('/api/reports/products?from=2026-10-01&to=2026-10-31')).body.products;
+    expect(row).toMatchObject({ revenue: 200, cost: 40, revenueWithCost: 100, margin: 0.6 });
+    const csv = await get('/api/reports/products.csv?from=2026-10-01&to=2026-10-31');
+    const [header, line1] = csv.text.slice(1).split('\r\n');
+    expect(header).toContain('Harbor: units,Harbor: revenue (USD),Units');
+    expect(line1).toMatch(/^TEE-1,TEE-1 title,2,200,,,2,200,40,100,60,5,[\d.]+,[\d.]+,28.6$/);
   });
 });
 

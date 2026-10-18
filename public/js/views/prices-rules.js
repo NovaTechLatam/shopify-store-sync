@@ -225,12 +225,17 @@ function ruleCard(r, data, reload) {
   return card(
     {
       title: r.storeName,
-      description: converts
-        ? [
-            `Prices in ${currency} · 1 ${base} = ${rateFormat.format(r.exchangeRate)} ${currency} · `,
-            h('a', { href: `#/stores/${r.storeId}` }, 'Change the exchange rate'),
-          ]
-        : `Prices in ${currency}, the base currency.`,
+      description: !converts
+        ? `Prices in ${currency}, the base currency.`
+        : r.exchangeRateUnset
+          ? [
+              `Prices in ${currency} · The exchange rate isn’t set yet, so prices can’t be updated with this rule · `,
+              h('a', { href: `#/stores/${r.storeId}` }, 'Set the exchange rate'),
+            ]
+          : [
+              `Prices in ${currency} · 1 ${base} = ${rateFormat.format(r.exchangeRate)} ${currency} · `,
+              h('a', { href: `#/stores/${r.storeId}` }, 'Change the exchange rate'),
+            ],
       actions: rule.enabled && r.saved ? badge('On', 'success', 'check') : badge('Off', 'neutral'),
       className: 'rule-card',
     },

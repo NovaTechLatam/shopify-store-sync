@@ -136,7 +136,8 @@ Things to know:
 
 **Copying costs to Shopify.** With **Settings > Costs > Copy costs to Shopify** on, each new cost
 is written to every active store's "Cost per item", converted with the store's exchange rate. It
-only reaches stores where the product is linked. If a store refuses, you get an alert ("Costs not
+only reaches stores where the product is linked, and skips a store in another currency whose
+exchange rate isn't set yet. If a store refuses, you get an alert ("Costs not
 sent to Shopify") and nothing else stops. The same switch decides whether publishing a catalog
 product sends its cost (see [The catalog](catalog.md)): off, Store Sync never changes "Cost per
 item" in Shopify, from deliveries or from the catalog.
@@ -171,7 +172,7 @@ To order, tick products (or **Select every product that needs reordering**), adj
 and click **Create draft orders**: you get one draft per supplier, ready to check and send. Products
 without a supplier can't be added that way: click **Choose…** next to them first. When a supplier
 invoices in a currency Store Sync has no exchange rate for yet (no earlier order in it, and no store
-selling in it), you are asked for the rate first. The **Order** link next to a product opens a
+selling in it whose rate you set), you are asked for the rate first. The **Order** link next to a product opens a
 new order with just that product.
 
 **Alerts.** When a product needs reordering, you also get an alert ("Time to reorder") like the

@@ -30,10 +30,20 @@ async function main(): Promise<void> {
   const taskDeps = { db, shopify, logger, publicUrl: config.PUBLIC_URL };
 
   const worker = new SyncWorker({ db, engine, logger, concurrency: config.WORKER_CONCURRENCY });
-  const tasks = new TaskRunner({ db, deps: taskDeps, logger, concurrency: 2 });
+  // Two lanes, two tasks at a time each: the stock sync's own tasks (linking a new variant,
+  // re-testing a store) never wait behind a long price update, publish or history import.
+  const coreTasks = new TaskRunner({ db, deps: taskDeps, logger, concurrency: 2, lane: 'core' });
+  const featureTasks = new TaskRunner({
+    db,
+    deps: taskDeps,
+    logger,
+    concurrency: 2,
+    lane: 'feature',
+  });
   const onWork = () => {
     worker.nudge();
-    tasks.nudge();
+    coreTasks.nudge();
+    featureTasks.nudge();
   };
   const scheduler = new Scheduler({
     db,
@@ -64,7 +74,8 @@ async function main(): Promise<void> {
     );
     for (const { id } of rows) await enqueueTask(db, 'ensure_webhooks', { storeId: id });
     worker.start();
-    tasks.start();
+    coreTasks.start();
+    featureTasks.start();
     scheduler.start();
     logger.info({ concurrency: config.WORKER_CONCURRENCY }, 'sync worker started');
   }
@@ -83,7 +94,7 @@ async function main(): Promise<void> {
     try {
       scheduler.stop();
       await app.close();
-      await Promise.all([worker.stop(), tasks.stop()]);
+      await Promise.all([worker.stop(), coreTasks.stop(), featureTasks.stop()]);
       await db.end();
     } finally {
       process.exit(0);

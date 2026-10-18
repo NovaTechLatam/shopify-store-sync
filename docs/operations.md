@@ -277,9 +277,11 @@ helps, though, because each copy tracks Shopify's allowance on its own, so more 
 more waiting. If you want extra copies only to serve the dashboard, set `WORKER_ENABLED=false` on
 them.
 
-`WORKER_CONCURRENCY` only applies to stock syncing. The other background work (publishing, price
-updates, reading orders, reorder checks...) runs two tasks at a time in each copy, next to it, so a
-long order history import never holds up stock.
+`WORKER_CONCURRENCY` only applies to stock syncing. The other background work runs next to it in
+each copy, in two lanes of two tasks at a time: the stock sync's own tasks (reading a store's
+products, linking a new variant, re-testing a store), and the features' (publishing, price updates,
+reading orders, reorder checks...). A long price update or order history import never holds up
+stock.
 
 ## Background work
 
@@ -323,6 +325,22 @@ Shopify may be refusing to start the export. Store Sync keeps asking, and meanwh
 updates bring new orders in. Look for `sales_backfill` in the app's log
 (`docker compose logs app | grep sales_backfill`): the error says why. A missing permission shows on
 the Reports page itself.
+
+## Removing a store
+
+**Remove store** (at the bottom of a store's page) stops syncing it and leaves its stock in Shopify
+as it is. It also deletes everything Store Sync keeps about that store, and connecting the store
+again doesn't bring any of it back:
+
+- that brand's own version of each catalog product (its title, description, tags and images), and
+  the link to its products in Shopify;
+- its price rule and fixed prices;
+- its sales history: reports and the sales pace change, and without `read_all_orders` Shopify only
+  gives the last 60 days of orders back.
+
+The confirmation lists how much of each the store has. If you connect the store again and publish a
+catalog product to it, its product in Shopify takes the catalog's texts and images (the preview
+shows what changes). To stop syncing for a while, **pause** the store instead: nothing is deleted.
 
 ## Changing keys and passwords
 

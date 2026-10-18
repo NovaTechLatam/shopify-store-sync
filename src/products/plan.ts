@@ -147,7 +147,6 @@ export function buildProductSetInput(p: PlanInput): PublishPlan {
           ? [{ optionName: 'Title', name: 'Default Title' }]
           : content.options.map((o, j) => ({ optionName: o.name, name: v.optionValues[j] ?? '' })),
       sku: v.sku,
-      barcodes: v.barcode ? [{ value: v.barcode }] : [],
       taxable: v.taxable,
       position: i + 1,
       inventoryItem: {
@@ -159,6 +158,11 @@ export function buildProductSetInput(p: PlanInput): PublishPlan {
           : {}),
       },
     };
+    // The catalog keeps one barcode: the store's first. `barcodes` replaces the variant's whole
+    // set (up to 20, each with its type), so a variant the store has only gets it when it changes.
+    if (!existing || existing.barcode !== (v.barcode || null)) {
+      input.barcodes = v.barcode ? [{ value: v.barcode }] : [];
+    }
     if (existing) {
       input.id = existing.id;
       keptVariants.add(existing.id);
