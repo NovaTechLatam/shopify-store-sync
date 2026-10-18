@@ -217,6 +217,19 @@ export async function flows(ctx) {
     );
     await shoot(page, 'reports-importing-1280-light');
 
+    // An import that can't start (Shopify refused it) isn't "reading the orders".
+    Object.assign(server.state.sales.stores[1].backfill, {
+      status: 'none',
+      error: '“Northwind Apparel” hasn’t given Store Sync permission to read its orders.',
+    });
+    server.state.sales.stores[3].backfill.status = 'done';
+    await go('#/');
+    await go('#/reports');
+    expect(
+      (await page.locator('main .state-title').textContent()) === 'No sales in this period',
+      'a refused import doesn’t say it is reading the orders',
+    );
+
     server.state = createMockState();
     await go('#/');
     await go('#/reports?period=custom&from=2020-01-01&to=2020-01-31');

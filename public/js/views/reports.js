@@ -205,20 +205,23 @@ export async function render({ root, query, signal, setTitle }) {
 }
 
 /**
- * The stores whose order history is being imported (or is about to be), with their import
- * status: '' when none is. A change means the report has more to show. A running import is
+ * Whether a store's order history is being imported, or is about to be. A running import is
  * checked on unless the store is paused or disconnected; one waiting to start only starts for an
- * active store.
+ * active store, and not while a refusal (a missing permission) is on record.
+ */
+function isImporting(c) {
+  if (c.permission === 'missing') return false;
+  if (c.backfill.status === 'running') return !['paused', 'disconnected'].includes(c.storeStatus);
+  return c.backfill.status === 'none' && !c.backfill.error && c.storeStatus === 'active';
+}
+
+/**
+ * The stores whose order history is being imported, with their import status: '' when none is.
+ * A change means the report has more to show.
  */
 function importState(status) {
   return status.stores
-    .filter(
-      (c) =>
-        c.permission !== 'missing' &&
-        (c.backfill.status === 'running'
-          ? !['paused', 'disconnected'].includes(c.storeStatus)
-          : c.backfill.status === 'none' && !c.backfill.error && c.storeStatus === 'active'),
-    )
+    .filter(isImporting)
     .map((c) => `${c.storeId}:${c.backfill.status}`)
     .join(',');
 }
@@ -444,10 +447,7 @@ function reportBody(summary, status, state, actions) {
   const issues = notes.filter((n) => n.tone !== 'neutral');
   // Stores still importing a history that reaches into this period.
   const importing = coverage.filter(
-    (c) =>
-      c.permission !== 'missing' &&
-      ['none', 'running'].includes(c.backfill.status) &&
-      (!c.historyFrom || summary.to >= c.historyFrom),
+    (c) => isImporting(c) && (!c.historyFrom || summary.to >= c.historyFrom),
   );
 
   const nodes = [
