@@ -224,6 +224,41 @@ describe('editing base prices and costs', () => {
     expect((await api('PATCH', '/api/prices/items/99999', { basePrice: 1 })).status).toBe(404);
   });
 
+  it('refuses ids too big to be ids with a 400, not a database error', async () => {
+    const huge = 1e20;
+    const checks = [
+      await api('POST', '/api/prices/apply', { itemIds: [huge] }),
+      await api('POST', '/api/prices/items/bulk', {
+        itemIds: [huge],
+        op: 'set',
+        field: 'cost',
+        value: 1,
+      }),
+      await api('POST', '/api/prices/base-from-store', { storeId: huge }),
+      await api('GET', '/api/prices/apply/preview?itemIds=100000000000000000000'),
+      await api('GET', '/api/prices?storeId=100000000000000000000'),
+    ];
+    expect(checks.map((c) => c.status)).toEqual([400, 400, 400, 400, 400]);
+  });
+
+  it('refuses a bulk change whose result is too big to store, changing nothing', async () => {
+    // 90 billion + 1,000,000% doesn't fit in the column (numeric(18,4)).
+    const tee = await item('TEE', { base: 90_000_000_000 });
+    const res = await api('POST', '/api/prices/items/bulk', {
+      itemIds: [tee.itemId],
+      op: 'percent',
+      field: 'basePrice',
+      value: 1_000_000,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('TEE');
+    const { rows } = await h.db.query<{ base_price: number }>(
+      'SELECT base_price FROM items WHERE id = $1',
+      [tee.itemId],
+    );
+    expect(rows[0]!.base_price).toBe(90_000_000_000);
+  });
+
   it('changes many items at once by a percentage, with rounding', async () => {
     const tee = await item('TEE', { base: 10 });
     const cap = await item('CAP', { base: 19.99 });

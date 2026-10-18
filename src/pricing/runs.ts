@@ -499,14 +499,23 @@ async function writePrices(deps: TaskDeps, job: RunStoreJob): Promise<WriteCount
     if (!item || !current) continue; // deleted meanwhile (the catalog sync tidies up)
     const cell = priceCell(item, store, variant, overrideAt.get(cellKey(store.id, variant.itemId)));
     let target: TargetPrice = cell.target;
+    const restore = restoreByItem.get(variant.itemId);
+    const decimals = currencyDecimals(store.currencyCode);
+    // The sale's price is still there (anything else was changed in Shopify meanwhile, and that
+    // change stays).
+    const onSale =
+      restore !== undefined &&
+      roundMoney(current.price, decimals) === roundMoney(restore.salePrice, decimals);
+    if (target.status === 'ok' && target.compareAtPrice === 'keep' && onSale) {
+      // The rule leaves the compare-at price to the store, but the one there is the sale's:
+      // put back the store's own, not leave the regular price crossed out after the sale.
+      target = { ...target, compareAtPrice: restoreCompareAt(restore, decimals) };
+    }
     if (target.status !== 'ok') {
-      const restore = restoreByItem.get(variant.itemId);
       if (restore) {
-        // The store charged this before a sale. Put it back only if the sale price is still
-        // there: anything else was changed in Shopify meanwhile, and that change stays.
+        // The store charged this before a sale: put it back if the sale price is still there.
         checked++;
-        const decimals = currencyDecimals(store.currencyCode);
-        if (roundMoney(current.price, decimals) !== roundMoney(restore.salePrice, decimals)) {
+        if (!onSale) {
           skipped++;
           continue;
         }

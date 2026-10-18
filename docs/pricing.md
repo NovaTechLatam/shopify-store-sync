@@ -85,9 +85,11 @@ The Rules tab shows live examples while you edit a rule, with a few of your own 
 - **Many products**: tick them (or tick none to change every product in the list), then **Change
   prices…**: set an amount, change by a percentage, add or subtract an amount, or round. You can
   round the results ("+10%, ending in .99"). Products without a value are skipped by relative
-  changes. Nothing is changed if any result would be negative.
+  changes. Nothing is changed if any result would be negative. With no product ticked, the change
+  applies to the list as shown, store filter included.
 - **A fixed price**: the edit button in a store's column. It replaces the rule for that product in
-  that store until you remove it. Add a note to remember why.
+  that store until you remove it. Add a note to remember why. In a store whose rule is off, removing
+  a fixed price leaves the store at the price it has in Shopify: change it there if needed.
 
 The **margin** shown is (price − cost × exchange rate) ÷ price, using the price the store will have.
 It needs a cost (Purchasing keeps costs up to date when deliveries arrive).
@@ -114,8 +116,8 @@ Good to know:
 
 - Only one update writes to a store at a time. If you start one while a sale is updating that
   store, it waits for it.
-- If Shopify can't be reached, Store Sync keeps trying for an hour, then marks that store as failed.
-  The other stores aren't affected. Paused stores and stores we can't connect to are skipped and
+- If Shopify can't be reached (or anything else goes wrong), Store Sync keeps trying for an hour,
+  then marks that store as failed. The other stores aren't affected. Paused stores and stores we can't connect to are skipped and
   marked as failed with the reason.
 - An access error from Shopify stops the update for that store with a message about the
   permission. It doesn't affect stock syncing.
@@ -139,8 +141,12 @@ When it **starts** (within a minute of its start time), for each product it cove
 
 When it **ends**, everything the sale changed is put back: the fixed price that was there before (if
 any) comes back, otherwise the product follows its rule again (with today's base price). In a store
-whose rule is off, the price it charged before the sale is put back, but only if it still charges
-the sale price.
+whose rule is off (or was turned off during the sale), the price it charged before the sale is put
+back, but only if it still charges the sale price.
+
+If a store can't be updated when the sale ends (it is paused, or Shopify can't be reached for an
+hour), you get an alert. The prices still to put back there are kept: the next **Update prices in
+stores…** for that store puts them back (the dialog counts them as "sale prices to put back").
 
 **Changes you make during a sale are kept.** If you set or remove a fixed price for a product in the
 sale, that product leaves the sale in that store, and the end of the sale doesn't touch it. In a
@@ -152,6 +158,11 @@ store whose rule is off, a price changed in Shopify during the sale stays as it 
   back at once, as when it ends.
 - A sale's prices are fixed when it starts. If you change a base price during a sale, the new price
   applies once the sale ends.
+- **Sales back to back** (one ends when the next starts) are fine: the next sale takes its
+  percentage off the regular price, never off the last sale's price, even when both happen in the
+  same minute.
+- If Store Sync wasn't running from before a sale's start until after its end, the sale doesn't
+  start late: it is marked as failed and you get an alert.
 
 ## Price changes
 
@@ -169,7 +180,7 @@ browser's time zone.
 You get an alert when:
 
 - **A sale or price change couldn't start** (for example none of its products is sold in its
-  stores). It is marked as failed with the reason.
+  stores, or its end had already passed). It is marked as failed with the reason.
 - **A scheduled update couldn't update a store** (paused, no permission, Shopify unreachable for an
   hour). The alert clears the next time prices reach that store, for example when you use **Update
   prices in stores…**.

@@ -371,6 +371,28 @@ describe('sales back to back, and putting prices back late', () => {
     expect(shopVariant(own, tee)).toMatchObject({ price: 99000, compareAtPrice: null });
   });
 
+  it('puts back the store’s own compare-at price where the rule leaves it as it is', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    await h.db.query(`UPDATE price_rules SET compare_at_mode = 'keep' WHERE store_id = $1`, [
+      ruled.id,
+    ]);
+    // The merchant shows a list price of 30 in Shopify, which Store Sync leaves alone.
+    shopVariant(ruled, tee).compareAtPrice = 30;
+    await h.db.query(
+      'UPDATE variants SET compare_at_price = 30 WHERE store_id = $1 AND item_id = $2',
+      [ruled.id, tee.itemId],
+    );
+    const id = await createSchedule(h.db, sale([tee.itemId], { storeIds: [ruled.id] }));
+    await runSchedule(deps(), id);
+    await settle();
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 19.99, compareAtPrice: 24.99 });
+    await makeEndDue(id);
+    await runSchedule(deps(), id);
+    await settle();
+    // Not the sale's 24.99 left crossed out next to the price (a fake discount once it drops).
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 24.99, compareAtPrice: 30 });
+  });
+
   it('puts the regular price back when the store’s rule was turned off during the sale', async () => {
     const tee = await item('TEE', 24.99, [24.99, 99000]);
     const id = await createSchedule(h.db, sale([tee.itemId], { storeIds: [ruled.id] }));

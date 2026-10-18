@@ -38,14 +38,17 @@ import { currencyDecimals, roundMoney } from '../../util/money.js';
 import { badRequest, conflict, notFound, parseId } from '../errors.js';
 import type { AppDeps } from '../server.js';
 
+/** The largest amount accepted (numeric(18,4) holds up to 10^14). */
+const MAX_AMOUNT = 1_000_000_000_000;
 /** An amount of money: at most 4 decimals are kept (numeric(18,4)). */
-const Money = z.number().min(0).max(1_000_000_000_000);
-const Id = z.number().int().positive();
+const Money = z.number().min(0).max(MAX_AMOUNT);
+/** Ids beyond this aren't ids (and would make Postgres fail on bigint). */
+const Id = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 /** "1,2,3" in a query string. */
 const IdList = z
   .string()
   .trim()
-  .regex(/^\d+(,\d+)*$/, 'Use a comma-separated list of ids')
+  .regex(/^\d{1,15}(,\d{1,15})*$/, 'Use a comma-separated list of ids')
   .transform((v) => [...new Set(v.split(',').map(Number))]);
 
 const FILTERS = ['all', 'changes', 'missing_base', 'overrides'] as const;
@@ -53,7 +56,7 @@ const FILTERS = ['all', 'changes', 'missing_base', 'overrides'] as const;
 const ListQuery = z.object({
   search: z.string().trim().max(200).optional(),
   filter: z.enum(FILTERS).default('all'),
-  storeId: z.coerce.number().int().positive().optional(),
+  storeId: z.coerce.number().pipe(Id).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -402,6 +405,7 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
       );
       const changes: { id: number; value: number | null }[] = [];
       const negative: string[] = [];
+      const tooBig: string[] = [];
       let skipped = 0;
       for (const row of rows) {
         const next = bulkValue(
@@ -411,13 +415,21 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
         );
         if (next === undefined) skipped++;
         else if (next !== null && next < 0) negative.push(row.sku);
+        else if (next !== null && next > MAX_AMOUNT) tooBig.push(row.sku);
         else if (next !== row.value) changes.push({ id: row.id, value: next });
       }
+      const what = body.field === 'cost' ? 'cost' : 'price';
+      const skus = (list: string[]) =>
+        `${list.slice(0, 5).join(', ')}${list.length > 5 ? ` and ${list.length - 5} more` : ''}`;
       if (negative.length > 0) {
-        const more = negative.length > 5 ? ` and ${negative.length - 5} more` : '';
         throw badRequest(
-          `This would make the ${body.field === 'cost' ? 'cost' : 'price'} negative for ` +
-            `${negative.slice(0, 5).join(', ')}${more}. Nothing was changed.`,
+          `This would make the ${what} negative for ${skus(negative)}. Nothing was changed.`,
+        );
+      }
+      if (tooBig.length > 0) {
+        throw badRequest(
+          `This would make the ${what} more than 1,000,000,000,000 for ${skus(tooBig)}. ` +
+            'Nothing was changed. Check the amount or percentage.',
         );
       }
       if (changes.length > 0) {
