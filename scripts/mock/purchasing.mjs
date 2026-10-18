@@ -603,17 +603,25 @@ function reorderRows(state) {
     });
 }
 
+/** The same sentence as src/purchasing/reorder.ts (reorderMessage). */
 function reorderMessage(row) {
   const pace = `${Number(row.velocity.toFixed(1))} a day`;
   const days = Math.floor(row.daysLeft ?? 0);
+  const units = (n) => `${n} ${n === 1 ? 'unit' : 'units'}`;
   const start =
     row.available <= 0
       ? `${row.sku} is out of stock and sells about ${pace}.`
-      : `${row.sku} will run out in about ${days} ${days === 1 ? 'day' : 'days'} at the current pace (${pace}).`;
+      : row.daysLeft < 1
+        ? `${row.sku} will run out in less than a day at the current pace (${pace}).`
+        : `${row.sku} will run out in about ${days} ${days === 1 ? 'day' : 'days'} at the current pace (${pace}).`;
+  const onOrder =
+    row.onOrder > 0
+      ? ` ${units(row.onOrder)} ${row.onOrder === 1 ? 'is' : 'are'} already on order.`
+      : '';
   const order = row.supplier
-    ? `Suggested order: ${row.suggested} units from ${row.supplier.name}.`
-    : `Suggested order: ${row.suggested} units (choose a supplier for it).`;
-  return `${start} Lead time is ${row.leadTimeDays} days. ${order}`;
+    ? `Suggested order: ${units(row.suggested)} from ${row.supplier.name}.`
+    : `Suggested order: ${units(row.suggested)} (choose a supplier for it).`;
+  return `${start}${onOrder} Lead time is ${row.leadTimeDays} ${row.leadTimeDays === 1 ? 'day' : 'days'}. ${order}`;
 }
 
 function itemPurchasing(state, itemId) {
