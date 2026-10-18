@@ -214,7 +214,13 @@ describe('catalog products', () => {
     const existing = await h.addItem('TEE-M', [4, 4, 4]);
     await h.initialize(existing, 'max');
     await h.drain();
-    await api('POST', '/api/catalog/products', tee());
+    const created = (await api('POST', '/api/catalog/products', tee())).body;
+    expect(
+      created.variants.map((v: any) => [v.sku, v.stock, v.stockStarted, v.stockStartsAtZero]),
+    ).toEqual([
+      ['TEE-S', null, false, true],
+      ['TEE-M', 4, true, false],
+    ]);
     const inits = await h.db.query<{ sku: string; strategy: string; value: number }>(
       `SELECT i.sku, a.strategy, a.value FROM pool_adjustments a
          JOIN pool_levels pl ON pl.id = a.pool_level_id JOIN items i ON i.id = pl.item_id

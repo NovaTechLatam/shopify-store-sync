@@ -5,7 +5,9 @@
  */
 
 /** Alert kind → { label, tone } (tone: neutral | success | warning | critical | info). */
-export const ALERT_KINDS = {};
+export const ALERT_KINDS = {
+  catalog_publish_failed: { label: 'Publishing failed', tone: 'critical' },
+};
 
 /** Activity (inventory event) kind → label, also listed in the Activity page's filter. */
 export const EVENT_KINDS = {};

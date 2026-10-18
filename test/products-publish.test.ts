@@ -521,6 +521,16 @@ describe('what stops a publish', () => {
     expect((await h.db.query('SELECT 1 FROM tasks')).rowCount).toBe(0);
   });
 
+  it('an archived product a store doesn’t have yet', async () => {
+    const [a] = h.stores;
+    const id = await createProduct(h.db, tee({ status: 'ARCHIVED' }));
+    await publish(id, [a!]);
+    await settle();
+    const row = await brandRow(id, a!.id);
+    expect(row.publish_state).toBe('failed');
+    expect(row.last_error).toContain('This product is archived and brand0 doesn’t have it');
+  });
+
   it('a paused store', async () => {
     const [a] = h.stores;
     await h.db.query(`UPDATE stores SET status = 'paused' WHERE id = $1`, [a!.id]);

@@ -129,6 +129,15 @@ export async function prepare(
     }
   }
 
+  const content = desiredContent(product, store.id);
+  if (!out.live && content.status === 'ARCHIVED') {
+    out.blocked.push(
+      `This product is archived and ${store.name} doesn’t have it: there’s nothing to archive ` +
+        'there. Set its status to Active or Draft to create it.',
+    );
+    return out;
+  }
+
   // A SKU the store's product doesn't have yet must not be in another of its products.
   const have = new Set((out.live?.variants ?? []).map((v) => normalizeSku(v.sku)));
   const toAdd = skus.filter((sku) => !have.has(sku));
@@ -145,7 +154,7 @@ export async function prepare(
     out.pricing.set(v.normalizedSku, variantPricing(v, store, currencyCode));
   }
   out.plan = buildProductSetInput({
-    content: desiredContent(product, store.id),
+    content,
     pricing: out.pricing,
     currencyCode,
     live: out.live,

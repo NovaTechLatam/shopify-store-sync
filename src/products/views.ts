@@ -113,6 +113,8 @@ export interface ItemStock {
   /** Σ of the started pool levels; null when none has started. */
   stock: number | null;
   started: boolean;
+  /** Not started, and waiting to start at 0 when a store first sells it (made by the catalog). */
+  startsAtZero: boolean;
 }
 
 export async function loadItemStock(
@@ -120,12 +122,26 @@ export async function loadItemStock(
   itemIds: number[],
 ): Promise<Map<number, ItemStock>> {
   if (itemIds.length === 0) return new Map();
-  const { rows } = await db.query<{ item_id: number; stock: number | null; started: boolean }>(
-    `SELECT item_id, sum(quantity)::int AS stock, bool_or(quantity IS NOT NULL) AS started
-       FROM pool_levels WHERE item_id = ANY($1::bigint[]) GROUP BY item_id`,
+  const { rows } = await db.query<{
+    item_id: number;
+    stock: number | null;
+    started: boolean;
+    starts_at_zero: boolean;
+  }>(
+    `SELECT pl.item_id, sum(pl.quantity)::int AS stock, bool_or(pl.quantity IS NOT NULL) AS started,
+            bool_or(EXISTS (SELECT 1 FROM pool_adjustments a
+                             WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                               AND a.strategy = 'value' AND a.value = 0 AND a.applied_at IS NULL))
+              AS starts_at_zero
+       FROM pool_levels pl WHERE pl.item_id = ANY($1::bigint[]) GROUP BY pl.item_id`,
     [itemIds],
   );
-  return new Map(rows.map((r) => [r.item_id, { stock: r.stock, started: r.started }]));
+  return new Map(
+    rows.map((r) => [
+      r.item_id,
+      { stock: r.stock, started: r.started, startsAtZero: r.starts_at_zero },
+    ]),
+  );
 }
 
 /** Everything the editor shows, for every store (a store without a row isn't enabled). */
@@ -169,6 +185,7 @@ export function editorView(
       cost: v.cost,
       stock: stock.get(v.itemId)?.stock ?? null,
       stockStarted: stock.get(v.itemId)?.started ?? false,
+      stockStartsAtZero: stock.get(v.itemId)?.startsAtZero ?? false,
     })),
     media: product.media.map((m) => ({
       id: m.id,
