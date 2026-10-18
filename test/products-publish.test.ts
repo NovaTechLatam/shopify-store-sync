@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { refreshInventoryItem, syncStoreCatalog } from '../src/catalog/catalog.js';
 import { createProduct, updateProduct } from '../src/products/editor.js';
 import { saveImage } from '../src/products/media.js';
@@ -375,6 +375,37 @@ describe('updating a published product', () => {
       { sku: 'TEE-L', deleted: false, linked: true },
       { sku: 'TEE-M', deleted: true, linked: false },
       { sku: 'TEE-S', deleted: false, linked: true },
+    ]);
+  });
+
+  it('re-reads only the new variants, and remembers the prices it sent', async () => {
+    const [a] = h.stores;
+    await h.db.query(`INSERT INTO price_rules (store_id, enabled) VALUES ($1, true)`, [a!.id]);
+    const id = await createProduct(h.db, tee());
+    await publish(id, [a!]);
+    await settle();
+    const reads = vi.spyOn(a!.shop, 'listVariantsByInventoryItem');
+    const product = (await loadMasterProduct(h.db, id))!;
+    await updateProduct(h.db, id, {
+      options: [{ name: 'Size', values: ['S', 'M', 'L'] }],
+      variants: [
+        { id: product.variants[0]!.id, sku: 'TEE-S', optionValues: ['S'], basePrice: 11 },
+        { id: product.variants[1]!.id, sku: 'TEE-M', optionValues: ['M'] },
+        { sku: 'TEE-L', optionValues: ['L'], basePrice: 14 },
+      ],
+    });
+    await publish(id, [a!]);
+    await settle();
+    const tl = a!.shop.variants.find((v) => v.sku === 'TEE-L')!;
+    expect(reads.mock.calls).toEqual([[tl.inventoryItemId]]);
+    const prices = await h.db.query<{ sku: string; price: number }>(
+      `SELECT sku, price FROM variants WHERE store_id = $1 AND deleted_at IS NULL ORDER BY sku`,
+      [a!.id],
+    );
+    expect(prices.rows).toEqual([
+      { sku: 'TEE-L', price: 14 },
+      { sku: 'TEE-M', price: 12 },
+      { sku: 'TEE-S', price: 11 },
     ]);
   });
 

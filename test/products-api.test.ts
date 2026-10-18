@@ -210,6 +210,21 @@ describe('catalog products', () => {
     });
   });
 
+  it('lets only one of two products created at the same moment have a SKU', async () => {
+    const results = await Promise.all([
+      api('POST', '/api/catalog/products', tee({ title: 'First' })),
+      api('POST', '/api/catalog/products', tee({ title: 'Second' })),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    const owners = await h.db.query('SELECT DISTINCT master_product_id FROM master_variants');
+    expect(owners.rowCount).toBe(1);
+    // One item per SKU, one start at 0 each.
+    const inits = await h.db.query(
+      `SELECT 1 FROM pool_adjustments WHERE kind = 'initialize' AND applied_at IS NULL`,
+    );
+    expect(inits.rowCount).toBe(2);
+  });
+
   it('starts new items at 0 but leaves an existing item’s stock alone', async () => {
     const existing = await h.addItem('TEE-M', [4, 4, 4]);
     await h.initialize(existing, 'max');
@@ -570,6 +585,19 @@ describe('import', () => {
       imagesAdded: 0,
       imagesRemoved: [],
     });
+  });
+
+  it('imports a product once, even when asked twice at the same moment', async () => {
+    const [a] = h.stores;
+    const source = sizedProduct(a!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }]);
+    await readCatalog(a!);
+    const body = { storeId: a!.id, productId: source.productId };
+    const results = await Promise.all([
+      api('POST', '/api/catalog/import', body),
+      api('POST', '/api/catalog/import', body),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect((await h.db.query('SELECT 1 FROM master_products')).rowCount).toBe(1);
   });
 
   it('shows an imported product as published when the brands match', async () => {

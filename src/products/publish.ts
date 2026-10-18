@@ -1,11 +1,17 @@
 import type { Logger } from 'pino';
 import { setAlert } from '../alerts/alerts.js';
 import { refreshInventoryItem, removeInventoryItem } from '../catalog/catalog.js';
+import { normalizeSku } from '../catalog/sku.js';
 import type { Db, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { ShopifyApiError, ShopifyUserErrors } from '../shopify/client.js';
 import { featureStatus, FeatureUnavailableError, requireFeature } from '../shopify/scopes.js';
-import type { ProductSetIdentifier, ShopifyAdmin } from '../shopify/types.js';
+import type {
+  ProductSetIdentifier,
+  ProductSetResult,
+  ProductVariantSetInputJson,
+  ShopifyAdmin,
+} from '../shopify/types.js';
 import { enqueueTask } from '../tasks/queue.js';
 import type { TaskDeps } from '../tasks/types.js';
 import type { DesiredContent } from './desired.js';
@@ -284,11 +290,20 @@ async function publish(
     );
   });
 
-  // Link the variants to their items now, not when the next catalog read comes round: stock
-  // starts syncing (new items start at 0) as soon as the reconcile runs.
+  // Link new variants to their items now, not when the next catalog read comes round: stock
+  // starts syncing (new items start at 0) as soon as the reconcile runs. Variants already linked
+  // and tracked keep their link (same SKU); only the prices we just sent are recorded for them.
   const catalogDeps = { db, shopify: deps.shopify, logger: log };
   for (const v of plan.removedVariants) await removeInventoryItem(db, store.id, v.inventoryItemId);
+  const { rows: settled } = await db.query<{ shopify_variant_id: string }>(
+    `SELECT shopify_variant_id FROM variants
+      WHERE store_id = $1 AND shopify_variant_id = ANY($2::text[]) AND deleted_at IS NULL
+        AND item_id IS NOT NULL AND tracked`,
+    [store.id, result.variants.map((v) => v.id)],
+  );
+  const linked = new Set(settled.map((r) => r.shopify_variant_id));
   for (const v of result.variants) {
+    if (linked.has(v.id)) continue;
     try {
       await refreshInventoryItem(catalogDeps, store.id, v.inventoryItemId);
     } catch (err) {
@@ -301,6 +316,8 @@ async function publish(
     }
   }
 
+  await recordSentPrices(db, store.id, plan.input.variants ?? [], result.variants);
+
   warnings.push(...(await onlineStore(db, admin, ctx, content, result.productId)));
   await db.query(
     `UPDATE master_product_stores
@@ -310,6 +327,40 @@ async function publish(
     [productId, store.id, contentHash(content), JSON.stringify(content), warnings],
   );
   return { warnings };
+}
+
+/**
+ * Our copy of the store's prices (variants.price, what the store charges now) gets what we just
+ * sent, so the product doesn't look out of date until the next catalog read.
+ */
+async function recordSentPrices(
+  db: Queryable,
+  storeId: number,
+  sent: ProductVariantSetInputJson[],
+  created: ProductSetResult['variants'],
+) {
+  const bySku = new Map(sent.map((v) => [normalizeSku(v.sku ?? null), v]));
+  const rows = created.flatMap((v) => {
+    const input = bySku.get(normalizeSku(v.sku));
+    return input?.price === undefined ? [] : [{ id: v.id, input }];
+  });
+  if (rows.length === 0) return;
+  await db.query(
+    `UPDATE variants v
+        SET price = t.price,
+            compare_at_price = CASE WHEN t.set_compare THEN t.compare ELSE v.compare_at_price END,
+            updated_at = now()
+       FROM unnest($2::text[], $3::numeric[], $4::boolean[], $5::numeric[])
+            AS t(id, price, set_compare, compare)
+      WHERE v.store_id = $1 AND v.shopify_variant_id = t.id AND v.deleted_at IS NULL`,
+    [
+      storeId,
+      rows.map((r) => r.id),
+      rows.map((r) => r.input.price!),
+      rows.map((r) => r.input.compareAtPrice !== undefined),
+      rows.map((r) => r.input.compareAtPrice ?? null),
+    ],
+  );
 }
 
 /** The linked product is gone from the store: forget it and the media we had there. */
