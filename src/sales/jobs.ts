@@ -60,14 +60,30 @@ export const SALES_JOBS: FeatureJob[] = [
   { name: 'sales_orders', everyMs: 60_000, run: queueSalesWork },
 ];
 
+/**
+ * Lines left unmapped are checked again only once products or variants changed (a SKU matched, a
+ * product created): lines that can never match (a SKU no store syncs) would otherwise be
+ * re-checked every minute. Kept per instance: an instance that just started checks once.
+ */
+let mappedAt: string | null = null;
+const MAP_BATCH = 5000;
+
+async function mapLines({ db, logger }: FeatureJobContext): Promise<void> {
+  const { rows } = await db.query<{ changed: string }>(
+    `SELECT concat_ws('|', (SELECT max(updated_at) FROM items),
+                           (SELECT max(updated_at) FROM variants),
+                           (SELECT count(*) FROM items)) AS changed`,
+  );
+  const changed = rows[0]!.changed;
+  if (changed === mappedAt) return;
+  const mapped = await mapUnmatchedLines(db, MAP_BATCH);
+  if (mapped) logger.info({ mapped }, 'sales lines mapped to products');
+  // A full batch may have left more: look again next time whatever happens.
+  mappedAt = mapped < MAP_BATCH ? changed : null;
+}
+
 export const SALES_HOUSEKEEPING: FeatureHousekeepingStep[] = [
-  [
-    'map sales lines',
-    async ({ db, logger }) => {
-      const mapped = await mapUnmatchedLines(db);
-      if (mapped) logger.info({ mapped }, 'sales lines mapped to products');
-    },
-  ],
+  ['map sales lines', mapLines],
   [
     'fill sales costs',
     async ({ db, logger }) => {

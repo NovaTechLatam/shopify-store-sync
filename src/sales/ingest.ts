@@ -211,11 +211,16 @@ export async function mapUnmatchedLines(
  * before costs were entered would otherwise never show a margin). Returns how many were filled.
  */
 export async function fillMissingCosts(db: Queryable, limit = HOUSEKEEPING_BATCH): Promise<number> {
+  // From the items that have a cost, down the index of lines without one: cheap when there is
+  // nothing to do, even with many lines of products that never get a cost.
   const { rowCount } = await db.query(
     `UPDATE sales_lines l SET unit_cost = i.cost
        FROM items i
-      WHERE l.id IN (SELECT l2.id FROM sales_lines l2 JOIN items i2 ON i2.id = l2.item_id
-                      WHERE l2.unit_cost IS NULL AND l2.item_id IS NOT NULL AND i2.cost IS NOT NULL
+      WHERE l.id IN (SELECT x.id FROM items i2
+                      CROSS JOIN LATERAL (SELECT l2.id FROM sales_lines l2
+                                           WHERE l2.item_id = i2.id AND l2.unit_cost IS NULL
+                                           LIMIT $1) x
+                      WHERE i2.cost IS NOT NULL
                       LIMIT $1)
         AND i.id = l.item_id AND l.unit_cost IS NULL AND i.cost IS NOT NULL`,
     [limit],
