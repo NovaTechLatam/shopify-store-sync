@@ -147,7 +147,10 @@ export async function createPriceRun(
   const plans: (RunStorePlan & { restore: RestoreEntry[] })[] = [];
   const skipped: CreatedRun['skipped'] = [];
   for (const s of stores) {
-    const restore = opts.restore?.get(s.id) ?? [];
+    // Prices an earlier run couldn't put back (the store was paused when a sale ended...) are
+    // put back by this one; this run's own entries are newer and win.
+    const carried = await carryRestores(client, s.id, opts.itemIds);
+    const restore = mergeRestores(carried, opts.restore?.get(s.id) ?? []);
     if (!s.rule_enabled && !s.has_overrides && restore.length === 0) {
       skipped.push({
         storeId: s.id,
@@ -205,6 +208,68 @@ export async function createPriceRun(
     stores: plans.map(({ restore: _restore, ...p }) => p),
     skipped,
   };
+}
+
+/**
+ * Takes the restore entries (for the items in scope) off the store's failed runs, so the next run
+ * puts those prices back instead of them being lost with the failed run. Rows are locked: two runs
+ * created at once can't both take the same entries.
+ */
+async function carryRestores(
+  client: Queryable,
+  storeId: number,
+  itemIds: number[] | null,
+): Promise<RestoreEntry[]> {
+  const { rows } = await client.query<{ run_id: number; restore_prices: RestoreEntry[] }>(
+    `SELECT run_id, restore_prices FROM price_run_stores
+      WHERE store_id = $1 AND status = 'failed' AND restore_prices <> '[]'::jsonb
+      ORDER BY run_id FOR UPDATE`,
+    [storeId],
+  );
+  const inScope = itemIds ? new Set(itemIds) : null;
+  const carried = new Map<number, RestoreEntry>();
+  for (const row of rows) {
+    const taken = row.restore_prices.filter((r) => !inScope || inScope.has(r.itemId));
+    if (taken.length === 0) continue;
+    for (const r of taken) carried.set(r.itemId, r); // the newest run's entry wins
+    await client.query(
+      'UPDATE price_run_stores SET restore_prices = $3 WHERE run_id = $1 AND store_id = $2',
+      [row.run_id, storeId, JSON.stringify(row.restore_prices.filter((r) => !taken.includes(r)))],
+    );
+  }
+  return [...carried.values()];
+}
+
+/** Restore entries by item, `newer` winning over `older`. */
+function mergeRestores(older: RestoreEntry[], newer: RestoreEntry[]): RestoreEntry[] {
+  const byItem = new Map(older.map((r) => [r.itemId, r]));
+  for (const r of newer) byItem.set(r.itemId, r);
+  return [...byItem.values()];
+}
+
+/**
+ * Restore entries not put back yet, by store: those of runs still to run or running, of failed
+ * runs (the next run takes them), and of runs that finished at or after `finishedSince` (a sale
+ * starting reads the stores' prices, then looks here: a price read before a restore was written is
+ * still the old sale's price).
+ */
+export async function pendingRestores(
+  db: Queryable,
+  storeIds: number[],
+  finishedSince: Date | null = null,
+): Promise<Map<number, RestoreEntry[]>> {
+  const { rows } = await db.query<{ store_id: number; restore_prices: RestoreEntry[] }>(
+    `SELECT store_id, restore_prices FROM price_run_stores
+      WHERE store_id = ANY($1::bigint[]) AND restore_prices <> '[]'::jsonb
+        AND (status IN ('queued', 'running', 'failed') OR finished_at >= $2)
+      ORDER BY run_id`,
+    [storeIds, finishedSince],
+  );
+  const out = new Map<number, RestoreEntry[]>();
+  for (const row of rows) {
+    out.set(row.store_id, mergeRestores(out.get(row.store_id) ?? [], row.restore_prices));
+  }
+  return out;
 }
 
 /** Stores (of `storeIds`) that already have a price update queued or running. */
@@ -343,8 +408,20 @@ async function runJob(deps: TaskDeps, job: RunStoreJob): Promise<void> {
     logger.info({ runId: job.runId, storeId: job.storeId, ...counts }, 'prices applied');
     await finishJob(db, job, { error: null });
   } catch (err) {
-    if (!(err instanceof ShopifyApiError)) throw err;
-    if (err.kind === 'transient' && Date.now() - startedAt.getTime() < GIVE_UP_AFTER_MS) {
+    const trying = Date.now() - startedAt.getTime() < GIVE_UP_AFTER_MS;
+    if (!(err instanceof ShopifyApiError)) {
+      // Anything else (a database hiccup, credentials that can't be read) is retried for as long
+      // as a network error, then the store's part fails: left running, it would block every
+      // later update of the store ("already being updated").
+      if (trying) throw err;
+      logger.error({ err, runId: job.runId, storeId: job.storeId }, 'price update failed');
+      const message = err instanceof Error ? err.message : String(err);
+      await finishJob(db, job, {
+        error: `Something went wrong while updating “${job.storeName}” (${message}). Update prices again later.`,
+      });
+      return;
+    }
+    if (err.kind === 'transient' && trying) {
       // Shown while the task waits to try again.
       await db.query('UPDATE price_run_stores SET error = $3 WHERE run_id = $1 AND store_id = $2', [
         job.runId,

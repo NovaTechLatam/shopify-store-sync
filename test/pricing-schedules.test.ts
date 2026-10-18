@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import pino from 'pino';
+import { withTransaction } from '../src/db/pool.js';
 import { PRICING_HOUSEKEEPING, PRICING_JOBS } from '../src/pricing/jobs.js';
+import { createPriceRun } from '../src/pricing/runs.js';
 import type { ScheduleInput } from '../src/pricing/schedules.js';
 import {
   cancelSchedule,
@@ -305,6 +307,125 @@ describe('sales', () => {
         message: expect.stringContaining('the start of the sale “Summer sale”'),
       }),
     ]);
+  });
+});
+
+describe('sales back to back, and putting prices back late', () => {
+  /** Sale A has been running; its end and sale B's start are both due now. */
+  async function backToBack(tee: TestItem) {
+    const a = await createSchedule(h.db, sale([tee.itemId], { name: 'Black Friday' }));
+    await runSchedule(deps(), a);
+    await settle();
+    const b = await createSchedule(
+      h.db,
+      sale([tee.itemId], {
+        name: 'Cyber Monday',
+        startsAt: minutes(61),
+        endsAt: minutes(120),
+        percentOff: 30,
+      }),
+    );
+    await makeEndDue(a);
+    await h.db.query(
+      `UPDATE price_schedules SET starts_at = now() - interval '1 second' WHERE id = $1`,
+      [b],
+    );
+    return { a, b };
+  }
+
+  it('starts the next sale from the regular price when it starts before the last one ended', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    const { a, b } = await backToBack(tee);
+    // The two tasks run in any order: here the start comes first.
+    await runSchedule(deps(), b);
+    await runSchedule(deps(), a);
+    await settle();
+    // 30% off the regular price, not off Black Friday's (19.99 and 79,200).
+    // Ruled store: 24.99 × 0.7 = 17.493 → nearest .99 = 17.99. Own store: 99,000 × 0.7.
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 17.99, compareAtPrice: 24.99 });
+    expect(shopVariant(own, tee)).toMatchObject({ price: 69300, compareAtPrice: 99000 });
+
+    await makeEndDue(b);
+    await runSchedule(deps(), b);
+    await settle();
+    // Everything back to the regular prices, and no fixed price left behind.
+    expect(await overrides()).toEqual([]);
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 24.99, compareAtPrice: null });
+    expect(shopVariant(own, tee)).toMatchObject({ price: 99000, compareAtPrice: null });
+  });
+
+  it('starts the next sale from the regular price before the last one’s prices are back', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    const { a, b } = await backToBack(tee);
+    // A ended, but its update hasn't reached the stores yet when B starts.
+    await runSchedule(deps(), a);
+    await runSchedule(deps(), b);
+    await settle();
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 17.99, compareAtPrice: 24.99 });
+    expect(shopVariant(own, tee)).toMatchObject({ price: 69300, compareAtPrice: 99000 });
+
+    await makeEndDue(b);
+    await runSchedule(deps(), b);
+    await settle();
+    expect(await overrides()).toEqual([]);
+    expect(shopVariant(own, tee)).toMatchObject({ price: 99000, compareAtPrice: null });
+  });
+
+  it('puts the regular price back when the store’s rule was turned off during the sale', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    const id = await createSchedule(h.db, sale([tee.itemId], { storeIds: [ruled.id] }));
+    await runSchedule(deps(), id);
+    await settle();
+    expect(shopVariant(ruled, tee).price).toBe(19.99);
+    await h.db.query('UPDATE price_rules SET enabled = false WHERE store_id = $1', [ruled.id]);
+    await makeEndDue(id);
+    await runSchedule(deps(), id);
+    await settle();
+    expect(shopVariant(ruled, tee)).toMatchObject({ price: 24.99, compareAtPrice: null });
+  });
+
+  it('puts a store’s own price back with the next update when the sale’s end couldn’t', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    const id = await createSchedule(h.db, sale([tee.itemId], { storeIds: [own.id] }));
+    await runSchedule(deps(), id);
+    await settle();
+    expect(shopVariant(own, tee).price).toBe(79200);
+    // The store is paused when the sale ends: its prices can't be put back then.
+    await h.db.query(`UPDATE stores SET status = 'paused' WHERE id = $1`, [own.id]);
+    await makeEndDue(id);
+    await runSchedule(deps(), id);
+    await settle();
+    expect(shopVariant(own, tee).price).toBe(79200);
+    // Resumed, then "Update prices in stores…" as the alert says: the price goes back.
+    await h.db.query(`UPDATE stores SET status = 'active' WHERE id = $1`, [own.id]);
+    const run = await withTransaction(h.db, (client) =>
+      createPriceRun(client, { reason: { kind: 'manual' }, itemIds: null, storeIds: [own.id] }),
+    );
+    expect(run?.stores).toEqual([expect.objectContaining({ storeId: own.id, status: 'queued' })]);
+    await settle();
+    expect(shopVariant(own, tee)).toMatchObject({ price: 99000, compareAtPrice: null });
+    // Put back once: a later update has nothing left to restore there.
+    const again = await withTransaction(h.db, (client) =>
+      createPriceRun(client, { reason: { kind: 'manual' }, itemIds: null, storeIds: [own.id] }),
+    );
+    expect(again).toBeNull();
+  });
+
+  it('doesn’t start a sale whose end passed before it could start', async () => {
+    const tee = await item('TEE', 24.99, [24.99, 99000]);
+    const id = await createSchedule(h.db, sale([tee.itemId]));
+    // Store Sync wasn't running for the whole sale.
+    await makeEndDue(id);
+    await runSchedule(deps(), id);
+    await settle();
+    const s = await schedule(id);
+    expect(s.status).toBe('failed');
+    expect(s.error).toContain('ended before');
+    expect(await overrides()).toEqual([]);
+    expect(shopVariant(ruled, tee).price).toBe(24.99);
+    expect(shopVariant(own, tee).price).toBe(99000);
+    const runs = await h.db.query('SELECT 1 FROM price_runs');
+    expect(runs.rowCount).toBe(0);
   });
 });
 

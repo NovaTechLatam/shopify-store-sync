@@ -231,10 +231,15 @@ async function updateDialog(trigger, itemIds) {
 
 function storeChoice(s, name) {
   const id = uid('store');
-  const changes =
-    s.changes === 0
-      ? 'No changes expected'
-      : `${plural(s.changes, 'price')} to change: ${s.increases} up, ${s.decreases} down`;
+  const restores = s.restores ?? 0;
+  const changes = [
+    s.changes > 0 &&
+      `${plural(s.changes, 'price')} to change: ${s.increases} up, ${s.decreases} down`,
+    // A sale ended while the store couldn't be updated: its prices still have to go back.
+    restores > 0 && `${plural(restores, 'sale price')} to put back`,
+  ]
+    .filter(Boolean)
+    .join('. ');
   return h(
     'div',
     { class: ['update-store', !s.canUpdate && 'is-disabled'] },
@@ -246,14 +251,18 @@ function storeChoice(s, name) {
         id,
         name,
         value: String(s.storeId),
-        checked: s.canUpdate && s.changes > 0,
+        checked: s.canUpdate && (s.changes > 0 || restores > 0),
         disabled: !s.canUpdate,
       }),
       h(
         'span',
         {},
         h('span', { class: 'strong' }, s.storeName),
-        h('span', { class: 'field-hint block' }, s.canUpdate ? changes : s.reason),
+        h(
+          'span',
+          { class: 'field-hint block' },
+          s.canUpdate ? changes || 'No changes expected' : s.reason,
+        ),
         s.canUpdate &&
           s.missingBase > 0 &&
           h(

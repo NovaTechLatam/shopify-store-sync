@@ -16,7 +16,7 @@ import {
   loadStoreVariants,
 } from './prices.js';
 import type { CreatedRun, RestoreEntry } from './runs.js';
-import { createPriceRun, readCurrentPrices, saveCurrentPrices } from './runs.js';
+import { createPriceRun, pendingRestores, readCurrentPrices, saveCurrentPrices } from './runs.js';
 
 /**
  * SCHEDULED PRICES: sales and base price changes (price_schedules)
@@ -65,7 +65,11 @@ export interface SalePrevious {
   /** Where the regular price came from: the fixed price, the rule, or the store itself. */
   source: 'override' | 'rule' | 'store';
   regular: number;
-  /** For source 'store': the store's compare-at price before the sale (put back with the price). */
+  /**
+   * The compare-at price that went with the regular price. Both are put back where Store Sync has
+   * no price of its own for the item when the sale ends (its rule was turned off meanwhile, or it
+   * never had one: source 'store').
+   */
   regularCompareAt: number | null;
   salePrice: number;
 }
@@ -285,22 +289,31 @@ export async function runSchedule(deps: TaskDeps, scheduleId: number): Promise<v
   if (!s || (s.status !== 'scheduled' && s.status !== 'active')) return;
   // Stores whose regular price is their own (Store Sync has none for the item) are read first,
   // so the sale takes its percentage off what they charge right now.
-  const live =
-    s.status === 'scheduled' && s.kind === 'sale'
-      ? await readSalePrices(deps, s)
-      : new Map<string, CurrentPrice>();
+  const readAt = new Date();
+  const starting = s.status === 'scheduled' && s.kind === 'sale' && s.ends_at! > readAt;
+  const live = starting ? await readSalePrices(deps, s) : new Map<string, CurrentPrice>();
   try {
     const run = await withTransaction(db, async (client) => {
       const due = s.status === 'scheduled' ? 'starts_at' : 'ends_at';
-      const { rows: locked } = await client.query<ScheduleRow>(
-        `SELECT * FROM price_schedules WHERE id = $1 AND status = $2 AND ${due} <= now()
+      const { rows: locked } = await client.query<ScheduleRow & { over: boolean }>(
+        `SELECT *, ends_at <= now() AS over FROM price_schedules
+          WHERE id = $1 AND status = $2 AND ${due} <= now()
            FOR UPDATE SKIP LOCKED`,
         [scheduleId, s.status],
       );
       const row = locked[0];
       if (!row) return null; // not due yet, done by another instance, or cancelled
       if (row.status === 'active') return endSale(client, row);
-      if (row.kind === 'sale') return startSale(client, row, live);
+      if (row.kind === 'sale') {
+        // Store Sync wasn't running from before the start to after the end: starting it now
+        // would put sale prices up for a minute, after the sale.
+        if (row.over) {
+          throw new ScheduleFailure(
+            'it ended before Store Sync could start it (Store Sync wasn’t running then), so no price changed.',
+          );
+        }
+        return startSale(client, row, live, readAt);
+      }
       return applyBaseChange(client, row);
     });
     logger.info({ scheduleId, runId: run?.runId ?? null }, 'price schedule carried out');
@@ -385,6 +398,7 @@ async function startSale(
   client: DbClient,
   s: ScheduleRow,
   live: Map<string, CurrentPrice>,
+  readAt: Date,
 ): Promise<CreatedRun | null> {
   const settings = await getSettings(client);
   const stores = await loadPricingStores(client, settings.baseCurrency, s.store_ids ?? undefined);
@@ -400,16 +414,25 @@ async function startSale(
     [storeIds, itemIds],
   );
   const overrideAt = byCell(await loadOverrides(client, itemIds, storeIds));
+  // Back-to-back sales (one ends when the next starts) are carried out in any order. A sale still
+  // holding a price here hasn't ended yet: this one takes over what that sale replaced. One that
+  // ended may not have put its prices back in the stores yet: what it will put back is the
+  // regular price, not the old sale price a store still charges.
+  const replacedBy = await otherSalesPrevious(client, s.id, [...overrideAt.values()]);
+  const restoring = await pendingRestores(client, storeIds, readAt);
   const percentOff = s.percent_off!;
   const previous: SalePrevious[] = [];
   for (const store of stores) {
     if (!store.currencyKnown) continue;
     const decimals = currencyDecimals(store.currencyCode);
+    const restoreOf = new Map((restoring.get(store.id) ?? []).map((r) => [r.itemId, r]));
     for (const item of items.values()) {
       const key = cellKey(store.id, item.id);
       const variant = variantAt.get(key);
       if (!variant) continue; // not sold there
-      const o = overrideAt.get(key);
+      const owned = overrideAt.get(key);
+      const inherited = owned?.scheduleId ? replacedBy.get(key) : undefined;
+      const o = inherited ? (inherited.override ?? undefined) : owned;
       const target = computeTargetPrice({
         basePrice: item.basePrice,
         baseCompareAtPrice: item.baseCompareAtPrice,
@@ -418,21 +441,38 @@ async function startSale(
         currencyCode: store.currencyCode,
         override: o ? { price: o.price, compareAtPrice: o.compareAtPrice } : null,
       });
+      const current =
+        live.get(key) ??
+        (variant.price !== null
+          ? { price: variant.price, compareAtPrice: variant.compareAtPrice }
+          : null);
       let regular: number;
-      let regularCompareAt: number | null = null;
+      let regularCompareAt: number | null;
       let source: SalePrevious['source'];
       if (target.status === 'ok') {
         regular = target.price;
+        regularCompareAt =
+          target.compareAtPrice === 'keep'
+            ? (current?.compareAtPrice ?? null)
+            : target.compareAtPrice;
         source = target.source;
+      } else if (inherited) {
+        regular = inherited.regular;
+        regularCompareAt = inherited.regularCompareAt ?? null;
+        source = 'store';
       } else {
-        const current =
-          live.get(key) ??
-          (variant.price !== null
-            ? { price: variant.price, compareAtPrice: variant.compareAtPrice }
-            : null);
         if (!current) continue; // no price known at all
-        regular = roundMoney(current.price, decimals);
-        regularCompareAt = current.compareAtPrice;
+        const restore = restoreOf.get(item.id);
+        if (
+          restore &&
+          roundMoney(current.price, decimals) === roundMoney(restore.salePrice, decimals)
+        ) {
+          regular = roundMoney(restore.price, decimals);
+          regularCompareAt = restore.compareAtPrice;
+        } else {
+          regular = roundMoney(current.price, decimals);
+          regularCompareAt = current.compareAtPrice;
+        }
         source = 'store';
       }
       const price = salePrice(regular, percentOff, store.rule, store.currencyCode);
@@ -481,6 +521,32 @@ async function startSale(
   });
 }
 
+/**
+ * What other sales replaced where they still hold the price (by cell). Read without locking those
+ * sales: their end locks its fixed prices after its own row, and this sale holds them already.
+ */
+async function otherSalesPrevious(
+  client: Queryable,
+  scheduleId: number,
+  overrides: { scheduleId: number | null }[],
+): Promise<Map<string, SalePrevious>> {
+  const ids = [
+    ...new Set(
+      overrides.flatMap((o) => (o.scheduleId && o.scheduleId !== scheduleId ? [o.scheduleId] : [])),
+    ),
+  ];
+  const out = new Map<string, SalePrevious>();
+  if (ids.length === 0) return out;
+  const { rows } = await client.query<{ previous: SalePrevious[] | null }>(
+    `SELECT previous FROM price_schedules WHERE id = ANY($1::bigint[]) AND kind = 'sale'`,
+    [ids],
+  );
+  for (const row of rows) {
+    for (const p of row.previous ?? []) out.set(cellKey(p.storeId, p.itemId), p);
+  }
+  return out;
+}
+
 /** Puts back what the sale replaced, where the sale's price is still the one in place. */
 async function endSale(client: DbClient, s: ScheduleRow): Promise<CreatedRun | null> {
   const previous = (s.previous ?? []) as SalePrevious[];
@@ -508,16 +574,16 @@ async function endSale(client: DbClient, s: ScheduleRow): Promise<CreatedRun | n
         p.itemId,
       ]);
     }
-    if (p.source === 'store') {
-      const list = restore.get(p.storeId) ?? [];
-      list.push({
-        itemId: p.itemId,
-        price: p.regular,
-        compareAtPrice: p.regularCompareAt,
-        salePrice: p.salePrice,
-      });
-      restore.set(p.storeId, list);
-    }
+    // Used only where Store Sync has no price of its own for the item when the run writes: the
+    // store sets its own prices (source 'store'), or its rule was turned off during the sale.
+    const list = restore.get(p.storeId) ?? [];
+    list.push({
+      itemId: p.itemId,
+      price: p.regular,
+      compareAtPrice: p.regularCompareAt ?? null,
+      salePrice: p.salePrice,
+    });
+    restore.set(p.storeId, list);
   }
   // Anything else still marked as the sale's (shouldn't exist) stops being its.
   if (stillOwned.size > 0) {

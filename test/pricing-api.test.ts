@@ -504,6 +504,33 @@ describe('updating the stores', () => {
     expect(runs.rowCount).toBe(0);
   });
 
+  it('lets a store with sale prices still to put back be updated, though its rule is off', async () => {
+    const tee = await item('TEE', { base: 10, usd: 10, cop: 32000 });
+    // A sale's end couldn't reach Harbor (paused then): its price is still the sale price.
+    const { rows } = await h.db.query<{ id: number }>(
+      `INSERT INTO price_runs (reason, status, finished_at) VALUES ('manual', 'failed', now())
+       RETURNING id`,
+    );
+    await h.db.query(
+      `INSERT INTO price_run_stores (run_id, store_id, status, error, restore_prices, finished_at)
+       VALUES ($1, $2, 'failed', 'paused', $3, now())`,
+      [
+        rows[0]!.id,
+        cop.id,
+        JSON.stringify([
+          { itemId: tee.itemId, price: 40000, compareAtPrice: null, salePrice: 32000 },
+        ]),
+      ],
+    );
+    const preview = await api('GET', '/api/prices/apply/preview');
+    const harbor = preview.body.stores.find((s: { storeId: number }) => s.storeId === cop.id);
+    expect(harbor).toMatchObject({ canUpdate: true, reason: null, restores: 1 });
+    const res = await api('POST', '/api/prices/apply', { storeIds: [cop.id] });
+    expect(res.status).toBe(202);
+    await settle();
+    expect(shopVariant(cop, tee).price).toBe(40000);
+  });
+
   it('updates the stores it can and reports the others', async () => {
     await api('PUT', `/api/prices/rules/${usd.id}`, RULE);
     await api('PUT', `/api/prices/rules/${cop.id}`, RULE);

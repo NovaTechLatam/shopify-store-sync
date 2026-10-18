@@ -367,6 +367,26 @@ describe('apply_prices', () => {
     expect(row!.error).toContain('for an hour');
   });
 
+  it('gives up after an hour on any other error, so the store isn’t left “being updated”', async () => {
+    await setRule(usd.id, ENDING_99);
+    await pricedItem('TEE', 10, [9, 1]);
+    const run = await newRun({ storeIds: [usd.id] });
+    usd.shop.listVariants = async () => {
+      throw new Error('could not decrypt the access token');
+    };
+    await runTasksOnce(h.db, deps(), silentLogger);
+    expect((await runStores(run!.runId))[0]!.status).toBe('running');
+    await h.db.query(
+      `UPDATE price_run_stores SET started_at = now() - interval '61 minutes' WHERE run_id = $1`,
+      [run!.runId],
+    );
+    await settle();
+    const [row] = await runStores(run!.runId);
+    expect(row!.status).toBe('failed');
+    expect(row!.error).toContain('could not decrypt the access token');
+    expect(await runStatus(run!.runId)).toMatchObject({ status: 'failed' });
+  });
+
   it('ends a paused store’s part as failed instead of leaving it queued', async () => {
     await setRule(usd.id, ENDING_99);
     await pricedItem('TEE', 10, [9, 1]);

@@ -23,6 +23,7 @@ import {
   busyStores,
   createPriceRun,
   loadRuns,
+  pendingRestores,
   storeUnavailableMessage,
 } from '../../pricing/runs.js';
 import type { ScheduleInput } from '../../pricing/schedules.js';
@@ -631,11 +632,16 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
       stores.map((s) => s.id),
     );
     const itemIds = [...new Set(variants.map((v) => v.itemId))];
-    const [items, overrides, busy] = await Promise.all([
+    const [items, overrides, busy, restoring] = await Promise.all([
       loadPricingItems(db, itemIds),
       loadOverrides(db, q.itemIds ?? null),
       busyStores(db, null),
+      pendingRestores(
+        db,
+        stores.map((s) => s.id),
+      ),
     ]);
+    const inScope = q.itemIds ? new Set(q.itemIds) : null;
     const overrideAt = byCell(overrides);
     return {
       baseCurrency,
@@ -684,7 +690,11 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
           }
         }
         const overrideCount = overrides.filter((o) => o.storeId === store.id).length;
-        const managed = (store.rule?.enabled ?? false) || overrideCount > 0;
+        // Prices a sale's end couldn't put back yet (the store was paused...): this update does.
+        const restores = (restoring.get(store.id) ?? []).filter(
+          (r) => !inScope || inScope.has(r.itemId),
+        ).length;
+        const managed = (store.rule?.enabled ?? false) || overrideCount > 0 || restores > 0;
         const isBusy = busy.some((b) => b.id === store.id);
         const missing = store.pricingMissingScopes;
         const reason = !managed
@@ -706,6 +716,7 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
           status: store.status,
           ruleEnabled: store.rule?.enabled ?? false,
           overrides: overrideCount,
+          restores,
           canUpdate: reason === null,
           busy: isBusy,
           reason,
