@@ -773,8 +773,7 @@ function createOrder(state, body, HttpError) {
   }
   const currencyCode = body.currencyCode ?? supplier.currencyCode;
   const base = state.settings.baseCurrency;
-  const exchangeRate =
-    currencyCode === base ? 1 : (body.exchangeRate ?? suggestedRate(state, currencyCode));
+  const exchangeRate = currencyCode === base ? 1 : body.exchangeRate;
   if (!exchangeRate) {
     throw new HttpError(400, `Enter the exchange rate: how many ${currencyCode} make 1 ${base}.`);
   }
@@ -967,6 +966,13 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
         info.supplierId = null;
       }
       return supplierItemsView(state, supplier.id).find((x) => x.itemId === item.id);
+    }
+    case 'GET /purchasing/suppliers/:id/items/:id': {
+      const item = supplierItemsView(state, findSupplier(id).id).find(
+        (x) => x.itemId === Number(subId),
+      );
+      if (!item) throw new HttpError(404, 'Supplier product not found');
+      return item;
     }
     case 'DELETE /purchasing/suppliers/:id/items/:id': {
       const before = p.supplierItems.length;

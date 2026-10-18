@@ -502,7 +502,7 @@ function readOnlyOrder({ order }, page) {
   });
   return [
     card({ title: 'Products' }, linesTable(order)),
-    h('div', { class: 'grid-2' }, detailsFacts(order), card({ title: 'Notes' }, form)),
+    h('div', { class: 'grid-2' }, detailsFacts(order), card({}, form)),
   ];
 }
 

@@ -10,6 +10,7 @@ import {
   markOrdered,
   receiveOrder,
   reverseReceipt,
+  suggestedExchangeRate,
   updateOrder,
   waitingItems,
 } from '../src/purchasing/orders.js';
@@ -544,13 +545,28 @@ describe('editing an order', () => {
       statusCode: 400,
       message: 'Enter the exchange rate: how many EUR make 1 USD.',
     });
+    expect(await suggestedExchangeRate(h.db, 'EUR', 'USD')).toBeNull();
     const first = await order(supplierId, [], { exchangeRate: 0.92 });
-    const second = await order(supplierId, []);
     expect((await loadOrder(h.db, first, settings)).exchangeRate).toBe(0.92);
-    expect((await loadOrder(h.db, second, settings)).exchangeRate).toBe(0.92);
+    expect(await suggestedExchangeRate(h.db, 'EUR', 'USD')).toBe(0.92);
+    // A store selling in COP gives its rate until an order in COP exists.
+    await h.db.query(
+      `UPDATE stores SET currency_code = 'COP', exchange_rate = 4100 WHERE id = $1`,
+      [h.stores[0]!.id],
+    );
+    expect(await suggestedExchangeRate(h.db, 'COP', 'USD')).toBe(4100);
+    expect(await suggestedExchangeRate(h.db, 'USD', 'USD')).toBe(1);
     // The base currency is always 1.
     const usd = await order(await supplier(), [], { exchangeRate: 3 });
     expect((await loadOrder(h.db, usd, settings)).exchangeRate).toBe(1);
+    // A draft switched to another currency needs that currency's rate.
+    await expect(updateOrder(h.db, usd, { currencyCode: 'EUR' }, settings)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    await updateOrder(h.db, usd, { currencyCode: 'EUR', exchangeRate: 0.9 }, settings);
+    expect((await loadOrder(h.db, usd, settings)).exchangeRate).toBe(0.9);
+    await updateOrder(h.db, usd, { notes: 'x', currencyCode: 'EUR' }, settings);
+    expect((await loadOrder(h.db, usd, settings)).exchangeRate).toBe(0.9);
   });
 
   it('keeps received units on an open order: never below them, never removed', async () => {

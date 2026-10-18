@@ -329,7 +329,7 @@ async function insertOrder(
   const warehouseId = input.warehouseId ?? (await defaultWarehouse(client));
   await assertWarehouse(client, warehouseId);
   const currencyCode = input.currencyCode ?? supplier.currency_code;
-  const exchangeRate = await resolveRate(client, currencyCode, input.exchangeRate, settings);
+  const exchangeRate = resolveRate(currencyCode, input.exchangeRate, settings);
   const number = await nextNumber(client);
   const { rows } = await client.query<{ id: number }>(
     `INSERT INTO purchase_orders
@@ -356,22 +356,16 @@ async function insertOrder(
   return id;
 }
 
-/** The base currency is always 1; another currency needs a rate (given, or suggested). */
-async function resolveRate(
-  db: Queryable,
-  currencyCode: string,
-  given: number | undefined,
-  settings: Settings,
-): Promise<number> {
+/**
+ * The base currency is always 1; another currency needs the rate the merchant entered (the
+ * dashboard prefills it with `suggestedExchangeRate`), so a stale rate is never used silently.
+ */
+function resolveRate(currencyCode: string, given: number | undefined, settings: Settings): number {
   if (currencyCode === settings.baseCurrency) return 1;
   if (given !== undefined) return given;
-  const suggested = await suggestedExchangeRate(db, currencyCode, settings.baseCurrency);
-  if (suggested === null) {
-    throw badRequest(
-      `Enter the exchange rate: how many ${currencyCode} make 1 ${settings.baseCurrency}.`,
-    );
-  }
-  return suggested;
+  throw badRequest(
+    `Enter the exchange rate: how many ${currencyCode} make 1 ${settings.baseCurrency}.`,
+  );
 }
 
 /**
@@ -404,16 +398,20 @@ export async function updateOrder(
     let currencyCode = order.currency_code;
     let exchangeRate = order.exchange_rate;
     if (isDraft) {
-      if (input.supplierId !== undefined) {
+      if (input.supplierId !== undefined && input.supplierId !== order.supplier_id) {
         supplierId = (await loadSupplierForOrder(client, input.supplierId)).id;
       }
       if (input.warehouseId !== undefined) await assertWarehouse(client, input.warehouseId);
+      const newCurrency =
+        input.currencyCode !== undefined && input.currencyCode !== order.currency_code;
       if (input.currencyCode !== undefined) currencyCode = input.currencyCode;
-      if (input.currencyCode !== undefined || input.exchangeRate !== undefined) {
-        exchangeRate =
-          input.currencyCode !== undefined && input.exchangeRate === undefined
-            ? await resolveRate(client, currencyCode, undefined, settings)
-            : await resolveRate(client, currencyCode, input.exchangeRate, settings);
+      // A new currency needs its own rate; the same one keeps the rate unless a new one is given.
+      if (newCurrency || input.exchangeRate !== undefined) {
+        exchangeRate = resolveRate(
+          currencyCode,
+          input.exchangeRate ?? (newCurrency ? undefined : exchangeRate),
+          settings,
+        );
       }
     }
     await client.query(

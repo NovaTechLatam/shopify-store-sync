@@ -294,3 +294,10 @@
 .field + .po-fields {
   margin-top: var(--space-4);
 }
+
+/* Order totals in currencies like COP run long: a little smaller, and they may wrap. */
+.po-page .stat-value {
+  flex-wrap: wrap;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}

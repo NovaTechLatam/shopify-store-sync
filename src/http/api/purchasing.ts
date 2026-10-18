@@ -36,7 +36,7 @@ import { getSettings } from '../../settings.js';
 import { missingScopes } from '../../shopify/scopes.js';
 import { enqueueTask } from '../../tasks/queue.js';
 import { CURRENCY_CODE } from '../../util/money.js';
-import { parseId } from '../errors.js';
+import { notFound, parseId } from '../errors.js';
 import type { AppDeps } from '../server.js';
 
 const Id = z.number().int().positive();
@@ -236,6 +236,14 @@ export async function registerPurchasingRoutes(app: FastifyInstance, deps: AppDe
   app.get('/api/purchasing/suppliers/:id/items', async (request) => {
     const id = parseId(params(request).id);
     return (await supplierView(id)).items;
+  });
+
+  app.get('/api/purchasing/suppliers/:id/items/:itemId', async (request) => {
+    const id = parseId(params(request).id);
+    const itemId = parseId(params(request).itemId, 'product id');
+    const item = (await supplierView(id)).items.find((i) => i.itemId === itemId);
+    if (!item) throw notFound('Supplier product');
+    return item;
   });
 
   app.put('/api/purchasing/suppliers/:id/items/:itemId', async (request) => {

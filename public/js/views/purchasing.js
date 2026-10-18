@@ -220,7 +220,7 @@ async function ordersTab({ panel, state, signal, sync }) {
   const toolbar = h(
     'div',
     { class: 'toolbar' },
-    searchBox('Search orders', 'Search by order number, supplier or SKU', state.search, (v) => {
+    searchBox('Search orders', 'Order number, supplier or SKU', state.search, (v) => {
       state.search = v;
       state.page = 1;
       update();

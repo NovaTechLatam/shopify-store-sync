@@ -157,6 +157,9 @@ describe('suppliers API', () => {
     expect((await api('PUT', `/api/purchasing/suppliers/${acme.id}/items/999`, {})).status).toBe(
       404,
     );
+    const one = await api('GET', `/api/purchasing/suppliers/${acme.id}/items/${item.itemId}`);
+    expect(one.body).toMatchObject({ itemId: item.itemId, unitCost: 2.5, preferred: true });
+    expect((await api('GET', `/api/purchasing/suppliers/${acme.id}/items/999`)).status).toBe(404);
 
     let info = await api('GET', `/api/purchasing/items/${item.itemId}`);
     expect(info.body.supplier).toEqual({ id: acme.id, name: 'Acme' });
