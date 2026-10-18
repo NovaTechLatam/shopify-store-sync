@@ -596,6 +596,21 @@ describe('what stops a publish', () => {
     expect((await open()).rowCount).toBe(0);
   });
 
+  it('a brand turned off after a failure has no publishing alert left', async () => {
+    const [a] = h.stores;
+    a!.shop.addProduct({ title: 'Other', handle: 'linen-tee' });
+    const id = await createProduct(h.db, tee({ handle: 'linen-tee' }));
+    await publish(id, [a!]);
+    await settle();
+    const open = () =>
+      h.db.query(
+        `SELECT 1 FROM alerts WHERE kind = 'catalog_publish_failed' AND resolved_at IS NULL`,
+      );
+    expect((await open()).rowCount).toBe(1);
+    await updateProduct(h.db, id, { stores: [{ storeId: a!.id, enabled: false }] });
+    expect((await open()).rowCount).toBe(0);
+  });
+
   it('a brand turned off after publishing was asked for goes back to its last state', async () => {
     const [a] = h.stores;
     const id = await createProduct(h.db, tee());

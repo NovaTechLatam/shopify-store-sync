@@ -349,6 +349,14 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
   const baseCurrency = product?.baseCurrency ?? settings.baseCurrency;
   let saved = snapshot(model);
   const isDirty = () => isNew || snapshot(model) !== saved;
+  // Closing or reloading the tab with unsaved edits asks first (the browser's own question).
+  window.addEventListener(
+    'beforeunload',
+    (event) => {
+      if (snapshot(model) !== saved) event.preventDefault();
+    },
+    { signal },
+  );
   const stateSlots = new Map();
 
   const formError = h('div', {
@@ -867,7 +875,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       h(
         'p',
         { class: 'field-hint' },
-        `Prices are base prices in ${baseCurrency}: each brand converts them with its exchange rate and price rule. A new SKU starts at 0 in stock; add stock with a purchase order or “Add units” on its product page.`,
+        `Prices are base prices in ${baseCurrency}: each brand converts them with its exchange rate and price rule. A new SKU starts at 0 in stock when the product is first published; then add stock with a purchase order or “Add units” on its product page.`,
       ),
     );
   }
@@ -992,7 +1000,8 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       const files = [...fileInput.files];
       fileInput.value = '';
       await withBusy(addButton, () => uploadImages(files, storeId, progress));
-      render();
+      // The shared list's "main image" note depends on the brands' own images.
+      renderAllImages();
     });
     const render = () => {
       const items = model.media.filter((m) => m.storeId === storeId);
@@ -1051,6 +1060,15 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
     refreshDirty();
   }
 
+  /** The first image of a brand is its main image: the brand's own first, else the shared one. */
+  function mainImageLabel(m, n) {
+    if (n !== 1) return `Image ${n}`;
+    if (m.storeId !== null) return 'Image 1 · main image of this brand';
+    return model.media.some((x) => x.storeId !== null)
+      ? 'Image 1 · main image where a brand has none of its own'
+      : 'Image 1 · main image';
+  }
+
   function imageRow(m, i, items, render) {
     const n = i + 1;
     const alt = input({ value: m.alt, maxlength: 512, placeholder: 'What the image shows' });
@@ -1090,11 +1108,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
         'div',
         { class: 'image-head' },
         thumb(m.url, { size: 'lg' }),
-        h(
-          'p',
-          { class: 'small muted' },
-          n === 1 && m.storeId === null ? 'Image 1 · main image' : `Image ${n}`,
-        ),
+        h('p', { class: 'small muted' }, mainImageLabel(m, n)),
         h(
           'div',
           { class: 'image-actions' },
@@ -1126,7 +1140,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
             attrs: { 'aria-label': `Remove image ${n}` },
             onClick: () => {
               model.media = model.media.filter((x) => x !== m);
-              render();
+              renderAllImages();
               refreshDirty();
             },
           }),
@@ -1394,7 +1408,9 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
           h(
             'span',
             { class: 'field-hint block' },
-            'Active products are made visible in the Online Store sales channel when published.',
+            view?.onlineStoreAsFound
+              ? 'Imported: publishing leaves the product shown or hidden in the Online Store as it is in Shopify, until you change this setting.'
+              : 'Active products are made visible in the Online Store sales channel when published.',
           ),
         ),
       ),

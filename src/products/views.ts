@@ -213,6 +213,8 @@ export function editorView(
         exchangeRate: store.exchangeRate,
         enabled: ps?.enabled ?? false,
         publishToOnlineStore: ps?.publishToOnlineStore ?? true,
+        /** Imported: publishing leaves the Online Store as it is until this setting changes. */
+        onlineStoreAsFound: ps?.publishedSnapshot?.onlineStoreAsFound === true,
         overlay: {
           title: ps?.title ?? null,
           descriptionHtml: ps?.descriptionHtml ?? null,

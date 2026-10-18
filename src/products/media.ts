@@ -37,7 +37,8 @@ export async function saveImage(
   const inserted = await db.query<{ id: number; width: number | null; height: number | null }>(
     `INSERT INTO media_files (sha256, filename, mime_type, byte_size, width, height, data)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (sha256) DO NOTHING
+     -- The same file again: uploaded now (the clean-up of unused uploads counts from here).
+     ON CONFLICT (sha256) DO UPDATE SET created_at = now()
      RETURNING id, width, height`,
     [
       sha256,
@@ -49,14 +50,7 @@ export async function saveImage(
       data,
     ],
   );
-  const row =
-    inserted.rows[0] ??
-    (
-      await db.query<{ id: number; width: number | null; height: number | null }>(
-        'SELECT id, width, height FROM media_files WHERE sha256 = $1',
-        [sha256],
-      )
-    ).rows[0]!;
+  const row = inserted.rows[0]!;
   return { id: row.id, url: `/api/catalog/media/${row.id}`, width: row.width, height: row.height };
 }
 

@@ -319,8 +319,8 @@ describe('desiredContent', () => {
     expect(content.title).toBe('Linen tee by Harbor');
     expect(content.vendor).toBe('Northwind');
     expect(content.status).toBe('DRAFT');
-    // Tags are case-insensitive in Shopify: "Linen" is the master's "linen".
-    expect(content.tags).toEqual(['linen', 'summer', 'harbor']);
+    // Tags are case-insensitive in Shopify: "Linen" is the master's "linen". A set: in order.
+    expect(content.tags).toEqual(['harbor', 'linen', 'summer']);
     expect(desiredContent(p, 3).title).toBe('Linen tee');
   });
 
@@ -380,6 +380,13 @@ describe('desiredContent', () => {
 
   it('dedupes tags case-insensitively, keeping the first spelling', () => {
     expect(uniqueTags([' Summer', 'summer', '', 'SALE', 'sale '])).toEqual(['Summer', 'SALE']);
+  });
+
+  it('ignores the order of tags (Shopify keeps a set, listed alphabetically)', () => {
+    const p = product({ tags: ['summer', 'Linen'] });
+    const sorted = product({ tags: ['Linen', 'summer'] });
+    expect(desiredContent(p, 1).tags).toEqual(['Linen', 'summer']);
+    expect(contentHash(desiredContent(p, 1))).toBe(contentHash(desiredContent(sorted, 1)));
   });
 });
 
@@ -676,6 +683,38 @@ describe('buildProductSetInput: updating the store’s product', () => {
     expect(result.newImages).toEqual([2]);
     expect(result.removedImages).toEqual([
       { id: 'gid://shopify/MediaImage/9', alt: 'Added in Shopify', url: 'https://cdn/9' },
+    ]);
+  });
+
+  it('sends again an image Shopify failed to process, and deletes the broken one', () => {
+    const p = product({
+      media: [
+        {
+          id: 1,
+          storeId: null,
+          position: 0,
+          alt: 'Front',
+          fileId: 1,
+          sourceUrl: null,
+          optionValue: null,
+          filename: 'a.png',
+          mimeType: 'image/png',
+          width: 1,
+          height: 1,
+        },
+      ],
+    });
+    const existing = live({
+      media: [{ id: 'gid://shopify/MediaImage/1', alt: 'Front', status: 'FAILED', url: null }],
+    });
+    const result = plan(p, {
+      live: existing,
+      mediaLinks: new Map([[1, 'gid://shopify/MediaImage/1']]),
+    });
+    expect(result.newImages).toEqual([1]);
+    expect(result.input.files![0]!.originalSource).toBe(`${PENDING_SOURCE}/1`);
+    expect(result.removedImages).toEqual([
+      { id: 'gid://shopify/MediaImage/1', alt: 'Front', url: null },
     ]);
   });
 

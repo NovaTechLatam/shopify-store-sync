@@ -285,6 +285,16 @@ export async function updateProduct(db: Db, productId: number, raw: unknown): Pr
     for (const input of body.stores ?? []) {
       await upsertStore(client, productId, input, product.stores.get(input.storeId));
     }
+    // A brand that doesn't sell it any more has no publishing problem left to fix.
+    const dropped = (body.stores ?? []).filter((s) => s.enabled === false);
+    if (dropped.length) {
+      await client.query(
+        `UPDATE alerts SET resolved_at = now()
+          WHERE kind = 'catalog_publish_failed' AND resolved_at IS NULL
+            AND dedupe_key = ANY($1::text[])`,
+        [dropped.map((s) => `catalog_publish_failed:${productId}:${s.storeId}`)],
+      );
+    }
     if (body.media) await writeMedia(client, productId, body.media, product.media);
   });
 }

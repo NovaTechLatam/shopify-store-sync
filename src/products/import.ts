@@ -7,7 +7,7 @@ import { ShopifyApiError } from '../shopify/client.js';
 import type { ShopifyProduct } from '../shopify/types.js';
 import type { ShopifyRegistry } from '../sync/engine.js';
 import { roundMoney } from '../util/money.js';
-import type { DesiredContent } from './desired.js';
+import type { DesiredContent, PublishedSnapshot } from './desired.js';
 import { contentFromShopify, contentHash, optionsOf, uniqueTags } from './desired.js';
 import {
   CatalogConflictError,
@@ -150,11 +150,6 @@ export async function importProduct(
     importedVariant(v, options, source.exchangeRate),
   );
   const warnings: string[] = [];
-  if (product.status === 'UNLISTED') {
-    warnings.push(
-      `“${product.title}” is unlisted in ${source.name}; the catalog has it as active.`,
-    );
-  }
 
   // The other brands: the store's product holding these SKUs, if it's exactly one.
   const linked: LinkedStore[] = [];
@@ -162,6 +157,18 @@ export async function importProduct(
     if (store.id === source.id) continue;
     const found = await linkCandidate(deps, store, [...bySku.keys()], warnings);
     if (!found) continue;
+    // Its variants we haven't read yet (added since our last look): read now, so their items are
+    // made by matching and start syncing the usual way, not left unstarted by the import.
+    try {
+      await knowVariants(deps, store.id, found);
+    } catch (err) {
+      deps.logger.warn({ err, storeId: store.id }, 'import: linked variants not readable');
+      warnings.push(
+        `We couldn’t read all the variants of “${found.title}” from ${store.name} ` +
+          `(${(err as Error).message}), so it wasn’t linked.`,
+      );
+      continue;
+    }
     // Its variants the master doesn't have yet join it, when they fit its options.
     for (const v of found.variants) {
       const sku = normalizeSku(v.sku);
@@ -181,6 +188,15 @@ export async function importProduct(
       variants.push(importedVariant(v, options, store.exchangeRate));
     }
     linked.push({ store, product: found });
+  }
+  // The catalog has no "unlisted": say what publishing will do to such a product.
+  for (const { store, product: p } of [{ store: source, product }, ...linked]) {
+    if (p.status !== 'UNLISTED') continue;
+    warnings.push(
+      `“${p.title}” is unlisted in ${store.name}. The catalog only has active, draft and ` +
+        `archived products, so it’s active here: publishing to ${store.name} lists it again ` +
+        '(shown in search and collections).',
+    );
   }
 
   const writeImport = async (client: DbClient): Promise<number> => {
@@ -324,17 +340,20 @@ export async function importProduct(
       );
       const images = await insertImages(client, masterId, store.id, p);
       // What the store has now, as we'd describe it: equal to what we'd send = published.
+      // Whether its Online Store shows the product isn't read: left as it is (see
+      // PublishedSnapshot), so it counts as what we'd send.
       const snapshot: DesiredContent = contentFromShopify(p, {
         images,
         handleManaged: false,
         onlineStore: true,
       });
+      const stored: PublishedSnapshot = { ...snapshot, onlineStoreAsFound: true };
       await client.query(
         `UPDATE master_product_stores
             SET publish_state = 'published', published_hash = $3, published_snapshot = $4,
                 published_at = now()
           WHERE master_product_id = $1 AND store_id = $2`,
-        [masterId, store.id, contentHash(snapshot), JSON.stringify(snapshot)],
+        [masterId, store.id, contentHash(snapshot), JSON.stringify(stored)],
       );
     }
     // Brands that don't sell it: off until the merchant turns them on.

@@ -15,7 +15,7 @@ import type {
 import { enqueueTask } from '../tasks/queue.js';
 import type { TaskDeps } from '../tasks/types.js';
 import type { DesiredContent } from './desired.js';
-import { contentHash, desiredContent } from './desired.js';
+import { contentHash, desiredContent, leavesOnlineStore } from './desired.js';
 import type { MasterProduct, StoreContext } from './model.js';
 import { loadMasterProduct, loadStoreContexts } from './model.js';
 import { buildProductSetInput } from './plan.js';
@@ -318,13 +318,22 @@ async function publish(
 
   await recordSentPrices(db, store.id, plan.input.variants ?? [], result.variants);
 
-  warnings.push(...(await onlineStore(db, admin, ctx, content, result.productId)));
+  // An imported brand's Online Store stays as it was found until the merchant changes it.
+  const asFound =
+    !prepared.recreated && !prepared.adopted && leavesOnlineStore(ps?.publishedSnapshot, content);
+  if (!asFound) warnings.push(...(await onlineStore(db, admin, ctx, content, result.productId)));
   await db.query(
     `UPDATE master_product_stores
         SET publish_state = 'published', published_hash = $3, published_snapshot = $4,
             published_at = now(), last_error = NULL, warnings = $5, updated_at = now()
       WHERE master_product_id = $1 AND store_id = $2`,
-    [productId, store.id, contentHash(content), JSON.stringify(content), warnings],
+    [
+      productId,
+      store.id,
+      contentHash(content),
+      JSON.stringify(asFound ? { ...content, onlineStoreAsFound: true } : content),
+      warnings,
+    ],
   );
   return { warnings };
 }

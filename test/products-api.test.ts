@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { syncStoreCatalog } from '../src/catalog/catalog.js';
 import { buildServer } from '../src/http/server.js';
+import { pruneUnusedImages } from '../src/products/media.js';
 import type { ShopifyProductVariant } from '../src/shopify/types.js';
 import { runTasksOnce } from '../src/tasks/runner.js';
 import { SecretBox } from '../src/util/crypto.js';
@@ -320,6 +321,16 @@ describe('images', () => {
     const big = await upload(Buffer.concat([PNG_1X1, Buffer.alloc(21 * 1024 * 1024)]));
     expect(big.statusCode).toBe(413);
     expect((await api('GET', '/api/catalog/media/999')).status).toBe(404);
+  });
+
+  it('counts the clean-up of unused uploads from the last time the file was uploaded', async () => {
+    const first = JSON.parse((await upload(PNG_1X1)).body);
+    await h.db.query(`UPDATE media_files SET created_at = now() - interval '2 days'`);
+    // Uploaded again for a product being edited: not cleaned up under the editor's feet.
+    expect(JSON.parse((await upload(PNG_1X1)).body).id).toBe(first.id);
+    expect(await pruneUnusedImages(h.db)).toBe(0);
+    await h.db.query(`UPDATE media_files SET created_at = now() - interval '2 days'`);
+    expect(await pruneUnusedImages(h.db)).toBe(1);
   });
 
   it('needs the dashboard’s header, like every change', async () => {
@@ -658,6 +669,123 @@ describe('import', () => {
   });
 });
 
+describe('import: what the brands have', () => {
+  it('shows a brand with its own tags as published, whatever their order', async () => {
+    const [a, b] = h.stores;
+    const source = sizedProduct(a!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }], {
+      tags: ['wool', 'winter'],
+    });
+    // Shopify lists tags alphabetically: the brand's own tag comes first.
+    sizedProduct(b!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }], {
+      tags: ['harbor', 'winter', 'wool'],
+    });
+    for (const s of h.stores) await readCatalog(s);
+    const res = await api('POST', '/api/catalog/import', {
+      storeId: a!.id,
+      productId: source.productId,
+    });
+    const product = (await api('GET', `/api/catalog/products/${res.body.id}`)).body;
+    expect(product.stores.map((s: any) => s.state)).toEqual(['published', 'published', 'never']);
+    expect(product.stores[1].overlay.extraTags).toEqual(['harbor']);
+  });
+
+  it('says publishing lists an unlisted product again, and shows it as a change', async () => {
+    const [a] = h.stores;
+    const source = sizedProduct(a!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }], {
+      status: 'UNLISTED',
+    });
+    await readCatalog(a!);
+    const res = await api('POST', '/api/catalog/import', {
+      storeId: a!.id,
+      productId: source.productId,
+    });
+    expect(res.body.warnings).toEqual([
+      '“Wool socks” is unlisted in brand0. The catalog only has active, draft and archived products, so it’s active here: publishing to brand0 lists it again (shown in search and collections).',
+    ]);
+    const product = (await api('GET', `/api/catalog/products/${res.body.id}`)).body;
+    expect(product.status).toBe('ACTIVE');
+    expect(product.stores[0]).toMatchObject({ state: 'changed', changedReason: 'content' });
+    const preview = (
+      await api('GET', `/api/catalog/products/${res.body.id}/preview?storeIds=${a!.id}`)
+    ).body.stores[0];
+    expect(preview.fields).toEqual([
+      { field: 'status', label: 'Status', from: 'Unlisted', to: 'Active' },
+    ]);
+  });
+
+  it('leaves an imported product’s Online Store as it is until the setting changes', async () => {
+    const [a] = h.stores;
+    // Active, but kept off the Online Store on purpose (sold elsewhere).
+    const source = sizedProduct(a!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }], {
+      status: 'ACTIVE',
+    });
+    await readCatalog(a!);
+    const id = (
+      await api('POST', '/api/catalog/import', { storeId: a!.id, productId: source.productId })
+    ).body.id;
+    expect((await api('GET', `/api/catalog/products/${id}`)).body.stores[0]).toMatchObject({
+      onlineStoreAsFound: true,
+      publishToOnlineStore: true,
+    });
+    await api('PATCH', `/api/catalog/products/${id}`, { descriptionHtml: '<p>Warm.</p>' });
+    await api('POST', `/api/catalog/products/${id}/publish`, { storeIds: [a!.id] });
+    await settle();
+    let view = (await api('GET', `/api/catalog/products/${id}`)).body.stores[0];
+    expect(view).toMatchObject({ state: 'published', onlineStoreAsFound: true, warnings: [] });
+    expect(a!.shop.isPublished(source.productId)).toBe(false);
+
+    // Turned off, then on again and published: from then on Store Sync shows it.
+    for (const show of [false, true]) {
+      await api('PATCH', `/api/catalog/products/${id}`, {
+        stores: [{ storeId: a!.id, publishToOnlineStore: show }],
+      });
+      await api('POST', `/api/catalog/products/${id}/publish`, { storeIds: [a!.id] });
+      await settle();
+    }
+    view = (await api('GET', `/api/catalog/products/${id}`)).body.stores[0];
+    expect(view).toMatchObject({ state: 'published', onlineStoreAsFound: false });
+    expect(a!.shop.isPublished(source.productId)).toBe(true);
+  });
+
+  it('reads a linked brand’s variants it hadn’t seen, so they start syncing', async () => {
+    const [a, b] = h.stores;
+    await h.db.query(
+      `INSERT INTO settings (key, value) VALUES ('onboarding_completed', 'true')
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    );
+    const source = sizedProduct(a!, 'Cap', [{ sku: 'CAP-1', size: 'S' }]);
+    sizedProduct(b!, 'Cap', [{ sku: 'CAP-1', size: 'S' }]);
+    for (const s of h.stores) await readCatalog(s);
+    // brand1 added a size since our last look at its catalog.
+    const known = b!.shop.variants.find((v) => v.sku === 'CAP-1')!;
+    await b!.shop.productSet({
+      identifier: { id: known.productId },
+      input: {
+        productOptions: [{ name: 'Size', values: [{ name: 'S' }, { name: 'M' }] }],
+        variants: [
+          { id: known.variantId, sku: 'CAP-1', optionValues: [{ optionName: 'Size', name: 'S' }] },
+          { sku: 'CAP-2', price: '10.00', optionValues: [{ optionName: 'Size', name: 'M' }] },
+        ],
+      },
+    });
+    const res = await api('POST', '/api/catalog/import', {
+      storeId: a!.id,
+      productId: source.productId,
+    });
+    expect(res.body.warnings).toEqual([]);
+    await h.drain();
+    const levels = await h.db.query<{ sku: string; started: boolean; linked: number }>(
+      `SELECT i.sku, bool_and(pl.quantity IS NOT NULL) AS started,
+              (SELECT count(*)::int FROM variants v WHERE v.item_id = i.id) AS linked
+         FROM items i JOIN pool_levels pl ON pl.item_id = i.id GROUP BY i.id ORDER BY i.sku`,
+    );
+    expect(levels.rows).toEqual([
+      { sku: 'CAP-1', started: true, linked: 2 },
+      { sku: 'CAP-2', started: true, linked: 1 },
+    ]);
+  });
+});
+
 describe('the product page', () => {
   it('shows an item’s catalog product, or where it could be imported from', async () => {
     const [a] = h.stores;
@@ -693,5 +821,43 @@ describe('the product page', () => {
     expect(item.issues).toEqual(['Not published in brand0 yet', 'Not published in brand2 yet']);
     const attention = (await api('GET', '/api/items?filter=issues')).body;
     expect(attention.total).toBe(0);
+  });
+
+  it('says “missing” again once a published variant is gone from a brand', async () => {
+    const [a] = h.stores;
+    const created = (
+      await api(
+        'POST',
+        '/api/catalog/products',
+        tee({ stores: h.stores.slice(1).map((s) => ({ storeId: s.id, enabled: false })) }),
+      )
+    ).body;
+    await api('POST', `/api/catalog/products/${created.id}/publish`, { storeIds: [a!.id] });
+    await settle();
+    // Deleted in the Shopify admin; and a size added in the catalog, not published yet.
+    a!.shop.removeVariant(a!.shop.variants.find((v) => v.sku === 'TEE-S')!.variantId);
+    await readCatalog(a!);
+    await api('PATCH', `/api/catalog/products/${created.id}`, {
+      options: [{ name: 'Size', values: ['S', 'M', 'L'] }],
+      variants: [
+        ...created.variants.map((v: any) => ({
+          id: v.id,
+          sku: v.sku,
+          optionValues: v.optionValues,
+        })),
+        { sku: 'TEE-L', optionValues: ['L'], basePrice: 14 },
+      ],
+    });
+    const issues = async (sku: string) => {
+      const item = await h.db.query<{ id: number }>(`SELECT id FROM items WHERE sku = $1`, [sku]);
+      return (await api('GET', `/api/items/${item.rows[0]!.id}`)).body.issues;
+    };
+    expect(await issues('TEE-S')).toEqual(['Missing in brand0']);
+    expect(await issues('TEE-M')).toEqual([]);
+    expect(await issues('TEE-L')).toEqual(['Not published in brand0 yet']);
+    // Only the missing variant needs attention (the low-stock alerts of 0 units aside).
+    await h.db.query(`UPDATE alerts SET resolved_at = now() WHERE kind = 'low_stock'`);
+    const attention = (await api('GET', '/api/items?filter=issues')).body;
+    expect(attention.items.map((i: any) => i.sku)).toEqual(['TEE-S']);
   });
 });

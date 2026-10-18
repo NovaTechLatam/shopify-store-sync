@@ -3,7 +3,7 @@ import type { Db, Queryable } from '../db/pool.js';
 import type { PriceRule, PriceRuleRow } from '../pricing/compute.js';
 import { rowToPriceRule } from '../pricing/compute.js';
 import type { WeightUnit } from '../shopify/types.js';
-import type { DesiredContent } from './desired.js';
+import type { PublishedSnapshot } from './desired.js';
 
 /**
  * MASTER PRODUCTS (the catalog feature): a product written once in Store Sync and published to
@@ -76,7 +76,7 @@ export interface MasterProductStore {
   publishState: PublishState;
   publishedHash: string | null;
   publishedAt: Date | null;
-  publishedSnapshot: DesiredContent | null;
+  publishedSnapshot: PublishedSnapshot | null;
   lastError: string | null;
   warnings: string[];
   /** Our image → its Shopify media in this store. */
@@ -199,7 +199,7 @@ export async function loadMasterProducts(db: Queryable, ids: number[]): Promise<
     publish_state: PublishState;
     published_hash: string | null;
     published_at: Date | null;
-    published_snapshot: DesiredContent | null;
+    published_snapshot: PublishedSnapshot | null;
     last_error: string | null;
     warnings: string[];
   }>(

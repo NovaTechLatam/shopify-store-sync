@@ -4,6 +4,7 @@ import {
   contentChanges,
   contentFromShopify,
   desiredContent,
+  leavesOnlineStore,
   variantDetailChanges,
 } from './desired.js';
 import type { MasterProduct, StoreContext } from './model.js';
@@ -99,7 +100,9 @@ async function previewStore(
         'instead of creating a copy.',
     );
   }
-  if (content.onlineStore && content.status === 'ACTIVE') {
+  const asFound =
+    !prepared.recreated && !prepared.adopted && leavesOnlineStore(ps.publishedSnapshot, content);
+  if (content.onlineStore && content.status === 'ACTIVE' && !asFound) {
     const publishing = featureStatus(store.grantedScopes).publishing;
     if (!publishing.available) {
       warnings.push(

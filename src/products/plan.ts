@@ -77,7 +77,11 @@ export function buildProductSetInput(p: PlanInput): PublishPlan {
   const problems: string[] = [];
 
   // ---- images -----------------------------------------------------------------------------
-  const liveMedia = new Set((live?.media ?? []).map((m) => m.id));
+  // Media Shopify couldn't process (status FAILED) stay broken: sent again from the source, and
+  // the broken one is deleted.
+  const liveMedia = new Set(
+    (live?.media ?? []).filter((m) => m.status !== 'FAILED').map((m) => m.id),
+  );
   const files: FileSetInputJson[] = [];
   const fileOf = new Map<number, FileSetInputJson>();
   const newImages: number[] = [];

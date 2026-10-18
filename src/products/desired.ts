@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { normalizeSku } from '../catalog/sku.js';
 import type { TargetPrice } from '../pricing/compute.js';
 import { computeTargetPrice } from '../pricing/compute.js';
-import type { ShopifyProduct, WeightUnit } from '../shopify/types.js';
+import type { ProductStatus, ShopifyProduct, WeightUnit } from '../shopify/types.js';
 import { currencyDecimals, roundMoney } from '../util/money.js';
 import type {
   MasterOption,
@@ -54,7 +54,8 @@ export interface DesiredContent {
   /** null = not managed: Shopify makes one from the title, and keeps it. */
   handle: string | null;
   seo: { title: string | null; description: string | null };
-  status: MasterStatus;
+  /** UNLISTED only describes a store's product as it is (the catalog never sets it). */
+  status: MasterStatus | Extract<ProductStatus, 'UNLISTED'>;
   /** [] = one variant without options. */
   options: MasterOption[];
   variants: DesiredVariant[];
@@ -62,6 +63,30 @@ export interface DesiredContent {
   images: DesiredImage[];
   /** Shown in the Online Store sales channel (when active). */
   onlineStore: boolean;
+}
+
+/** What was last published to a brand (master_product_stores.published_snapshot). */
+export interface PublishedSnapshot extends DesiredContent {
+  /**
+   * Set by an import: whether the store showed the product in its Online Store wasn't read, so
+   * publishing leaves that as it is until the merchant changes the setting or the status (a
+   * product kept off the Online Store on purpose must not appear there on the next publish).
+   */
+  onlineStoreAsFound?: true;
+}
+
+/** Whether publishing `content` leaves the Online Store alone: imported, setting untouched. */
+export function leavesOnlineStore(
+  previous: PublishedSnapshot | null | undefined,
+  content: DesiredContent,
+): boolean {
+  // An unlisted product becoming active (the import says so) is not a status change here.
+  const listed = (status: DesiredContent['status']) => (status === 'UNLISTED' ? 'ACTIVE' : status);
+  return (
+    previous?.onlineStoreAsFound === true &&
+    previous.onlineStore === content.onlineStore &&
+    listed(previous.status) === listed(content.status)
+  );
 }
 
 /** The brand's version of the product (`storeId`'s overlay over the master). */
@@ -76,7 +101,7 @@ export function desiredContent(product: MasterProduct, storeId: number): Desired
     descriptionHtml: s?.descriptionHtml ?? product.descriptionHtml,
     vendor: s?.vendor ?? product.vendor,
     productType: s?.productType ?? product.productType,
-    tags: uniqueTags([...product.tags, ...(s?.extraTags ?? [])]),
+    tags: contentTags([...product.tags, ...(s?.extraTags ?? [])]),
     handle: s?.handle ?? product.handle,
     seo: {
       title: s?.seoTitle ?? product.seoTitle,
@@ -119,6 +144,18 @@ export function uniqueTags(tags: string[]): string[] {
     out.push(tag);
   }
   return out;
+}
+
+/**
+ * A product's tags as compared and sent: unique, in alphabetical order. Shopify keeps a set (it
+ * lists tags alphabetically), so order means nothing: a brand with an extra tag that sorts among
+ * the master's must not look changed after an import.
+ */
+export function contentTags(tags: string[]): string[] {
+  return uniqueTags(tags).sort((a, b) => {
+    const [x, y] = [a.toLowerCase(), b.toLowerCase()];
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
 }
 
 /** Weights are stored with 3 decimals (numeric(12,3)). */
@@ -233,10 +270,11 @@ export function contentFromShopify(
     descriptionHtml: product.descriptionHtml,
     vendor: product.vendor,
     productType: product.productType,
-    tags: uniqueTags(product.tags),
+    tags: contentTags(product.tags),
     handle: opts.handleManaged ? product.handle : null,
     seo: { title: product.seo.title ?? null, description: product.seo.description ?? null },
-    status: product.status === 'UNLISTED' ? 'ACTIVE' : product.status,
+    // Kept as is: publishing sends Active, which lists an unlisted product again.
+    status: product.status,
     options,
     variants: product.variants.map((v) => ({
       sku: v.sku ?? '',
