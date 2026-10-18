@@ -132,6 +132,17 @@ describe('refresh_order', () => {
     expect(await orderCount()).toBe(0);
   });
 
+  it('leaves an order Shopify answers with an error (older than 60 days) as it is', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    const o = store.shop.addOrder({ lines: [{ sku: 'A' }] });
+    store.shop.getOrder = async () => {
+      throw new ShopifyApiError('Shopify GraphQL error: Order is not accessible', 'invalid');
+    };
+    await expect(refreshOrder(deps(), store.id, o.id)).resolves.toBeUndefined();
+    expect(await orderCount()).toBe(0);
+  });
+
   it('retries network errors (the task fails)', async () => {
     await salesHarness();
     const [store] = h.stores as [TestStore];

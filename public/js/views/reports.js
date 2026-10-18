@@ -968,7 +968,13 @@ function storesCard(summary, status) {
         ? `Each store in its own currency, then in ${base}.`
         : 'How the stores compare.',
     },
-    table({ columns, rows: summary.byStore, caption: 'Sales by store', totals: true }),
+    table({
+      columns,
+      rows: summary.byStore,
+      caption: 'Sales by store',
+      // One store: its row is the total.
+      totals: summary.byStore.length > 1,
+    }),
   );
 }
 

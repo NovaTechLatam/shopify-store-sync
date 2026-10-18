@@ -104,8 +104,8 @@ export async function flows(ctx) {
       .locator('tbody tr')
       .allTextContents();
     expect(
-      rows.length === 2 && rows[0].includes('Little Fox Kids') && rows[1].includes('All stores'),
-      `only that store, then the total (${rows.length} rows)`,
+      rows.length === 1 && rows[0].includes('Little Fox Kids'),
+      `only that store, without a totals row (${rows.length} rows)`,
     );
     expect(
       (await page.getByRole('button', { name: 'All stores' }).getAttribute('aria-pressed')) ===

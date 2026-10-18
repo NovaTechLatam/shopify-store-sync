@@ -41,6 +41,12 @@ export async function refreshOrder(deps: TaskDeps, storeId: number, orderId: str
       deps.logger.warn({ storeId, orderId, err }, 'order refresh refused by shopify');
       return;
     }
+    // Shopify may answer an order outside the 60 days it lets us read with an error rather than
+    // null. Retrying wouldn't change that; the 15-minute sync reads whatever it can see.
+    if (err instanceof ShopifyApiError && err.kind === 'invalid') {
+      deps.logger.info({ storeId, orderId, err }, 'order not readable; left as it is');
+      return;
+    }
     throw err;
   }
   if (!order) {
