@@ -560,10 +560,12 @@ async function itemDialog(item, base, ctx) {
         if (Number.isNaN(v) || v < 0)
           throw new Error('Enter amounts of 0 or more, or leave them empty.');
       }
-      if (
-        values.baseCompareAtPrice !== null &&
-        (values.basePrice === null || values.baseCompareAtPrice <= values.basePrice)
-      ) {
+      if (values.baseCompareAtPrice !== null && values.basePrice === null) {
+        throw new Error(
+          'A compare-at price needs a base price. Clear the compare-at price too, or enter a base price.',
+        );
+      }
+      if (values.baseCompareAtPrice !== null && values.baseCompareAtPrice <= values.basePrice) {
         throw new Error(
           'The compare-at price must be higher than the base price. Leave it empty for none.',
         );

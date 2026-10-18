@@ -222,6 +222,11 @@ describe('editing base prices and costs', () => {
       400,
     );
     expect((await api('PATCH', '/api/prices/items/99999', { basePrice: 1 })).status).toBe(404);
+    // Clearing a base price that has a compare-at price says what to do, not "must be higher".
+    await api('PATCH', `/api/prices/items/${tee.itemId}`, { baseCompareAtPrice: 12 });
+    const cleared = await api('PATCH', `/api/prices/items/${tee.itemId}`, { basePrice: null });
+    expect(cleared.status).toBe(400);
+    expect(cleared.body.error).toContain('Remove the compare-at price too');
   });
 
   it('refuses ids too big to be ids with a 400, not a database error', async () => {

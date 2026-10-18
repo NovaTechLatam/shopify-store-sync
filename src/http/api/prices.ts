@@ -361,7 +361,12 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
           ? body.baseCompareAtPrice
           : rows[0].base_compare_at_price;
       const touched = body.basePrice !== undefined || body.baseCompareAtPrice !== undefined;
-      if (touched && compareAt !== null && (price === null || compareAt <= price)) {
+      if (touched && compareAt !== null && price === null) {
+        throw badRequest(
+          'A compare-at price needs a base price. Remove the compare-at price too (Edit…), or keep a base price.',
+        );
+      }
+      if (touched && compareAt !== null && price !== null && compareAt <= price) {
         throw badRequest(COMPARE_AT_ABOVE);
       }
       await client.query(
