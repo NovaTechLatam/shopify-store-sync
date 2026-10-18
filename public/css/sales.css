@@ -1,3 +1,283 @@
 /* Reports: sales across all brands.
    Loaded after styles.css: use its tokens (colours, spacing) and shared pieces (.thumb, .num,
    .table-totals, .chart and --series-N, print rules). */
+
+/* ---------- Filters: period, custom range, stores ---------- */
+
+.report-filters {
+  margin-bottom: var(--space-5);
+}
+
+.report-filters-inner {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.report-filters .chips {
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.report-filters .chip .swatch {
+  width: 10px;
+  height: 10px;
+}
+
+.report-range {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 560px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.report-range-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.report-range-fields .field {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.report-range .input[aria-invalid='true'] {
+  border-color: var(--critical);
+}
+
+/* ---------- Incomplete-history notes ---------- */
+
+.report-issues {
+  display: grid;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+}
+
+/* ---------- Revenue chart ---------- */
+
+.chart-holder {
+  /* The chart is drawn for this width; keep it from widening the card meanwhile. */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.card .chart-legend {
+  margin-bottom: var(--space-3);
+}
+
+.chart rect {
+  shape-rendering: crispEdges;
+}
+
+/* ---------- Tables ---------- */
+
+.brand-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sort-button:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.sort-button.is-active {
+  color: var(--text);
+}
+
+.sort-arrow {
+  min-width: 0.8em;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sort-button.is-active .sort-arrow {
+  color: var(--accent-text);
+}
+
+.report-toolbar {
+  align-items: flex-end;
+}
+
+.report-toolbar .toolbar-select {
+  flex: 0 1 230px;
+}
+
+.report-csv {
+  margin-left: auto;
+}
+
+/* A product's units, with each store's share under them. */
+.units-cell {
+  display: grid;
+  justify-items: end;
+}
+
+.store-units {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 var(--space-2);
+  margin-top: 2px;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.store-units li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.store-units .swatch {
+  width: 9px;
+  height: 9px;
+}
+
+/* ---------- Sales history by store ---------- */
+
+.coverage-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-3);
+}
+
+.coverage-item > .swatch {
+  margin-top: 5px;
+}
+
+.coverage-text {
+  flex: 1 1 260px;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.coverage-text > * + * {
+  margin-top: 2px;
+}
+
+.coverage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.report-how {
+  margin-top: 0;
+  font-size: 14px;
+}
+
+.report-how .plain-list {
+  gap: var(--space-2);
+  max-width: 76ch;
+}
+
+/* ---------- Product page section ---------- */
+
+/* The figures, then each store's sales: side by side when there is room. */
+.sales-section-body {
+  display: grid;
+  gap: var(--space-4) var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 900px) {
+  .sales-section-body {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.sales-by-store {
+  display: grid;
+  gap: var(--space-2);
+  list-style: none;
+  font-size: 14px;
+}
+
+.sales-by-store li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.sales-by-store .sales-store-name {
+  flex: 1 1 140px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.sales-by-store .num {
+  min-width: 5.5em;
+}
+
+/* ---------- Phones ---------- */
+
+@media (max-width: 639px) {
+  /* Big amounts ($1,234,567.89) still fit half the screen. */
+  .report-stats .stat-value {
+    font-size: 22px;
+    overflow-wrap: anywhere;
+  }
+
+  /* A store whose orders aren't read: its card just says so, without a list of dashes. */
+  .table tbody tr > td:has(> .unread) {
+    display: none;
+  }
+
+  .table tbody tr:has(.unread) > th {
+    border-bottom: 0;
+  }
+
+  .report-filters {
+    margin-bottom: var(--space-4);
+  }
+
+  .report-csv {
+    margin-left: 0;
+  }
+
+  .report-toolbar .toolbar-select,
+  .report-toolbar .search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}
+
+@media print {
+  .report-filters,
+  .report-toolbar,
+  .coverage-actions,
+  .report-how {
+    display: none !important;
+  }
+}
