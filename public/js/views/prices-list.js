@@ -124,7 +124,12 @@ export async function render(container, { query, signal }) {
     selected.size > 0
       ? { itemIds: [...selected.keys()], label: plural(selected.size, 'selected product') }
       : {
-          filter: { search: state.search || undefined, filter: state.filter },
+          // The list as shown: with a store chosen, its filters look at that store only.
+          filter: {
+            search: state.search || undefined,
+            filter: state.filter,
+            storeId: state.storeId ? Number(state.storeId) : undefined,
+          },
           label:
             state.filter === 'all' && !state.search
               ? `all ${plural(last?.total ?? 0, 'product')}`
@@ -668,18 +673,12 @@ export async function fixedPriceDialog(item, cell, store, onSaved) {
     return;
   }
   if (!removed) return;
+  const sale = ' The sale doesn’t put its price back when it ends.';
   const done = await formDialog({
     title: o.scheduleId
       ? `Take ${item.sku} out of the sale?`
       : `Remove the fixed price of ${item.sku}?`,
-    intro: h(
-      'p',
-      {},
-      `${store.name} goes back to the price its rule gives`,
-      rulePrice ? ` (${rulePrice})` : '',
-      ' the next time you update prices.',
-      o.scheduleId ? ' The sale doesn’t put its price back when it ends.' : '',
-    ),
+    intro: h('p', {}, afterRemoval(item, cell, store), o.scheduleId ? sale : ''),
     submitLabel: o.scheduleId ? 'Take out of the sale' : 'Remove fixed price',
     tone: 'critical',
     onSubmit: () =>
@@ -692,6 +691,22 @@ export async function fixedPriceDialog(item, cell, store, onSaved) {
     toast(`Fixed price removed for ${item.sku} in ${store.name}.`);
     onSaved();
   }
+}
+
+/**
+ * What the store charges once a fixed price is removed. Without a rule (or a base price for it)
+ * Store Sync has no price of its own there: the store keeps what it has in Shopify, sale price
+ * included.
+ */
+function afterRemoval(item, cell, store) {
+  const now = cell.current ? ` (${money(cell.current.price, store.currencyCode)})` : '';
+  if (!store.ruleEnabled) {
+    return `Store Sync stops setting this product’s price in ${store.name}: it keeps the price it has in Shopify${now} until you change it there.`;
+  }
+  if (item.basePrice === null) {
+    return `${store.name} keeps the price it has in Shopify${now}: ${item.sku} has no base price for its rule to use.`;
+  }
+  return `${store.name} goes back to the price its rule gives the next time you update prices.`;
 }
 
 const FIELD_LABELS = {

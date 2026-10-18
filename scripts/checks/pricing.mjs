@@ -107,6 +107,27 @@ export async function flows(ctx) {
     expect(item(server, 'TOTE-CNV-NAT-M').basePrice === 17.59, '15.99 + 10% = 17.59');
   });
 
+  await step(
+    'prices: a change to “the products in this list” keeps to the store shown',
+    async () => {
+      // Fixed prices in Little Fox Kids only: one sock (Northwind's hoodies have some too).
+      await go('#/prices?filter=overrides&storeId=3');
+      await page.getByRole('button', { name: 'Change prices…' }).click();
+      expect(
+        (await dialog.textContent()).includes('Applies to the 1 product in this list'),
+        'the dialog counts the products listed',
+      );
+      await dialog.getByLabel('Percentage', { exact: true }).fill('10');
+      await dialog.getByRole('button', { name: 'Apply change' }).click();
+      await dialog.waitFor({ state: 'detached' });
+      await expectToast(ctx, '1 base price changed', 'bulk toast for the listed product');
+      expect(
+        item(server, 'HOOD-CLS-NAV-L').basePrice === 59.99,
+        'products not listed are untouched',
+      );
+    },
+  );
+
   await step('prices: a fixed price for one store, with validation', async () => {
     await go('#/prices?search=TEE-ORG-WHI-S');
     await page
@@ -131,6 +152,27 @@ export async function flows(ctx) {
       'the cell says it is a fixed price',
     );
   });
+
+  await step(
+    'prices: removing a fixed price where the rule is off keeps the store’s price',
+    async () => {
+      await go('#/prices?search=SOCK-MER-GRE-S');
+      await page
+        .getByRole('button', { name: 'Fixed price for SOCK-MER-GRE-S in Little Fox Kids…' })
+        .click();
+      await dialog.getByRole('button', { name: 'Remove fixed price…' }).click();
+      await dialog
+        .getByRole('heading', { name: 'Remove the fixed price of SOCK-MER-GRE-S?' })
+        .waitFor();
+      const text = await dialog.textContent();
+      expect(
+        text.includes('keeps the price it has in Shopify') && !text.includes('its rule gives'),
+        `no rule price is promised where the rule is off (${text})`,
+      );
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'detached' });
+    },
+  );
 
   await step('prices: edit a rule and see the examples follow', async () => {
     await go('#/prices?tab=rules');

@@ -1,5 +1,5 @@
 import { api, isAbort, qs } from '../api.js';
-import { confirmDialog, formDialog } from '../dialog.js';
+import { formDialog } from '../dialog.js';
 import { debounce, h, icon, replace, uid } from '../dom.js';
 import { money, plural } from '../format.js';
 import { toast } from '../toast.js';
@@ -149,9 +149,10 @@ function actionsFor(s, ctx, reload) {
 async function cancelSchedule(s, ctx, reload) {
   const active = s.status === 'active';
   const what = s.kind === 'sale' ? 'sale' : 'price change';
-  const done = await confirmDialog({
+  // A form dialog rather than confirmDialog: its answer names the update that puts prices back.
+  const done = await formDialog({
     title: active ? `End “${s.name}” now?` : `Cancel the ${what} “${s.name}”?`,
-    message: h(
+    intro: h(
       'div',
       { class: 'stack' },
       h(
@@ -163,9 +164,9 @@ async function cancelSchedule(s, ctx, reload) {
       ),
       !active && h('p', { class: 'muted' }, 'You can plan it again with the same products later.'),
     ),
-    confirmLabel: active ? 'End sale now' : `Cancel ${what}`,
+    submitLabel: active ? 'End sale now' : `Cancel ${what}`,
     tone: 'critical',
-    onConfirm: () =>
+    onSubmit: () =>
       api(`/api/prices/schedules/${s.id}/cancel`, { method: 'POST', toastErrors: false }),
   });
   if (!done) return;
@@ -175,12 +176,8 @@ async function cancelSchedule(s, ctx, reload) {
       : `“${s.name}” is cancelled.`,
   );
   reload();
-  if (active) {
-    // The prices going back: show the update's progress at the top of the page.
-    api(`/api/prices/runs?limit=1`)
-      .then(([run]) => run && ctx.watchRun(run.id))
-      .catch(() => {});
-  }
+  // The prices going back: show that update's progress at the top of the page.
+  if (done.runId) ctx.watchRun(done.runId);
 }
 
 /** Creating or editing a sale (kind 'sale') or a base price change ('base_change'). */
