@@ -263,7 +263,11 @@ export async function putSupplierItem(
   itemId: number,
   input: SupplierItemInput,
 ): Promise<void> {
-  const { rows } = await db.query<{ archived: boolean | null; item_supplier: number | null; item: boolean }>(
+  const { rows } = await db.query<{
+    archived: boolean | null;
+    item_supplier: number | null;
+    item: boolean;
+  }>(
     `SELECT (SELECT archived_at IS NOT NULL FROM suppliers WHERE id = $1) AS archived,
             (SELECT supplier_id FROM items WHERE id = $2) AS item_supplier,
             EXISTS (SELECT 1 FROM items WHERE id = $2) AS item`,

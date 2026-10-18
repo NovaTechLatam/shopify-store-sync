@@ -388,9 +388,9 @@ export async function updateOrder(
     const order = await lockOrder(client, orderId);
     const isDraft = order.status === 'draft';
     const isOpen = OPEN_STATUSES.includes(order.status);
-    const draftOnly = (['supplierId', 'warehouseId', 'currencyCode', 'exchangeRate'] as const).filter(
-      (key) => input[key] !== undefined,
-    );
+    const draftOnly = (
+      ['supplierId', 'warehouseId', 'currencyCode', 'exchangeRate'] as const
+    ).filter((key) => input[key] !== undefined);
     if (!isDraft && draftOnly.length) {
       throw conflict(
         `${order.number} ${STATUS_WORDS[order.status]}: its supplier, warehouse and currency can’t change anymore.`,
@@ -442,7 +442,11 @@ export async function updateOrder(
           `${order.number} is ordered, so it needs at least one line. Cancel it instead.`,
         );
       }
-      await replaceLines(client, { id: orderId, supplierId, currencyCode, exchangeRate }, input.lines);
+      await replaceLines(
+        client,
+        { id: orderId, supplierId, currencyCode, exchangeRate },
+        input.lines,
+      );
       if (isOpen) {
         const status = await receivedStatus(client, orderId);
         await client.query('UPDATE purchase_orders SET status = $2 WHERE id = $1', [
@@ -608,7 +612,9 @@ async function receiveLocked(
     return { receiptId: earlier[0].id, duplicate: true, costChanged: [] };
   }
   if (!['draft', 'ordered', 'partial'].includes(order.status)) {
-    throw conflict(`${order.number} ${STATUS_WORDS[order.status]}, so nothing can be received on it.`);
+    throw conflict(
+      `${order.number} ${STATUS_WORDS[order.status]}, so nothing can be received on it.`,
+    );
   }
   if (input.lines.length === 0) throw badRequest('Enter how many units arrived');
   const lineIds = input.lines.map((l) => l.lineId);
@@ -625,7 +631,9 @@ async function receiveLocked(
     .sort((a, b) => a.line.id - b.line.id);
 
   if (!input.allowOver) {
-    const over = wanted.filter((w) => w.line.quantity_received + w.quantity > w.line.quantity_ordered);
+    const over = wanted.filter(
+      (w) => w.line.quantity_received + w.quantity > w.line.quantity_ordered,
+    );
     if (over.length) {
       const details = over.map((w) => ({
         lineId: w.line.id,
@@ -735,10 +743,10 @@ async function receiveLocked(
         unitCost: toBaseCost(line.unit_cost, order.exchange_rate),
       });
       if (cost !== item.cost) {
-        await client.query(
-          'UPDATE items SET cost = $2, cost_updated_at = now() WHERE id = $1',
-          [line.item_id, cost],
-        );
+        await client.query('UPDATE items SET cost = $2, cost_updated_at = now() WHERE id = $1', [
+          line.item_id,
+          cost,
+        ]);
         costChanged.push(line.item_id);
       }
     }
@@ -880,12 +888,11 @@ export async function reverseReceipt(
       );
     }
     await client.query('UPDATE po_receipts SET reversed_at = now() WHERE id = $1', [receiptId]);
-    const status =
-      order.status === 'closed' ? 'closed' : await receivedStatus(client, orderId);
-    await client.query(
-      'UPDATE purchase_orders SET status = $2, updated_at = now() WHERE id = $1',
-      [orderId, status],
-    );
+    const status = order.status === 'closed' ? 'closed' : await receivedStatus(client, orderId);
+    await client.query('UPDATE purchase_orders SET status = $2, updated_at = now() WHERE id = $1', [
+      orderId,
+      status,
+    ]);
     await enqueuePoolLevels(
       client,
       [...levelOf.values()].sort((a, b) => a - b),
@@ -1069,7 +1076,10 @@ export async function loadOrder(
   }));
   const sum = (f: (l: OrderLineView) => number) => lineViews.reduce((a, l) => a + f(l), 0);
   const quantityOrdered = sum((l) => l.quantityOrdered);
-  const total = roundMoney(sum((l) => l.lineTotal), 4);
+  const total = roundMoney(
+    sum((l) => l.lineTotal),
+    4,
+  );
   const receivedCapped = sum((l) => Math.min(l.quantityReceived, l.quantityOrdered));
   const received = sum((l) => l.quantityReceived);
   const status = po.status;
