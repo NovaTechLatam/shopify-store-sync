@@ -195,6 +195,17 @@ describe('catalog products', () => {
     expect((await h.db.query('SELECT 1 FROM items')).rowCount).toBe(0);
   });
 
+  it('takes an option with as many values as a product can have variants', async () => {
+    const values = Array.from({ length: 120 }, (_, i) => `EU ${i}`);
+    const res = await api('POST', '/api/catalog/products', {
+      title: 'Ring',
+      options: [{ name: 'Size', values }],
+      variants: values.map((v, i) => ({ sku: `RING-${i}`, optionValues: [v] })),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.variants).toHaveLength(120);
+  });
+
   it('keeps each SKU in one catalog product', async () => {
     await api('POST', '/api/catalog/products', tee());
     const other = await api(
@@ -647,6 +658,25 @@ describe('import', () => {
       status: 404,
       body: { error: 'This product isn’t in brand0 any more.' },
     });
+  });
+
+  it('refuses a product with more variants than a catalog product can have', async () => {
+    const [a] = h.stores;
+    const sizes = Array.from({ length: 251 }, (_, i) => ({ sku: `BIG-${i}`, size: `${i}` }));
+    const source = sizedProduct(a!, 'Big', sizes);
+    await readCatalog(a!);
+    const res = await api('POST', '/api/catalog/import', {
+      storeId: a!.id,
+      productId: source.productId,
+    });
+    expect(res).toEqual({
+      status: 400,
+      body: {
+        error:
+          '“Big” has 251 variants. A catalog product can have at most 250: split it into several products in Shopify, then import them.',
+      },
+    });
+    expect((await h.db.query('SELECT 1 FROM master_products')).rowCount).toBe(0);
   });
 
   it('reports a brand whose variants are spread over several products', async () => {

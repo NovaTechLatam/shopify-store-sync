@@ -49,6 +49,10 @@ A SKU Store Sync didn't know before starts at **0** units, in every store, when 
 published. Add stock with a purchase order (**Purchasing**) or **Add or remove units** on its page in
 **Products**. A SKU Store Sync already knew keeps its stock.
 
+On **Products**, such a variant says **Not published in <brand> yet** for each brand that sells
+the product, until you publish there. Once it was published, a variant deleted from that brand in
+Shopify says **Missing in <brand>** and needs attention, like any other product.
+
 ## Publishing
 
 **Publish…** shows, for each brand, what publishing will do there, before anything happens:
@@ -94,10 +98,18 @@ Variants a linked brand has that the imported product doesn't are added to the c
 they fit its options. Anything that doesn't fit is listed at the top of the product's page after the
 import: publishing to that brand would delete it.
 
-Brands whose product is identical show as **Published**. Brands that differ (other variants, another
+Brands whose product is identical show as **Published** (the order of tags doesn't count: Shopify
+keeps them as a set). Brands that differ (other variants, variants in another order, another
 barcode…) show as **Changes not published**, and **Publish…** shows exactly what would change.
 
-Every variant needs its own SKU to be imported.
+- **Online Store.** Store Sync doesn't read whether an imported product is shown in a brand's Online
+  Store, so publishing leaves that as it is in Shopify until you change **Show in … Online Store**
+  for that brand (or its status). A product you kept off the Online Store stays off it.
+- **Unlisted products.** The catalog only has active, draft and archived products: an unlisted
+  product becomes active, and the brand shows **Changes not published** ("Status: Unlisted →
+  Active") because publishing lists it again.
+
+Every variant needs its own SKU to be imported, and a product can have at most 250 variants.
 
 ## Changing and removing
 
@@ -143,6 +155,7 @@ Importing only reads products, which every store already allows.
   the image, publish, and add it again.
 - Videos and 3D models of a brand's product aren't shown in the publish preview, and publishing
   removes them: add them back in Shopify afterwards, or keep such products out of the catalog.
+- An image Shopify couldn't process (a broken file or address) is sent again on the next publish.
 - The description preview shows simple formatting only; the full HTML is sent to Shopify as you
   wrote it.
 
@@ -167,7 +180,8 @@ Importing only reads products, which every store already allows.
   defined once per store), so a create retried after a timeout finds the product it made. A SKU in
   another product of the store blocks the publish.
 - **"Changed"** is computed, not stored: the sha256 of the brand's content (everything but prices
-  and costs, with our own ids, stable key order) against the hash stored at the last publish, and,
+  and costs, with our own ids, stable key order, tags sorted) against the hash stored at the last
+  publish, and,
   separately, the brand's current prices (`variants.price`) against what a publish would send.
   Prices and costs are left out of the hash because rules, exchange rates and average costs change
   on their own.

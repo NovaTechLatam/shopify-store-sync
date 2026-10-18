@@ -8,6 +8,7 @@ import type { ShopifyProduct } from '../shopify/types.js';
 import type { ShopifyRegistry } from '../sync/engine.js';
 import { roundMoney } from '../util/money.js';
 import type { DesiredContent, PublishedSnapshot } from './desired.js';
+import { MAX_VARIANTS } from './editor.js';
 import { contentFromShopify, contentHash, optionsOf, uniqueTags } from './desired.js';
 import {
   CatalogConflictError,
@@ -142,6 +143,14 @@ export async function importProduct(
     }
     bySku.set(sku, v.title);
   }
+  // Shopify takes at most 250 variants in one write: a bigger product could never be published
+  // (or saved in the editor).
+  if (product.variants.length > MAX_VARIANTS) {
+    throw new CatalogInputError(
+      `“${product.title}” has ${product.variants.length} variants. A catalog product can have at ` +
+        `most ${MAX_VARIANTS}: split it into several products in Shopify, then import them.`,
+    );
+  }
   await assertNotLinked(db, source, product);
   await knowVariants(deps, source.id, product);
 
@@ -179,6 +188,14 @@ export async function importProduct(
         warnings.push(
           `${store.name}’s “${found.title}” also has ${v.sku || v.title}, which doesn’t fit ` +
             `the options of the product: publishing to ${store.name} would delete it.`,
+        );
+        continue;
+      }
+      if (variants.length >= MAX_VARIANTS) {
+        warnings.push(
+          `${store.name}’s “${found.title}” also has ${v.sku}, which wasn’t added: a catalog ` +
+            `product can have at most ${MAX_VARIANTS} variants. Publishing to ${store.name} ` +
+            'would delete it.',
         );
         continue;
       }

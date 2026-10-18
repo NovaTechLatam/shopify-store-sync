@@ -44,7 +44,9 @@ const Tag = z.string().trim().min(1).max(255);
 
 const OptionInput = z.object({
   name: Text(255).min(1),
-  values: z.array(Text(255).min(1)).min(1).max(100),
+  // Every value is used by a variant, so the variant limit is the only one (an import can bring
+  // a size range of more than 100).
+  values: z.array(Text(255).min(1)).min(1).max(MAX_VARIANTS),
 });
 
 const VariantInput = z.object({
