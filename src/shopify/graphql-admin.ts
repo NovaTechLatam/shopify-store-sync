@@ -1594,11 +1594,15 @@ function userErrors(what: string, errors: UserError[]): ShopifyUserErrors {
   );
 }
 
-/** An ISO timestamp for a Shopify search query (never raw input: it ends up inside a query). */
+/**
+ * An ISO timestamp for a Shopify search query (never raw input: it ends up inside a query), in
+ * whole seconds as Shopify's search syntax shows them ('2026-10-01T10:20:30Z'). Rounded down: the
+ * queries are `>=`, so they may include a little more, never less.
+ */
 function isoTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`Not a timestamp: ${value}`);
-  return date.toISOString();
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 /** Decimal strings (Money, Decimal) as numbers; null stays null. */

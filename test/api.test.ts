@@ -448,10 +448,15 @@ describe('HTTP API', () => {
       exchangeRate: 4100.25,
     });
     expect((await api('GET', '/api/stores')).body[0].exchangeRate).toBe(4100.25);
-    for (const exchangeRate of [0, -1, 'abc', null]) {
+    // 1e-9 would be stored as 0 (8 decimals) and break the column's CHECK: refused up front.
+    for (const exchangeRate of [0, -1, 'abc', null, 1e-9, 2e9]) {
       expect((await api('PATCH', `/api/stores/${store.id}`, { exchangeRate })).status).toBe(400);
     }
     expect((await api('GET', `/api/stores/${store.id}`)).body.exchangeRate).toBe(4100.25);
+    // The smallest rate the column holds, e.g. a base currency worth very little.
+    const tiny = await api('PATCH', `/api/stores/${store.id}`, { exchangeRate: 0.00000001 });
+    expect(tiny.status).toBe(200);
+    expect(tiny.body.exchangeRate).toBe(0.00000001);
   });
 
   it('shows which extra features a store’s permissions allow, read again on Test connection', async () => {

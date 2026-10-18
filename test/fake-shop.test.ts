@@ -364,6 +364,24 @@ describe('FakeShop orders', () => {
     expect(await shop.getOrder(old.id)).toBeNull();
   });
 
+  it('keeps its place when an order changes between two pages, as Shopify’s cursors do', async () => {
+    const { shop } = shopWith(['read_orders']);
+    const orders = [1, 2, 3, 4].map(() => shop.addOrder());
+    shop.orderPageSize = 2;
+    const since = '2026-01-01T00:00:00Z';
+    const first = await shop.listOrdersUpdatedSince(since, null);
+    expect(first.orders.map((o) => o.id)).toEqual([orders[0]!.id, orders[1]!.id]);
+    // Order 1 is refunded meanwhile: it moves behind the others.
+    shop.updateOrder(orders[0]!.id, { cancelledAt: new Date().toISOString() });
+    const second = await shop.listOrdersUpdatedSince(since, first.nextCursor);
+    expect(second.orders.map((o) => o.id)).toEqual([orders[2]!.id, orders[3]!.id]);
+    const third = await shop.listOrdersUpdatedSince(since, second.nextCursor);
+    expect(third).toEqual({
+      orders: [expect.objectContaining({ id: orders[0]!.id })],
+      nextCursor: null,
+    });
+  });
+
   it('exports orders as Shopify’s JSONL, which parseOrdersBulkJsonl reads back', async () => {
     const { shop } = shopWith(['read_orders']);
     const tee = shop.addVariant('TEE', { price: 20 });

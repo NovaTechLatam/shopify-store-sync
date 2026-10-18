@@ -12,8 +12,8 @@ import { verifyShopifyHmac } from '../util/crypto.js';
  * Shopify webhook intake. Shopify expects an answer within 5 seconds and delivers at least once,
  * in any order, sometimes a day late. So we only verify, de-duplicate and mark work: a pool level
  * to reconcile (the engine re-reads live values, so a late or repeated webhook is harmless) or a
- * task (catalog, orders) that re-reads what changed. Payload IDs can exceed 2^53, so they are taken from the raw body as strings and
- * never parsed as JSON numbers.
+ * task (catalog, orders) that re-reads what changed. Payload IDs can exceed 2^53, so they are
+ * taken from the raw body as strings and never parsed as JSON numbers.
  */
 
 export interface WebhookRequest {

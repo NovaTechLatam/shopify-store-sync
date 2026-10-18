@@ -261,7 +261,8 @@ function exchangeRateForm(store, base, reload) {
     event.preventDefault();
     const value = Number(rate.value);
     error.hidden = true;
-    if (rate.value.trim() === '' || !Number.isFinite(value) || value <= 0 || value > 1e9) {
+    // The server keeps 8 decimals: a smaller rate would be saved as 0.
+    if (rate.value.trim() === '' || !Number.isFinite(value) || value < 1e-8 || value > 1e9) {
       error.textContent = `Enter how many ${store.currencyCode} one ${base} is worth, a number above 0.`;
       error.hidden = false;
       rate.focus();

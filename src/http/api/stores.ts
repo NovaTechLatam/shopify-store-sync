@@ -64,8 +64,11 @@ const UpdateStoreBody = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   safetyBuffer: z.number().int().min(0).max(100_000).optional(),
   status: z.enum(['active', 'paused']).optional(),
-  /** Units of the store's currency per 1 unit of the base currency. */
-  exchangeRate: z.number().positive().max(1_000_000_000).optional(),
+  /**
+   * Units of the store's currency per 1 unit of the base currency. The column keeps 8 decimals:
+   * anything smaller would be stored as 0, which its CHECK refuses.
+   */
+  exchangeRate: z.number().min(0.00000001).max(1_000_000_000).optional(),
   accessToken: Secret.optional(),
   clientId: z.string().trim().min(1).max(200).optional(),
   clientSecret: Secret.optional(),

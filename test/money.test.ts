@@ -30,7 +30,26 @@ describe('money', () => {
     expect(roundMoney(1e21, 2)).toBe(1e21);
     // Never a negative zero (it would print as "-0.00").
     expect(Object.is(roundMoney(-0.004, 2), 0)).toBe(true);
+    expect(Object.is(roundMoney(-0, 2), 0)).toBe(true);
+    expect(Object.is(roundMoney(-0.4, 0), 0)).toBe(true);
     expect(roundMoney(Number.NaN, 2)).toBeNaN();
+  });
+
+  it('rounds the result of arithmetic as it would be on paper (binary noise ignored)', () => {
+    // 2.8249999999999997, 3.0149999999999997, 15.075000000000001 and 4.949999999999999 in floats.
+    expect(roundMoney(2.5 * 1.13, 2)).toBe(2.83);
+    expect(roundMoney(1.005 * 3, 2)).toBe(3.02);
+    expect(roundMoney(-1.005 * 3, 2)).toBe(-3.02);
+    expect(roundMoney(10.05 * 1.5, 2)).toBe(15.08);
+    expect(roundMoney(3.3 * 1.5, 1)).toBe(5);
+    // The 0.005 boundary itself, on both sides.
+    expect(roundMoney(0.005, 2)).toBe(0.01);
+    expect(roundMoney(0.0049, 2)).toBe(0);
+    expect(roundMoney(-0.005, 2)).toBe(-0.01);
+    // Big amounts in currencies without (or with many) decimals.
+    expect(roundMoney(41234567.5, 0)).toBe(41234568);
+    expect(roundMoney(4123.4567 * 12345.67, 2)).toBe(50906835.68);
+    expect(roundMoney(99_999_999_999.995, 2)).toBe(100_000_000_000);
   });
 
   it('formats amounts the way Shopify takes them', () => {
@@ -42,6 +61,18 @@ describe('money', () => {
     expect(toMoneyString(1499.99, 'JPY')).toBe('1500');
     expect(toMoneyString(1.2345, 'KWD')).toBe('1.235');
     expect(toMoneyString(41234.5678, 'COP')).toBe('41234.57');
+    expect(toMoneyString(-0, 'USD')).toBe('0.00');
+    expect(toMoneyString(-0.004, 'USD')).toBe('0.00');
+    expect(toMoneyString(2.5 * 1.13, 'USD')).toBe('2.83');
+    expect(toMoneyString(9990.4, 'CLP')).toBe('9990');
+    expect(toMoneyString(9990.5, 'JPY')).toBe('9991');
+    expect(toMoneyString(123456789.125, 'COP')).toBe('123456789.13');
+    expect(toMoneyString(1.0005, 'KWD')).toBe('1.001');
+  });
+
+  it('refuses to format something that isn’t an amount', () => {
+    expect(() => toMoneyString(Number.NaN, 'USD')).toThrow('Not an amount of money');
+    expect(() => toMoneyString(Number.POSITIVE_INFINITY, 'CLP')).toThrow();
   });
 
   it('validates currency codes', () => {

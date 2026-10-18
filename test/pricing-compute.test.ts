@@ -76,11 +76,22 @@ describe('roundPrice', () => {
     expect(roundPrice(41900, rounding('ending', 1000, 900, 'up'), 'COP')).toBe(41900);
   });
 
-  it('rounds up instead when rounding down would go below zero', () => {
+  it('rounds up instead when rounding down or to the nearest would go below zero', () => {
     expect(roundPrice(0.5, rounding('ending', 1, 0.9, 'down'), 'USD')).toBe(0.9);
     expect(roundPrice(0.5, rounding('ending', 1, 0.9, 'nearest'), 'USD')).toBe(0.9);
+    // Nearest would be −0.10 (closer than 0.90): a price can't be negative, and 0 would be free.
+    expect(roundPrice(0.3, rounding('ending', 1, 0.9, 'nearest'), 'USD')).toBe(0.9);
+    expect(roundPrice(205, rounding('ending', 1000, 900, 'nearest'), 'COP')).toBe(900);
     expect(roundPrice(400, rounding('ending', 1000, 900, 'down'), 'COP')).toBe(900);
     expect(roundPrice(-2, rounding('multiple', 5, 0, 'down'), 'USD')).toBe(0);
+    expect(Object.is(roundPrice(-0.2, rounding('multiple', 1, 0, 'nearest'), 'USD'), 0)).toBe(true);
+  });
+
+  it('rounds products of rates and multipliers as they would be on paper', () => {
+    // 2.5 × 1.13 = 2.8249999999999997 and 10.05 × 1.5 = 15.075000000000001 in floating point.
+    expect(roundPrice(2.5 * 1.13, rounding('none', 1, 0, 'nearest'), 'USD')).toBe(2.83);
+    expect(roundPrice(10.05 * 1.5, rounding('none', 1, 0, 'nearest'), 'USD')).toBe(15.08);
+    expect(roundPrice(0.575 * 3, rounding('none', 1, 0, 'nearest'), 'USD')).toBe(1.73);
   });
 });
 
@@ -172,6 +183,45 @@ describe('computeTargetPrice', () => {
     expect(
       computeTargetPrice(inputs({ basePrice: 1, rule: rule({ addAmount: -5 }) })),
     ).toMatchObject({ status: 'ok', price: 0 });
+  });
+
+  it('never makes a cheap item free by rounding (COP, ending 900, nearest)', () => {
+    // 0.05 × 4100 = 205 COP: the nearest price ending in 900 would be −100.
+    const cheap = computeTargetPrice(
+      inputs({
+        basePrice: 0.05,
+        exchangeRate: 4100,
+        currencyCode: 'COP',
+        rule: rule({ roundMode: 'ending', roundStep: 1000, roundEnding: 900 }),
+      }),
+    );
+    expect(cheap).toMatchObject({ status: 'ok', price: 900 });
+  });
+
+  it('converts into currencies without decimals and with big numbers', () => {
+    const clp = computeTargetPrice(
+      inputs({
+        basePrice: 12.34,
+        baseCompareAtPrice: 15.67,
+        exchangeRate: 950.5,
+        currencyCode: 'CLP',
+        rule: rule({ roundMode: 'multiple', roundStep: 10, roundDirection: 'up' }),
+      }),
+    );
+    // 11,729.17 → 11,730; 14,894.335 → 14,900.
+    expect(clp).toEqual({ status: 'ok', source: 'rule', price: 11730, compareAtPrice: 14900 });
+    const cop = computeTargetPrice(
+      inputs({
+        basePrice: 12345.67,
+        exchangeRate: 4123.4567,
+        currencyCode: 'COP',
+        rule: rule({ multiplier: 1.3, compareAtMode: 'none' }),
+      }),
+    );
+    expect(cop).toMatchObject({ price: 66178886.38 });
+    expect(
+      computeTargetPrice(inputs({ basePrice: 9.99, exchangeRate: 149.5, currencyCode: 'JPY' })),
+    ).toMatchObject({ price: 1494 });
   });
 
   it('computes the compare-at price in each mode', () => {

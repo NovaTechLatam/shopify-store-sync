@@ -205,6 +205,17 @@ function featureContext(page, go, server) {
   };
 }
 
+/**
+ * Runs one feature's flows from a fresh mock state, so what one feature's flows change (or leave
+ * allowed) never shows up in another's.
+ */
+async function featureFlows(run, page, go, server) {
+  server.state = createMockState();
+  allowHttpErrors = false;
+  await run(featureContext(page, go, server));
+  allowHttpErrors = false;
+}
+
 async function flows(browser, baseUrl, server) {
   server.state = createMockState();
   const { context, page, open: go } = await newPage(browser, baseUrl);
@@ -507,7 +518,7 @@ async function flows(browser, baseUrl, server) {
     );
   });
 
-  for (const feature of FEATURES) await feature.flows(featureContext(page, go, server));
+  for (const feature of FEATURES) await featureFlows(feature.flows, page, go, server);
   server.state = createMockState();
 
   await step('signed out: every request fails with 401', async () => {
@@ -580,7 +591,7 @@ async function phoneFlows(browser, baseUrl, server) {
     expect(box.x >= 0 && box.x + box.width <= 390, 'dialog within the viewport');
     await page.keyboard.press('Escape');
   });
-  for (const feature of FEATURES) await feature.phoneFlows(featureContext(page, go, server));
+  for (const feature of FEATURES) await featureFlows(feature.phoneFlows, page, go, server);
   await context.close();
 }
 

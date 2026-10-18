@@ -704,12 +704,18 @@ export class FakeShop implements ShopifyAdmin {
     this.requireScope('read_orders', 'orders');
     this.fault('listOrdersUpdatedSince', 'throw_before');
     const matching = this.ordersUpdatedSince(since);
-    const offset = after === null ? 0 : Number(after);
-    const page = matching.slice(offset, offset + this.orderPageSize);
-    const next = offset + page.length;
+    // Like Shopify's cursors, ours mark a position in the sort order (update time, id), not an
+    // offset: an order updated between two pages moves to the end and is read again later,
+    // while the ones after the cursor are not skipped.
+    const start =
+      after === null ? 0 : matching.findIndex((o) => compareOrders(o, decodeCursor(after)) > 0);
+    const from = start < 0 ? matching.length : start;
+    const page = matching.slice(from, from + this.orderPageSize);
+    const last = page[page.length - 1];
     return {
       orders: page.map((o) => structuredClone(o)),
-      nextCursor: next < matching.length ? String(next) : null,
+      nextCursor:
+        last && from + page.length < matching.length ? `${last.updatedAt}|${last.id}` : null,
     };
   }
 
@@ -799,11 +805,7 @@ export class FakeShop implements ShopifyAdmin {
 
   private ordersUpdatedSince(since: string): ShopifyOrder[] {
     const from = Date.parse(since);
-    return this.orders
-      .filter((o) => Date.parse(o.updatedAt) >= from)
-      .sort(
-        (a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.id.localeCompare(b.id),
-      );
+    return this.orders.filter((o) => Date.parse(o.updatedAt) >= from).sort(compareOrders);
   }
 
   private orderLine(l: Partial<ShopifyOrderLine>): ShopifyOrderLine {
@@ -1240,6 +1242,19 @@ function slug(title: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+/** The orders query's sort order: update time, then id. */
+function compareOrders(
+  a: Pick<ShopifyOrder, 'updatedAt' | 'id'>,
+  b: Pick<ShopifyOrder, 'updatedAt' | 'id'>,
+): number {
+  return Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.id.localeCompare(b.id);
+}
+
+function decodeCursor(cursor: string): Pick<ShopifyOrder, 'updatedAt' | 'id'> {
+  const at = cursor.indexOf('|');
+  return { updatedAt: cursor.slice(0, at), id: cursor.slice(at + 1) };
 }
 
 function emptyMedia(id: string): FakeMedia {

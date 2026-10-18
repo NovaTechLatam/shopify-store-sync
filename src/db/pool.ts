@@ -19,9 +19,14 @@ pg.types.setTypeParser(INT8_ARRAY, (value: string) =>
 // decimals (src/util/money.ts) before it is sent to Shopify or shown. Also applies to sum() and
 // avg() results, which Postgres returns as numeric.
 pg.types.setTypeParser(pg.types.builtins.NUMERIC, (value) => Number(value));
+// (NUMERIC[] already comes back as numbers.)
 // DATE as the 'YYYY-MM-DD' text Postgres sends. The default parser builds a Date at local
 // midnight, which shifts the day for anyone reading it in UTC (or another time zone).
 pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value);
+// ...and DATE[] (OID 1182, e.g. array_agg of dates) as arrays of those strings.
+const DATE_ARRAY = 1182 as Parameters<typeof pg.types.setTypeParser>[0];
+const parseTextArray = pg.types.getTypeParser(1009 as Parameters<typeof pg.types.setTypeParser>[0]);
+pg.types.setTypeParser(DATE_ARRAY, (value: string) => parseTextArray(value) as (string | null)[]);
 
 export function createDb(connectionString: string, max = 10): Db {
   return new pg.Pool({ connectionString, max });

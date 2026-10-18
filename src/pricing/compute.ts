@@ -72,8 +72,9 @@ const DIRECTIONS = { up: Math.ceil, nearest: Math.round, down: Math.floor } as c
  *   none:     currency decimals only
  *   multiple: step × f(value / step)                  (step 5: 23 → 25 nearest)
  *   ending:   k × step + ending, k = f((value − ending) / step)  (step 1, ending 0.90: 12.34 → 12.90 up)
- * with f = ceil, round or floor for up, nearest, down. Rounding down never goes below zero: it
- * rounds up instead.
+ * with f = ceil, round or floor for up, nearest, down. Rounding never goes below zero: when down
+ * or nearest would (0.30 with ending 0.90: −0.10), it rounds up instead (0.90), rather than
+ * leaving a price of 0 for computeTargetPrice to clamp to.
  */
 export function roundPrice(value: number, rule: Rounding, currencyCode: string): number {
   const decimals = currencyDecimals(currencyCode);
@@ -84,7 +85,7 @@ export function roundPrice(value: number, rule: Rounding, currencyCode: string):
   // would jump a whole step on values that are already exactly on it.
   const quotient = snap((value - ending) / step);
   let result = DIRECTIONS[rule.roundDirection](quotient) * step + ending;
-  if (result < 0 && rule.roundDirection === 'down') result = Math.ceil(quotient) * step + ending;
+  if (result < 0) result = Math.ceil(quotient) * step + ending;
   return roundMoney(result, decimals);
 }
 

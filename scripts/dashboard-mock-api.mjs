@@ -810,9 +810,13 @@ function handle(state, method, pathname, query, body, contentType) {
       }
       if (
         body.exchangeRate !== undefined &&
-        !(typeof body.exchangeRate === 'number' && body.exchangeRate > 0)
+        !(
+          typeof body.exchangeRate === 'number' &&
+          body.exchangeRate >= 1e-8 &&
+          body.exchangeRate <= 1e9
+        )
       ) {
-        throw new HttpError(400, 'exchangeRate: Too small: expected number to be >0');
+        throw new HttpError(400, 'exchangeRate: Too small: expected number to be >=1e-8');
       }
       for (const key of ['name', 'safetyBuffer', 'status', 'exchangeRate'])
         if (body[key] !== undefined) store[key] = body[key];

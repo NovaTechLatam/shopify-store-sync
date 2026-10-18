@@ -933,11 +933,12 @@ describe('GraphqlShopifyAdmin: orders', () => {
       ok({ order: order('gid://shopify/Order/2', [line(3)]) }),
     ]);
     const result = await new GraphqlShopifyAdmin(c).listOrdersUpdatedSince(
-      '2026-10-01T00:00:00Z',
+      '2026-10-01T05:00:00.999+05:00',
       'o1',
     );
+    // In UTC and whole seconds (rounded down: the filter is >=), as Shopify's search syntax takes it.
     expect(variablesOf(requests, 0)).toEqual({
-      query: "updated_at:>='2026-10-01T00:00:00.000Z'",
+      query: "updated_at:>='2026-10-01T00:00:00Z'",
       after: 'o1',
     });
     expect(variablesOf(requests, 1)).toEqual({ id: 'gid://shopify/Order/2', linesAfter: 'l2' });
@@ -985,7 +986,7 @@ describe('GraphqlShopifyAdmin: orders', () => {
     });
     const query: string = variablesOf(requests, 0).query;
     expect(query).toContain(
-      'orders(query: "updated_at:>=\'2026-08-18T00:00:00.000Z\'", sortKey: UPDATED_AT)',
+      'orders(query: "updated_at:>=\'2026-08-18T00:00:00Z\'", sortKey: UPDATED_AT)',
     );
     expect(query).not.toContain('__SINCE__');
     await expect(admin.startOrdersBulkExport('2026-08-18T00:00:00Z')).rejects.toBeInstanceOf(
