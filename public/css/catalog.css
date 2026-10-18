@@ -1,3 +1,467 @@
 /* Catalog (master products): the product list and the product editor.
    Loaded after styles.css: use its tokens (colours, spacing) and shared pieces (.thumb, .num,
    .table-totals, .chart and --series-N, print rules). */
+
+/* ---------- List ---------- */
+
+.catalog-product-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.catalog-product-cell .product-meta {
+  flex-wrap: wrap;
+  gap: 2px var(--space-2);
+}
+
+/* A long list of SKUs wraps instead of widening the table. */
+.catalog-product-cell .product-meta .mono {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.catalog-table .col-brands {
+  min-width: 220px;
+}
+
+.brand-states {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brand-states li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.brand-name {
+  font-weight: 600;
+}
+
+@media (max-width: 639px) {
+  .catalog-table .col-brands {
+    min-width: 0;
+  }
+
+  /* The list under its label, not squeezed to the right. */
+  .table tbody tr > td.col-brands {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: left;
+  }
+
+  .brand-states li {
+    justify-content: space-between;
+  }
+}
+
+/* ---------- Editor ---------- */
+
+.description-editor {
+  display: grid;
+  gap: var(--space-4);
+}
+
+@media (min-width: 1100px) {
+  .description-editor {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+/* The description as the store will show it (safe subset of HTML, see renderSimpleHtml). */
+.html-preview {
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.html-preview > * + * {
+  margin-top: var(--space-2);
+}
+
+.html-preview h2 {
+  font-size: 18px;
+}
+
+.html-preview h3 {
+  font-size: 16px;
+}
+
+.html-preview h4 {
+  font-size: 15px;
+}
+
+.html-preview ul,
+.html-preview ol {
+  padding-left: var(--space-5);
+}
+
+.html-preview ul {
+  list-style: disc;
+}
+
+.html-preview ol {
+  list-style: decimal;
+}
+
+.html-preview blockquote {
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.html-preview a {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+
+.option-row {
+  display: grid;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.option-row > .button {
+  justify-self: start;
+}
+
+.option-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+@media (min-width: 760px) {
+  .option-row {
+    grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr) auto;
+    align-items: start;
+  }
+
+  .option-row > .button {
+    margin-top: 30px;
+  }
+}
+
+/* Variants: a grid of inputs on wide screens, one compact card per variant on phones. */
+.variant-grid .table th,
+.variant-grid .table td {
+  padding: var(--space-2) 6px;
+  vertical-align: middle;
+}
+
+.variant-grid .table th:first-child,
+.variant-grid .table td:first-child {
+  padding-left: var(--space-4);
+  white-space: nowrap;
+}
+
+.variant-grid .table th:last-child,
+.variant-grid .table td:last-child {
+  padding-right: var(--space-3);
+}
+
+.variant-grid .input {
+  width: 100%;
+  min-width: 0;
+  padding-inline: var(--space-2);
+}
+
+.variant-grid .input-sku {
+  width: 140px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.variant-grid .input-barcode {
+  width: 116px;
+}
+
+.variant-grid .input-money {
+  width: 84px;
+  font-variant-numeric: tabular-nums;
+}
+
+.weight-cell {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.variant-grid .weight-cell .input-money {
+  width: 68px;
+}
+
+.variant-grid .input.input-unit {
+  width: 62px;
+  padding-right: 22px;
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 8px) 50%;
+}
+
+.variant-grid .col-actions {
+  width: 1%;
+}
+
+@media (max-width: 639px) {
+  /* Name and SKU across the card, the other fields two by two. */
+  .variant-grid .table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: var(--space-3);
+  }
+
+  .variant-grid .table tbody tr > th:first-child,
+  .variant-grid .table tbody tr > td:nth-child(2),
+  .variant-grid .table tbody tr > td.col-actions {
+    grid-column: 1 / -1;
+  }
+
+  .variant-grid .table tbody tr > td {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    border-bottom: 0;
+    text-align: left;
+  }
+
+  .variant-grid .table tbody tr > td::before {
+    max-width: none;
+  }
+
+  .variant-grid .input-sku,
+  .variant-grid .input-barcode,
+  .variant-grid .input-money,
+  .variant-grid .weight-cell .input-money {
+    width: 100%;
+  }
+
+  .variant-grid .weight-cell .input-money {
+    flex: 1;
+  }
+
+  .variant-grid .table tbody tr > td.col-actions {
+    align-items: flex-start;
+  }
+
+  .variant-grid .table tbody tr > td.col-actions::before {
+    content: none;
+  }
+}
+
+.removed-combos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.removed-combo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Images: thumbnail, fields, and buttons to reorder (no drag needed). */
+.image-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.image-row {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.image-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.image-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.image-fields {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+@media (min-width: 760px) {
+  .image-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 639px) {
+  .image-row .thumb-lg {
+    width: 64px;
+    height: 64px;
+  }
+}
+
+.image-empty {
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.move-up .icon,
+.move-down .icon {
+  transform: rotate(90deg);
+}
+
+/* Brands: one panel per store. */
+.brand-list {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.brand-panel {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.brand-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.brand-title {
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  color: var(--accent-text);
+}
+
+.brand-subtitle {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.brand-details .disclosure {
+  margin-top: 0;
+}
+
+.brand-details .image-row {
+  background: var(--surface);
+}
+
+.table-compact th,
+.table-compact td {
+  padding: var(--space-2) var(--space-3);
+}
+
+@media (max-width: 639px) {
+  /* Short rows: the SKU, then both prices side by side. */
+  .table.table-compact tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: var(--space-3);
+    margin-bottom: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .table.table-compact tbody tr > th:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .table.table-compact tbody tr > td {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    padding: var(--space-1) 0 0;
+    border-bottom: 0;
+    text-align: left;
+  }
+
+  .table.table-compact tbody tr > td::before {
+    max-width: none;
+    font-size: 12px;
+  }
+}
+
+/* Publish dialog: one block per brand. */
+.publish-preview {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.preview-store {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.preview-store.preview-blocked,
+.preview-store.preview-skip {
+  background: var(--surface-2);
+}
+
+.preview-lines {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: calc(18px + var(--space-3));
+  color: var(--text-muted);
+  font-size: 14px;
+  list-style: disc;
+  overflow-wrap: anywhere;
+}
+
+.preview-prices {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  list-style: circle;
+}
+
+.preview-lines .tone-critical {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+.preview-lines .tone-warning {
+  color: var(--warning);
+}

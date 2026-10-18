@@ -41,6 +41,15 @@ const AdjustBody = z.object({
  * an open alert, a write that hasn't been confirmed, a store that sells the item untracked, a
  * duplicate SKU in a store, or an active store that doesn't sell it at all.
  */
+/**
+ * SQL: catalog item `i` was published in the brand `mps` (sold there, linked to a product, and in
+ * what was last sent: src/products/publish.ts), so the store should have it.
+ */
+const PUBLISHED_THERE = `mps.enabled AND mps.shopify_product_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(mps.published_snapshot->'variants', '[]'))
+                    AS sent(v)
+               WHERE upper(regexp_replace(btrim(sent.v->>'sku'), '\\s+', ' ', 'g')) = i.sku)`;
+
 const FILTERS: Record<z.infer<typeof ListQuery>['filter'], string> = {
   all: 'TRUE',
   disabled: 'NOT i.sync_enabled',
@@ -57,7 +66,14 @@ const FILTERS: Record<z.infer<typeof ListQuery>['filter'], string> = {
                  AND v.link_source = 'auto')
    OR EXISTS (SELECT 1 FROM stores s WHERE s.status = 'active'
                AND NOT EXISTS (SELECT 1 FROM variants v
-                                WHERE v.store_id = s.id AND v.item_id = i.id AND v.deleted_at IS NULL)))`,
+                                WHERE v.store_id = s.id AND v.item_id = i.id AND v.deleted_at IS NULL)
+               -- A catalog variant reaches a store when it's published there: not a problem
+               -- until then (or where it isn't sold). Once it was, a missing variant is one.
+               AND NOT EXISTS (SELECT 1 FROM master_variants mv
+                                WHERE mv.item_id = i.id
+                                  AND NOT EXISTS (SELECT 1 FROM master_product_stores mps
+                                                   WHERE mps.master_product_id = mv.master_product_id
+                                                     AND mps.store_id = s.id AND ${PUBLISHED_THERE}))))`,
 };
 
 export interface ItemSummary {
@@ -172,6 +188,20 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
       [itemIds],
     ),
   ]);
+  // Items of catalog products (src/products): the brands each is meant to be sold in.
+  const catalog = await db.query<{
+    item_id: number;
+    store_id: number;
+    enabled: boolean;
+    published: boolean;
+  }>(
+    `SELECT mv.item_id, mps.store_id, mps.enabled, ${PUBLISHED_THERE} AS published
+       FROM master_variants mv JOIN items i ON i.id = mv.item_id
+       JOIN master_product_stores mps ON mps.master_product_id = mv.master_product_id
+      WHERE mv.item_id = ANY($1::bigint[])`,
+    [itemIds],
+  );
+  const inCatalog = new Set(catalog.rows.map((c) => c.item_id));
 
   const byId = new Map(items.rows.map((i) => [i.id, i]));
   return itemIds.flatMap((itemId) => {
@@ -183,8 +213,16 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
     for (const d of duplicates.rows)
       if (d.sku === item.sku) issues.push(`Duplicate SKU in ${d.store_name}`);
     for (const s of stores.rows) {
-      if (s.status === 'active' && !itemVariants.some((v) => v.store_id === s.id))
+      if (s.status !== 'active' || itemVariants.some((v) => v.store_id === s.id)) continue;
+      if (!inCatalog.has(itemId)) {
         issues.push(`Missing in ${s.name}`);
+        continue;
+      }
+      // A catalog product is only missing where it's sold and was published (its variant is
+      // gone from the store's product); where it's sold but not published yet, it's waiting.
+      const brand = catalog.rows.find((c) => c.item_id === itemId && c.store_id === s.id);
+      if (brand?.published) issues.push(`Missing in ${s.name}`);
+      else if (brand?.enabled) issues.push(`Not published in ${s.name} yet`);
     }
 
     const itemLevels = levels.rows
