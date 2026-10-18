@@ -1,3 +1,306 @@
 /* Purchasing: purchase orders, receiving, suppliers and reorder suggestions.
    Loaded after styles.css: use its tokens (colours, spacing) and shared pieces (.thumb, .num,
    .table-totals, .chart and --series-N, print rules). */
+
+/* The Orders / Reorder / Suppliers switch at the top of #/purchasing. */
+.chips.po-tabs {
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Fields side by side on wider screens (a dialog or a card). */
+.po-fields {
+  display: grid;
+  gap: var(--space-4);
+}
+
+@media (min-width: 640px) {
+  .po-fields {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    align-items: start;
+  }
+}
+
+.input-currency {
+  text-transform: uppercase;
+}
+
+.input-date {
+  max-width: 220px;
+}
+
+/* Numbers typed in tables and dialogs: wide enough for 7 digits, never the whole row. */
+.input-qty {
+  width: 104px;
+  text-align: right;
+}
+
+.input-money {
+  width: 128px;
+  text-align: right;
+}
+
+.table .input-qty,
+.table .input-money {
+  min-height: 36px;
+  padding-block: var(--space-1);
+}
+
+/* "62%" with a small bar under the Received column. */
+.po-meter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.po-meter-track {
+  width: 56px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.po-meter-bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--success);
+}
+
+.po-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.po-notes {
+  white-space: pre-wrap;
+}
+
+.po-suppliers-toolbar {
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ---- Reorder tab ---- */
+
+/* A row's checkbox next to the product name. */
+.po-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.po-pick > input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.po-order-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.po-order-inputs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.po-cell-hint {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.po-select-all {
+  margin-bottom: var(--space-2);
+}
+
+.po-selection.is-dirty {
+  margin-top: var(--space-4);
+}
+
+.po-reorder-table .col-product {
+  min-width: 220px;
+}
+
+/* ---- Purchase order page ---- */
+
+.po-lines .col-product {
+  min-width: 220px;
+}
+
+.po-lines .col-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* The receive dialog: one row per product, the number at the end. */
+.po-receive-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.po-receive-lines {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  border: 0;
+}
+
+.po-receive-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.po-receive-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.po-receipt-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.po-receipt.is-reversed .po-receipt-head .strong {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* ---- Product page section ---- */
+
+.po-section-callout {
+  margin-bottom: var(--space-4);
+}
+
+.po-section-orders {
+  margin-top: var(--space-5);
+}
+
+.po-section-orders .subheading {
+  margin-bottom: var(--space-2);
+}
+
+@media (max-width: 639px) {
+  .po-suppliers-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  /* Cards on phones: the checkbox and the name on one line, the rest below. */
+  .po-reorder-table .col-product {
+    min-width: 0;
+  }
+
+  .po-lines .col-product {
+    min-width: 0;
+  }
+
+  .po-meter {
+    justify-content: flex-end;
+  }
+}
+
+/* ---- Print: just the order ---- */
+
+@media print {
+  .po-tabs,
+  .po-receipts-card,
+  .po-page .save-bar,
+  .po-page .card-actions,
+  .po-page .col-actions,
+  .po-page .form-error,
+  /* Editing instructions ("You can change quantities…") mean nothing on paper. */
+  .po-page .card-description,
+  .po-page .field-hint {
+    display: none !important;
+  }
+
+  .po-page .input {
+    border: 0;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  .po-page .stats {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* A number with a note under it (stock and how long it lasts, lead time and where it's from). */
+.po-stack-end {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.po-reorder-table th,
+.po-reorder-table td {
+  padding-inline: var(--space-3);
+}
+
+.po-reorder-table .po-order-inputs .button {
+  white-space: nowrap;
+}
+
+.po-supplier-sku {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+@media (max-width: 639px) {
+  /* The remove button says what it does: no column label in front of it. */
+  .po-lines .col-actions::before {
+    content: none;
+  }
+
+  .po-lines .col-actions {
+    width: auto;
+    justify-content: flex-end;
+    white-space: normal;
+  }
+}
+
+.po-lines-edit td {
+  vertical-align: middle;
+}
+
+.po-fields + .field,
+.po-fields + .po-fields,
+.field + .po-fields {
+  margin-top: var(--space-4);
+}
+
+/* Order totals in currencies like COP run long: a little smaller, and they may wrap. */
+.po-page .stat-value {
+  flex-wrap: wrap;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}

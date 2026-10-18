@@ -56,6 +56,9 @@ export async function registerWarehouseRoutes(app: FastifyInstance, deps: AppDep
     if (mapped.rowCount) throw conflict('Unmap every store location from this warehouse first');
     const count = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM warehouses');
     if (count.rows[0]!.n <= 1) throw conflict('You need at least one warehouse');
+    // Purchase orders keep the warehouse they deliver to (their history).
+    const ordered = await db.query('SELECT 1 FROM purchase_orders WHERE warehouse_id = $1', [id]);
+    if (ordered.rowCount) throw conflict('Purchase orders deliver to this warehouse, so keep it');
     const { rowCount } = await db.query('DELETE FROM warehouses WHERE id = $1', [id]);
     if (!rowCount) throw notFound('Warehouse');
     return reply.code(204).send();
