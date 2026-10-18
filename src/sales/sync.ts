@@ -109,7 +109,7 @@ export async function syncOrders(
         if (cursor !== null && pages === 0 && resumed) await saveSyncPlace(db, storeId, null, null);
         throw err;
       }
-      await recordSyncProblem(db, storeId, permissionMessage(store.name));
+      await recordSyncProblem(db, storeId, refusalMessage(err, store.name));
       logger.warn({ storeId, err }, 'order sync refused by shopify');
       return;
     }
@@ -237,7 +237,7 @@ async function backfillStep(deps: TaskDeps, storeId: number, poll: boolean): Pro
       ({ operationId } = await admin.startOrdersBulkExport(window.from.toISOString()));
     } catch (err) {
       if (!isAuthError(err)) throw err; // another export still running: retried with backoff
-      await recordPermissionProblem(db, storeId, permissionMessage(store.name));
+      await recordPermissionProblem(db, storeId, refusalMessage(err, store.name));
       logger.warn({ storeId, err }, 'history import refused by shopify');
       return;
     }
@@ -264,7 +264,7 @@ async function backfillStep(deps: TaskDeps, storeId: number, poll: boolean): Pro
     op = await admin.getBulkOperation(store.sales_backfill_operation_id!);
   } catch (err) {
     if (!isAuthError(err)) throw err;
-    await recordPermissionProblem(db, storeId, permissionMessage(store.name));
+    await recordPermissionProblem(db, storeId, refusalMessage(err, store.name));
     logger.warn({ storeId, err }, 'history import refused by shopify');
     return;
   }
@@ -469,7 +469,15 @@ function isAuthError(err: unknown): boolean {
   return err instanceof ShopifyApiError && err.kind === 'auth';
 }
 
-function permissionMessage(storeName: string): string {
+/**
+ * What to tell the merchant about an auth error. Shopify's ACCESS_DENIED means the app lacks the
+ * permission; an HTTP 401/403 means it refused the credentials themselves (the store's page then
+ * shows the problem too), and asking for read_orders would send the merchant the wrong way.
+ */
+function refusalMessage(err: unknown, storeName: string): string {
+  if (err instanceof ShopifyApiError && (err.status === 401 || err.status === 403)) {
+    return `Shopify didn’t accept Store Sync’s access to “${storeName}”. Check the store’s connection on its page.`;
+  }
   return new FeatureUnavailableError(storeName, 'sales', ['read_orders']).message;
 }
 

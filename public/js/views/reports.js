@@ -1,5 +1,5 @@
 import { api, latestOnly, qs } from '../api.js';
-import { confirmDialog } from '../dialog.js';
+import { confirmDialog, isDialogOpen } from '../dialog.js';
 import { debounce, h, icon, replace, srOnly, uid } from '../dom.js';
 import { dateOnly, days, money, num, percent, plural, timeAgo } from '../format.js';
 import { toast } from '../toast.js';
@@ -46,6 +46,8 @@ const PAGE_SIZE = 25;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** Days of stock left below this are highlighted. */
 const LOW_DAYS = 14;
+/** While a store's history is being imported, the page looks again this often. */
+const IMPORT_CHECK_MS = 15_000;
 
 export async function render({ root, query, signal, setTitle }) {
   setTitle('Reports');
@@ -133,6 +135,36 @@ export async function render({ root, query, signal, setTitle }) {
     reload();
   };
 
+  // While a store's order history is being imported, look again every little while and show the
+  // report again once an import has finished (or stopped), so the page fills in by itself.
+  let watch = null;
+  const watchImports = () => {
+    clearTimeout(watch);
+    if (signal.aborted || !status || !importState(status)) return;
+    watch = setTimeout(async () => {
+      // Not under an open dialog, nor in a background tab (it looks again when shown).
+      if (document.hidden || isDialogOpen()) return watchImports();
+      try {
+        const fresh = await api('/api/reports/status', { signal });
+        if (importState(fresh) !== importState(status)) {
+          status = fresh;
+          return reload();
+        }
+      } catch {
+        // Looked at again next time; the report on screen stays as it is.
+      }
+      watchImports();
+    }, IMPORT_CHECK_MS);
+  };
+  signal.addEventListener('abort', () => clearTimeout(watch));
+  document.addEventListener(
+    'visibilitychange',
+    () => {
+      if (!document.hidden) watchImports();
+    },
+    { signal },
+  );
+
   let filterControls = null;
   const reload = latestOnly(signal, async (reqSignal) => {
     writeUrl(state);
@@ -148,6 +180,7 @@ export async function render({ root, query, signal, setTitle }) {
         return { summary };
       },
       render: ({ summary }) => {
+        watchImports();
         if (!filterControls && status.stores.length > 0) {
           filterControls = reportFilters(state, status, () => {
             state.page = 1;
@@ -169,6 +202,25 @@ export async function render({ root, query, signal, setTitle }) {
   });
 
   await reload();
+}
+
+/**
+ * The stores whose order history is being imported (or is about to be), with their import
+ * status: '' when none is. A change means the report has more to show. A running import is
+ * checked on unless the store is paused or disconnected; one waiting to start only starts for an
+ * active store.
+ */
+function importState(status) {
+  return status.stores
+    .filter(
+      (c) =>
+        c.permission !== 'missing' &&
+        (c.backfill.status === 'running'
+          ? !['paused', 'disconnected'].includes(c.storeStatus)
+          : c.backfill.status === 'none' && !c.backfill.error && c.storeStatus === 'active'),
+    )
+    .map((c) => `${c.storeId}:${c.backfill.status}`)
+    .join(',');
 }
 
 function readState(query) {
@@ -380,7 +432,8 @@ export function rangeProblem(from, to) {
 
 function reportBody(summary, status, state, actions) {
   const coverage = summary.coverage.stores;
-  if (coverage.length > 0 && coverage.every((c) => c.permission === 'missing')) {
+  // Only the steps while there is nothing to show: sales read before a permission went stay.
+  if (coverage.length > 0 && coverage.every((c) => c.permission === 'missing' && !c.firstOrderOn)) {
     return { nodes: [noPermission(coverage)], withProducts: false };
   }
 
@@ -402,10 +455,13 @@ function reportBody(summary, status, state, actions) {
       banner(
         {
           tone: issues.some((n) => n.tone === 'warning') ? 'warning' : 'info',
-          title:
-            issues.length === 1
+          title: issues.every((n) => n.incomplete)
+            ? issues.length === 1
               ? 'One store’s sales may be incomplete'
-              : `${issues.length} stores’ sales may be incomplete`,
+              : `${issues.length} stores’ sales may be incomplete`
+            : issues.length === 1
+              ? 'One store needs a look'
+              : `${issues.length} stores need a look`,
         },
         h(
           'ul',
@@ -514,13 +570,28 @@ function noPermission(coverage) {
  * to worry about; info = filling in; warning = something needs a look.
  */
 function coverageNotes(summary) {
+  const base = summary.baseCurrency;
+  const rates = new Map(summary.byStore.map((s) => [s.storeId, s.exchangeRate]));
   return summary.coverage.stores.map((c) => {
     const name = c.name;
+    // A store in another currency whose rate was never set counts its amounts one for one.
+    const rateNote =
+      c.currencyCode && c.currencyCode !== base && rates.get(c.storeId) === 1
+        ? `Its exchange rate is 1 ${base} = 1 ${c.currencyCode}, so its sales in ${c.currencyCode} count one for one in ${base}. If that isn’t right, set the rate on the store’s page.`
+        : null;
     if (c.permission === 'missing') {
       return {
         store: c,
         tone: 'warning',
-        text: `${name}: no sales, because Store Sync doesn’t have permission to read this store’s orders. Open the store’s page to see how to give it.`,
+        incomplete: true,
+        text: [
+          c.firstOrderOn
+            ? `${name}: Store Sync no longer has permission to read this store’s orders, so its newest sales are missing. Open the store’s page to see how to give it back.`
+            : `${name}: no sales, because Store Sync doesn’t have permission to read this store’s orders. Open the store’s page to see how to give it.`,
+          rateNote,
+        ]
+          .filter(Boolean)
+          .join(' '),
       };
     }
     const b = c.backfill;
@@ -574,7 +645,13 @@ function coverageNotes(summary) {
         'Store Sync can’t reach this store right now, so its newest sales may be missing.',
       );
     }
-    return { store: c, tone, text: parts.join(' ') };
+    // Only the rate to say: the sales are all there.
+    const incomplete = tone !== 'neutral';
+    if (rateNote) {
+      if (tone === 'neutral') tone = 'info';
+      parts.push(rateNote);
+    }
+    return { store: c, tone, incomplete, text: parts.join(' ') };
   });
 }
 
@@ -911,12 +988,14 @@ function storesCard(summary, status) {
   const base = summary.baseCurrency;
   const t = summary.totals;
   const converted = summary.byStore.some((s) => s.currencyCode && s.currencyCode !== base);
-  // Stores whose orders can't be read show dashes, not zeros that look like no sales.
+  // Stores whose orders can't be read show dashes, not zeros that look like no sales; sales read
+  // before the permission went are shown (they are in the totals).
   const unread = new Set(
     summary.coverage.stores.filter((c) => c.permission === 'missing').map((c) => c.storeId),
   );
+  const blank = (s) => unread.has(s.storeId) && s.orders === 0 && s.units === 0 && s.revenue === 0;
   const read = (render) => (s) =>
-    unread.has(s.storeId) ? h('span', { class: 'muted unread' }, '—') : render(s);
+    blank(s) ? h('span', { class: 'muted unread' }, '—') : render(s);
   const columns = [
     {
       label: 'Store',
@@ -930,7 +1009,12 @@ function storesCard(summary, status) {
             h('span', { class: ['swatch', seriesClass(status, s.storeId)], 'aria-hidden': 'true' }),
             s.name,
           ),
-          unread.has(s.storeId) && h('span', { class: 'product-meta' }, 'Orders not read'),
+          unread.has(s.storeId) &&
+            h(
+              'span',
+              { class: 'product-meta' },
+              blank(s) ? 'Orders not read' : 'New orders not read',
+            ),
         ),
       total: 'All stores',
     },

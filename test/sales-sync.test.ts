@@ -277,6 +277,27 @@ describe('sync_orders', () => {
     await syncOrders(deps(), store.id);
     expect((await storeRow(store.id)).orders_sync_error).toBeNull();
   });
+
+  it('doesn’t ask for a permission when Shopify refused the credentials themselves', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    await h.db.query(`UPDATE stores SET sales_backfill_status = 'done', orders_synced_at = now()`);
+    const rejected = async () => {
+      throw new ShopifyApiError('Shopify rejected the credentials (HTTP 401).', 'auth', 401);
+    };
+    store.shop.listOrdersUpdatedSince = rejected;
+    await expect(syncOrders(deps(), store.id)).resolves.toBeUndefined();
+    const row = await storeRow(store.id);
+    expect(row.orders_sync_error).toBe(
+      'Shopify didn’t accept Store Sync’s access to “brand0”. Check the store’s connection on its page.',
+    );
+    expect(row.status).toBe('active');
+
+    await h.db.query(`UPDATE stores SET sales_backfill_status = 'none'`);
+    store.shop.startOrdersBulkExport = rejected;
+    await runSalesBackfill(deps(), store.id);
+    expect((await storeRow(store.id)).sales_backfill_error).toMatch(/didn’t accept Store Sync’s/);
+  });
 });
 
 describe('sales_backfill (history import)', () => {

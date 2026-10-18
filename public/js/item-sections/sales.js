@@ -18,7 +18,8 @@ export async function section(item, { signal }) {
     size: 'small',
     iconName: 'chart',
   });
-  if (report.readingStores === 0) {
+  // Sales read before the permission went still show.
+  if (report.readingStores === 0 && report.totals.orders === 0) {
     return card(
       { title: 'Sales', actions: open },
       h(

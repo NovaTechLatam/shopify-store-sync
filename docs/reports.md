@@ -67,9 +67,16 @@ show as "Not one of your products". Once the SKU is matched to a product, its pa
 that product within a minute.
 
 **Sales history by store** says, for each store, how far back its sales go, whether its history is
-still being imported, and when it was last checked. **Import again…** reads the store's history from
-Shopify once more: useful after you give Store Sync the `read_all_orders` permission, or after an
-import that didn't work. Sales already in your reports stay while it runs.
+still being imported, and when it was last checked. While a history is being imported, the page
+looks again every 15 seconds and fills in by itself when the import is done. **Import again…**
+reads the store's history from Shopify once more: useful after you give Store Sync the
+`read_all_orders` permission, or after an import that didn't work. Sales already in your reports
+stay while it runs.
+
+It also tells you when a store in another currency still has the exchange rate 1 (for example
+1 USD = 1 COP): its sales then count one for one in your base currency, which makes the totals
+wrong. Set the rate on the store's page. And if Store Sync loses the permission to read a store's
+orders, the sales it read before stay in your reports; only the newest ones are missing.
 
 **Product page.** Each product's page has a **Sales in the last 30 days** card: units and revenue
 per store, units per day, and days of stock left, with a link to the product in Reports.
@@ -118,8 +125,9 @@ Partner Dashboard, under **API access requests**).
   Reports: Shopify won't show Store Sync that order any more.
 
 If the import from Shopify fails, Store Sync raises the alert "Order history not imported" and
-reads the orders page by page instead. That takes longer but gets there. You can also try the
-import again from Reports.
+reads the orders page by page instead. That takes longer but gets there: once it has read the
+whole history, the store shows as complete in Reports and the alert goes away. You can also try
+the import again from Reports.
 
 ## Things to know
 
@@ -148,7 +156,9 @@ Code: `src/sales/` (ingestion, sync, history import, report queries), `src/http/
 transaction. The order row is upserted with `ON CONFLICT … DO UPDATE … WHERE
 stored.shopify_updated_at <= new.updatedAt`, so an older copy never overwrites a newer one, and
 concurrent copies of one order are written one after the other (the row stays locked until
-commit). Lines no longer on the order are deleted. Each line maps to an item through the store's
+commit). A batch of orders (`ingestOrders`, 100 per transaction) is written in order of order
+id, so two batches that share orders (the import and a sync page) lock them in the same order and
+can't deadlock. Lines no longer on the order are deleted. Each line maps to an item through the store's
 variant (as matched on the Matching page; a variant unlinked by hand stays unmapped), else through
 its normalised SKU. `unit_cost` is the item's cost when the line is first seen and is kept on
 updates (filled in later when it was NULL). A deleted order keeps its row with `deleted_at` and no
@@ -172,7 +182,9 @@ key).
   order; they are joined on `__parentId`), upsert in batches of 100 orders, set
   `orders_synced_at` to the export's start minus 10 minutes → `done`. `FAILED`, `CANCELED`,
   `EXPIRED`, an operation Shopify no longer knows, or an expired file (HTTP 4xx) → `failed`, alert
-  `sales_import_failed:<store>`, and `sync_orders` reads the window page by page. A 0-object export
+  `sales_import_failed:<store>`, and `sync_orders` reads the window page by page; the first sync
+  pass that started at or before `sales_history_from` and reached the last page sets the status
+  to `done` and resolves the alert. A 0-object export
   has no file: `done`. The `bulk_operations/finish` webhook runs a check right away. A task can't
   push its own next run later (re-queuing its own key makes it run again at once), so delayed
   checks alternate between the plain key and a `poll: true` one. Only one check per store runs at

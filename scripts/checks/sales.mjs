@@ -18,7 +18,8 @@ const numberIn = (text) => Number(text.replace(/[^\d.]/g, ''));
  * createMockState, setAllowHttpErrors } (see check-dashboard.mjs for each).
  */
 export async function flows(ctx) {
-  const { page, go, step, expect, shoot, toastText, settle, server, createMockState } = ctx;
+  const { page, go, step, expect, shoot, toastText, settle, waitUntil, server, createMockState } =
+    ctx;
 
   await step('reports: a shorter period shows fewer sales, and stays in the address', async () => {
     await go('#/reports');
@@ -188,7 +189,9 @@ export async function flows(ctx) {
   });
 
   await step('reports: without permission, while importing, and without sales', async () => {
+    // No store has ever let Store Sync read its orders.
     server.state = createMockState();
+    server.state.sales.lines = [];
     for (const store of server.state.stores) {
       store.features.sales = { available: false, missingScopes: ['read_orders'] };
       store.scopesCheckedAt = new Date().toISOString();
@@ -222,6 +225,99 @@ export async function flows(ctx) {
       'an empty period says so',
     );
     await shoot(page, 'reports-no-sales-1280-light', { fullPage: false });
+  });
+
+  await step('reports: sales read before a permission went, and a rate never set', async () => {
+    // Harbor & Pine (COP) can't be read any more, but has sales from before; Little Fox Kids'
+    // rate was never set.
+    server.state = createMockState();
+    const lines = server.state.sales.lines;
+    lines.push(...lines.filter((l) => l.storeId === 1).map((l) => ({ ...l, storeId: 2 })));
+    server.state.stores.find((s) => s.id === 3).exchangeRate = 1;
+    await go('#/');
+    await go('#/reports');
+    const row = page
+      .locator('.card')
+      .filter({ hasText: 'By store' })
+      .locator('tbody tr')
+      .filter({ hasText: 'Harbor & Pine' });
+    const text = await row.textContent();
+    expect(
+      text.includes('New orders not read') && !(await row.locator('.unread').count()),
+      `its earlier sales show, like in the totals (${text})`,
+    );
+    const issues = await page.locator('.report-issues').textContent();
+    expect(
+      issues.includes('Harbor & Pine: Store Sync no longer has permission'),
+      'says its newest sales are missing',
+    );
+    expect(
+      issues.includes('Its exchange rate is 1 USD = 1 CLP'),
+      'says the rate of Little Fox Kids is still 1',
+    );
+    await shoot(page, 'reports-permission-gone-1280-light', { fullPage: false });
+
+    // No store may be read any more: the sales already read stay on the page.
+    for (const store of server.state.stores) {
+      store.features.sales = { available: false, missingScopes: ['read_orders'] };
+      store.scopesCheckedAt = new Date().toISOString();
+    }
+    await go('#/');
+    await go('#/reports');
+    expect(
+      (await page.locator('.report-stats').count()) === 1,
+      'the report, not only the steps to give the permission',
+    );
+    await go('#/items/1');
+    const section = page.locator('[data-section="sales"]');
+    await section.locator('.card').waitFor();
+    expect(
+      (await section.locator('.card-title').textContent()) === 'Sales in the last 30 days',
+      'the product page still shows its sales',
+    );
+    await go('#/');
+  });
+
+  await step('reports: the page fills in when an import finishes', async () => {
+    server.state = createMockState();
+    // A page of its own, with a clock the check moves on (the page looks again every 15 s).
+    const own = await page
+      .context()
+      .browser()
+      .newContext({
+        viewport: { width: 1280, height: 900 },
+        reducedMotion: 'reduce',
+      });
+    try {
+      const p = await own.newPage();
+      const errors = [];
+      p.on('pageerror', (err) => errors.push(err.message));
+      p.on('console', (msg) => msg.type() === 'error' && errors.push(msg.text()));
+      await p.clock.install();
+      await p.goto(new URL('/#/reports', page.url()).href);
+      await settle(p);
+      const list = p.locator('.coverage-list');
+      expect(
+        (await list.textContent()).includes('Little Fox Kids: importing the order history'),
+        'the import is running',
+      );
+      Object.assign(server.state.sales.stores[3].backfill, {
+        status: 'done',
+        finishedAt: new Date().toISOString(),
+      });
+      await p.clock.runFor(16_000);
+      await waitUntil(
+        p,
+        `!document.querySelector('.coverage-list')?.textContent.includes('Little Fox Kids: importing')`,
+      );
+      expect(
+        (await list.textContent()).includes('Little Fox Kids: sales since'),
+        'the finished import shows without reloading the page',
+      );
+      expect(errors.length === 0, `no errors (${errors.join('; ')})`);
+    } finally {
+      await own.close();
+    }
   });
 
   await step('product page: sales by store for the last 30 days', async () => {
