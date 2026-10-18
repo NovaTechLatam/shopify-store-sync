@@ -689,6 +689,35 @@ describe('import: what the brands have', () => {
     expect(product.stores[1].overlay.extraTags).toEqual(['harbor']);
   });
 
+  it('shows a brand whose variants come in another order as a change the preview names', async () => {
+    const [a, b] = h.stores;
+    const source = sizedProduct(a!, 'Tee', [
+      { sku: 'T-S', size: 'S' },
+      { sku: 'T-M', size: 'M' },
+    ]);
+    b!.shop.addProduct({
+      title: 'Tee',
+      productOptions: [{ name: 'Size', values: [{ name: 'S' }, { name: 'M' }] }],
+      variants: [
+        { sku: 'T-M', price: '10.00', optionValues: [{ optionName: 'Size', name: 'M' }] },
+        { sku: 'T-S', price: '10.00', optionValues: [{ optionName: 'Size', name: 'S' }] },
+      ],
+    });
+    for (const s of h.stores) await readCatalog(s);
+    const id = (
+      await api('POST', '/api/catalog/import', { storeId: a!.id, productId: source.productId })
+    ).body.id;
+    const product = (await api('GET', `/api/catalog/products/${id}`)).body;
+    expect(product.stores[1]).toMatchObject({ state: 'changed', changedReason: 'content' });
+    const preview = (await api('GET', `/api/catalog/products/${id}/preview?storeIds=${b!.id}`)).body
+      .stores[0];
+    expect(preview).toMatchObject({
+      action: 'update',
+      upToDate: false,
+      fields: [{ field: 'variantOrder', label: 'Variant order', from: 'T-M, T-S', to: 'T-S, T-M' }],
+    });
+  });
+
   it('says publishing lists an unlisted product again, and shows it as a change', async () => {
     const [a] = h.stores;
     const source = sizedProduct(a!, 'Wool socks', [{ sku: 'SOCK-1', size: 'One' }], {

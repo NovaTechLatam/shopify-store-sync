@@ -3,9 +3,11 @@ import type { ContentChange, DesiredContent } from './desired.js';
 import {
   contentChanges,
   contentFromShopify,
+  contentHash,
   desiredContent,
   leavesOnlineStore,
   variantDetailChanges,
+  variantOrderChange,
 } from './desired.js';
 import type { MasterProduct, StoreContext } from './model.js';
 import type { PriceChange } from './plan.js';
@@ -123,6 +125,15 @@ async function previewStore(
     });
   }
   const fields = before ? contentChanges(before, content) : [];
+  const order = before && variantOrderChange(before, content);
+  if (order) {
+    fields.push({
+      field: 'variantOrder',
+      label: 'Variant order',
+      from: order.from.join(', '),
+      to: order.to.join(', '),
+    });
+  }
   const variantsUpdated = before ? variantDetailChanges(before, content) : [];
   const imagesKnown = !prepared.liveFromCatalog;
   const result: StorePreview = {
@@ -138,8 +149,16 @@ async function previewStore(
     imagesRemoved: imagesKnown ? plan.removedImages.map((m) => ({ alt: m.alt, url: m.url })) : null,
     prices: plan.priceChanges,
   };
+  // Whatever the lists above show, a brand whose content differs from what was last published
+  // isn't up to date (it shows as changed until it's published again).
+  let sameAsPublished = true;
+  if (before && before === ps.publishedSnapshot) {
+    const { onlineStoreAsFound: _flag, ...published } = ps.publishedSnapshot;
+    sameAsPublished = contentHash(published) === contentHash(content);
+  }
   result.upToDate =
     plan.mode === 'update' &&
+    sameAsPublished &&
     fields.length === 0 &&
     plan.addedVariants.length === 0 &&
     plan.removedVariants.length === 0 &&

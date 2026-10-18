@@ -188,6 +188,12 @@ export async function flows(ctx) {
       (await page.locator('main h1').textContent()) === 'Classic Hoodie',
       'imported page opens',
     );
+    expect(
+      (await page.locator('.brand-panel').first().textContent()).includes(
+        'publishing leaves the product shown or hidden in the Online Store as it is',
+      ),
+      'an imported brand’s Online Store is left as it is',
+    );
     // Already imported products can't be picked again.
     await go('#/catalog');
     await page.getByRole('button', { name: 'Import from a store…' }).click();

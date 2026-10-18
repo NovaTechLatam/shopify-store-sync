@@ -590,6 +590,7 @@ function editorView(state, p) {
         exchangeRate: s.exchangeRate,
         enabled: b.enabled,
         publishToOnlineStore: b.publishToOnlineStore,
+        onlineStoreAsFound: b.onlineStoreAsFound ?? false,
         overlay: {
           title: null,
           descriptionHtml: null,
@@ -782,7 +783,10 @@ function applyStores(p, stores) {
     const b = p.brands[s.storeId];
     if (!b) continue;
     if (s.enabled !== undefined) b.enabled = s.enabled;
-    if (s.publishToOnlineStore !== undefined) b.publishToOnlineStore = s.publishToOnlineStore;
+    if (s.publishToOnlineStore !== undefined && s.publishToOnlineStore !== b.publishToOnlineStore) {
+      b.publishToOnlineStore = s.publishToOnlineStore;
+      b.onlineStoreAsFound = false;
+    }
     if (s.extraTags !== undefined) b.extraTags = s.extraTags;
     for (const key of OVERLAY_KEYS) if (s[key] !== undefined) b.overlay[key] = s[key] || null;
   }
@@ -925,6 +929,7 @@ function importGroup(state, storeId, group) {
       state: 'published',
       publishedAt: new Date().toISOString(),
       shopifyProductId: productIdOf(sold[0]),
+      onlineStoreAsFound: true,
     });
     if (sold[0].productTitle !== p.title) b.overlay.title = sold[0].productTitle;
     if (s.id !== storeId && sold.length < group.variants.length) {

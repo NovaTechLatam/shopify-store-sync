@@ -383,6 +383,23 @@ export function contentChanges(before: DesiredContent, after: DesiredContent): C
   return out;
 }
 
+/**
+ * The variants both versions have, when they come in another order (the order shoppers see
+ * them in): the SKUs before and after; null = same order.
+ */
+export function variantOrderChange(
+  before: DesiredContent,
+  after: DesiredContent,
+): { from: string[]; to: string[] } | null {
+  const key = (v: DesiredVariant) => normalizeSku(v.sku) ?? v.sku;
+  const had = new Set(before.variants.map(key));
+  const to = after.variants.filter((v) => had.has(key(v)));
+  const kept = new Set(to.map(key));
+  const from = before.variants.filter((v) => kept.has(key(v)));
+  if (from.every((v, i) => key(v) === key(to[i]!))) return null;
+  return { from: from.map((v) => v.sku), to: to.map((v) => v.sku) };
+}
+
 /** Variants whose shared details (barcode, weight, shipping, tax) differ, by SKU. */
 export function variantDetailChanges(before: DesiredContent, after: DesiredContent): string[] {
   const key = (v: DesiredVariant) => normalizeSku(v.sku) ?? v.sku;

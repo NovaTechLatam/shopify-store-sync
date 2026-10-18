@@ -1615,6 +1615,13 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       },
     });
     if (!result) return;
+    if (result.queued.length === 0) {
+      // A brand turned off meanwhile (another tab): nothing was queued.
+      toast(`Nothing was published. ${result.skipped.map((s) => s.reason).join(' ')}`, {
+        tone: 'error',
+      });
+      return;
+    }
     const queued = result.queued.map((id) => names.get(id));
     toast(`Publishing to ${listNames(queued)}. This page updates when it’s done.`, {
       tone: 'info',
@@ -1779,6 +1786,7 @@ function previewBlock(p, box, variantCount) {
   if (p.action === 'create' || p.action === 'update') {
     for (const f of p.fields) {
       if (f.field === 'descriptionHtml') add('Description changes.');
+      else if (f.field === 'variantOrder') add('Changes the order of the variants.');
       else add(`${f.label}: ${f.from ?? '—'} → ${f.to ?? '—'}`);
     }
     if (p.action === 'update' && p.variantsAdded.length) add(`Adds ${p.variantsAdded.join(', ')}.`);
@@ -1825,6 +1833,10 @@ function previewBlock(p, box, variantCount) {
         ),
       );
     }
+  }
+  // Something not listed above differs from what was last published (an image order...).
+  if (p.action === 'update' && !p.upToDate && lines.length === 0) {
+    add('Sends the catalog version again.');
   }
   for (const w of p.warnings) add(w, 'warning');
   return h(
