@@ -276,6 +276,20 @@ export function seed(state, { minutesAgo }) {
     variants: [{ sku: 'BEANIE-WOL-RUS', optionValues: [], basePrice: 26, cost: 8 }],
     brands: { 1: { enabled: true }, 2: { enabled: true } },
   });
+
+  // The alert a failed publish raises (src/products/publish.ts), with its catalog product.
+  const failed = catalog.products.find((p) => p.brands[3]?.state === 'failed');
+  state.alerts.push({
+    id: state.nextIds.alert++,
+    kind: 'catalog_publish_failed',
+    itemId: null,
+    storeId: 3,
+    message: `“${failed.title}” couldn’t be published to Little Fox Kids: ${failed.brands[3].lastError}`,
+    details: { masterProductId: failed.id },
+    createdAt: minutesAgo(50),
+    notifiedAt: minutesAgo(49),
+    resolvedAt: null,
+  });
 }
 
 /**

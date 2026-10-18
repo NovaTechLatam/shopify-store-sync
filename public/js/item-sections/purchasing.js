@@ -64,7 +64,7 @@ function purchasingCard(data, reload) {
       [
         'Cost',
         data.cost === null
-          ? muted('Not set yet: it is set when a delivery with a price is received')
+          ? muted('Not set yet. Set it on the Prices page, or receive a delivery with a price.')
           : h(
               'span',
               {},

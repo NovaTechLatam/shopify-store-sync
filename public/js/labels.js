@@ -85,6 +85,11 @@ const ALERT_KINDS = withFeatures(
   'ALERT_KINDS',
 );
 
+/** The page where an alert is fixed, when it isn't a product's or a store's: { href, label }. */
+export function alertLink(a) {
+  return ALERT_KINDS[a.kind]?.link?.(a) ?? null;
+}
+
 export function alertBadge(kind) {
   const a = ALERT_KINDS[kind] ?? { label: humanize(kind), tone: 'neutral' };
   return badge(

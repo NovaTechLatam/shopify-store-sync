@@ -423,6 +423,12 @@ async function flows(browser, baseUrl, server) {
 
   await step('alerts: resolve one', async () => {
     await go('#/alerts');
+    // A feature's alert links to where it's fixed, not only to its store.
+    const publish = page.locator('.alert-item', { hasText: 'Publishing failed' });
+    const href = await publish
+      .getByRole('link', { name: 'Open the catalog product' })
+      .getAttribute('href');
+    expect(/^#\/catalog\/\d+$/.test(href ?? ''), `a failed publish links to its product (${href})`);
     const before = await page.locator('.alert-item').count();
     await page.getByRole('button', { name: 'Resolve', exact: true }).first().click();
     await waitUntil(page, `document.querySelectorAll('.alert-item').length === ${before - 1}`);

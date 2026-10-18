@@ -104,7 +104,17 @@ export interface ShopifyProduct {
   status: ProductStatus;
   seo: { title: string | null; description: string | null };
   /** In position order. A product without options has one: "Title" / "Default Title". */
-  options: { id: string; name: string; position: number; values: { id: string; name: string }[] }[];
+  options: {
+    id: string;
+    name: string;
+    position: number;
+    values: { id: string; name: string }[];
+    /**
+     * The category metafield the option is linked to (Color → shopify.color-pattern, with its
+     * swatches), or null. Its values come from metafield entries, not plain names.
+     */
+    linkedMetafield?: { namespace: string; key: string } | null;
+  }[];
   /** Images only (videos and 3D models are left out), in the product's order. */
   media: ShopifyProductImage[];
   /** Every variant, in position order. */

@@ -63,8 +63,7 @@ export async function section(item, { signal }) {
                       'div',
                       { class: 'price-notes' },
                       sourceBadge(r.cell),
-                      r.cell.differs &&
-                        h('span', { class: 'text-warning' }, 'Changes at the next update'),
+                      r.cell.differs && h('span', { class: 'text-warning' }, 'To update'),
                     ),
                   ),
               },

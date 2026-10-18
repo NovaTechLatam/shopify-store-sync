@@ -2,7 +2,7 @@ import { api, isAbort } from '../api.js';
 import { isDialogOpen } from '../dialog.js';
 import { h, icon, replace, replaceKeepingFocus } from '../dom.js';
 import { num, plural, timeAgo } from '../format.js';
-import { alertBadge, storeProblem, storeStatusBadge } from '../labels.js';
+import { alertBadge, alertLink, storeProblem, storeStatusBadge } from '../labels.js';
 import { resumeSync, updateShell } from '../shell.js';
 import {
   banner,
@@ -362,6 +362,18 @@ function productsSection(status) {
   );
 }
 
+/** Where to act on an alert: its page (a catalog product, the sales...), product or store. */
+function overviewAlertLink(a) {
+  const link =
+    alertLink(a) ??
+    (a.itemId
+      ? { href: `#/items/${a.itemId}`, label: `Open ${a.sku ?? 'product'}` }
+      : a.storeId
+        ? { href: `#/stores/${a.storeId}`, label: `Open ${a.storeName ?? 'the store'}` }
+        : null);
+  return link && h('a', { href: link.href, class: 'small' }, link.label);
+}
+
 function alertsCard(alerts) {
   const shown = alerts.slice(0, ALERTS_SHOWN);
   return card(
@@ -389,12 +401,7 @@ function alertsCard(alerts) {
               {},
               h('div', { class: 'compact-list-head' }, alertBadge(a.kind), timeAgo(a.createdAt)),
               h('p', {}, a.message),
-              a.itemId &&
-                h(
-                  'a',
-                  { href: `#/items/${a.itemId}`, class: 'small' },
-                  `Open ${a.sku ?? 'product'}`,
-                ),
+              overviewAlertLink(a),
             ),
           ),
         ),

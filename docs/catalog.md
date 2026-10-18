@@ -175,6 +175,9 @@ Importing only reads products, which every store already allows.
 - Videos and 3D models of a brand's product aren't shown in the publish preview, and publishing
   removes them: add them back in Shopify afterwards, or keep such products out of the catalog.
 - An image Shopify couldn't process (a broken file or address) is sent again on the next publish.
+- An option a brand linked to a category metafield in Shopify (a Color with swatches) can't get new
+  values from Store Sync: publishing says so, and you add the value to the option in Shopify
+  first. Values it already has are kept.
 - The catalog keeps one barcode per variant, the store's first. Publishing leaves a variant's
   barcodes in Shopify (and their types) as they are while that first one matches; if you change it
   in the catalog, the variant gets just the new one.
@@ -217,8 +220,12 @@ Importing only reads products, which every store already allows.
 - **Retries.** `productSet` has no idempotency key. Updates go by product id with absolute values.
   Creates first look for a product of the store holding exactly our SKUs (our copy of its catalog,
   then Shopify), and otherwise upsert by a custom id (`$app:store_sync.master_product_id` metafield,
-  defined once per store), so a create retried after a timeout finds the product it made. A SKU in
-  another product of the store blocks the publish.
+  defined once per store), so a create retried after a timeout finds the product it made. The
+  HTTP client never sends a `productSet` again itself (a timeout after 2 minutes, a network error
+  or a 5xx may mean it went through, and a second create running alongside could make a copy):
+  the task is retried a little later and looks first. Its result reads 50 images and 50 variants
+  (the rest in pages after), and a write estimated over Shopify's 1,000-point query limit is
+  refused before it is sent. A SKU in another product of the store blocks the publish.
 - **"Changed"** is computed, not stored: the sha256 of the brand's content (everything but prices
   and costs, with our own ids, stable key order, tags sorted) against the hash stored at the last
   publish, and, separately, the brand's current prices (`variants.price`) against what a publish

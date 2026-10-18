@@ -162,7 +162,7 @@ function ruleCard(r, data, reload) {
         h(
           'span',
           { class: 'field-hint block' },
-          'When it’s off, Store Sync never changes this store’s prices, except products you give a fixed price.',
+          'When it’s off, Store Sync only changes this store’s prices for products you give a fixed price, sales you include it in, and new products you publish there.',
         ),
       ),
     ),
@@ -216,7 +216,7 @@ function ruleCard(r, data, reload) {
     toast(
       next.enabled
         ? `Rule saved for ${r.storeName}. Its prices change when you update prices in stores.`
-        : `Rule saved. Store Sync won’t change ${r.storeName}’s prices (except fixed prices).`,
+        : `Rule saved. Store Sync won’t change ${r.storeName}’s prices, except fixed prices, sales and new products.`,
     );
     reload();
   });

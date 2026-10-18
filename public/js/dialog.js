@@ -1,4 +1,4 @@
-import { h, icon, uid } from './dom.js';
+import { h, icon, keepFocusOnRerender, uid } from './dom.js';
 import { button, withBusy } from './ui.js';
 
 export const isDialogOpen = () => document.querySelector('dialog[open]') !== null;
@@ -65,7 +65,11 @@ export function formDialog({
       settled = true;
       dialog.close();
       dialog.remove();
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (previousFocus?.isConnected) {
+        previousFocus.focus();
+        // The page usually reloads after a save, replacing the button that opened the dialog.
+        if (result !== null) keepFocusOnRerender(previousFocus);
+      }
       resolve(result);
     }
 

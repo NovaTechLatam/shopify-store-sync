@@ -4,9 +4,16 @@
  * imports this file.
  */
 
-/** Alert kind → { label, tone } (tone: neutral | success | warning | critical | info). */
+/**
+ * Alert kind → { label, tone, link } (tone: neutral | success | warning | critical | info; link:
+ * alert → { href, label } of the page where it's fixed, or null).
+ */
 export const ALERT_KINDS = {
-  sales_import_failed: { label: 'Order history not imported', tone: 'warning' },
+  sales_import_failed: {
+    label: 'Order history not imported',
+    tone: 'warning',
+    link: () => ({ href: '#/reports', label: 'Open Reports' }),
+  },
 };
 
 /** Activity (inventory event) kind → label, also listed in the Activity page's filter. */

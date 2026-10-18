@@ -74,8 +74,10 @@ out). **Download CSV** gives you the order's products as a spreadsheet.
 
 When stock arrives, open the order and click **Receive…**. Every product still to come is listed
 with the number that is still expected; change the numbers to what actually came (0 for products
-that didn't). Click **Receive units**: the units are added to the shared stock and every store
-updates within seconds. The order becomes **Partly received** or **Received**.
+that didn't). The button says how many units you are about to receive ("Receive 25 units"): check
+it, then click it. The units are added to the shared stock and every store updates within seconds,
+and the confirmation lists what went in per product. The order becomes **Partly received** or
+**Received**.
 
 - **Partial deliveries** are normal: receive what came, and receive the rest when it arrives.
 - **More than you ordered?** Store Sync asks you to confirm, then adds all of it.

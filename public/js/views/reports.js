@@ -1,6 +1,6 @@
 import { api, latestOnly, qs } from '../api.js';
 import { confirmDialog, isDialogOpen } from '../dialog.js';
-import { debounce, h, icon, replace, srOnly, uid } from '../dom.js';
+import { debounce, h, icon, keepFocusOnRerender, replace, srOnly, uid } from '../dom.js';
 import { dateOnly, days, money, num, pace, percent, plural, timeAgo } from '../format.js';
 import { toast } from '../toast.js';
 import {
@@ -102,6 +102,7 @@ export async function render({ root, query, signal, setTitle }) {
           onSort,
           onPage: (page) => {
             state.page = page;
+            keepFocusOnRerender(document.activeElement);
             loadProducts().then(() => view.products.scrollIntoView({ block: 'start' }));
           },
         });
@@ -468,7 +469,7 @@ function reportBody(summary, status, state, actions) {
         h(
           'ul',
           { class: 'report-issues' },
-          issues.map((n) => h('li', {}, n.text)),
+          issues.map((n) => h('li', {}, noteText(n))),
         ),
       ),
     h(
@@ -657,6 +658,12 @@ function coverageNotes(summary) {
   });
 }
 
+/** A note's text, with a link to the store's page when the note sends the merchant there. */
+function noteText(n) {
+  if (!/store’s page/.test(n.text)) return n.text;
+  return [n.text, ' ', h('a', { href: `#/stores/${n.store.storeId}` }, `Open ${n.store.name}`)];
+}
+
 function coverageCard(notes, status, onResync) {
   return card(
     {
@@ -686,7 +693,7 @@ function coverageCard(notes, status, onResync) {
           h(
             'div',
             { class: 'coverage-text' },
-            h('p', {}, n.text),
+            h('p', {}, noteText(n)),
             c.lastSyncedAt &&
               h('p', { class: 'muted small' }, 'Last checked ', timeAgo(c.lastSyncedAt)),
           ),
@@ -1236,7 +1243,11 @@ function productsTable(list, state, status, { onSort, onPage }) {
         {
           type: 'button',
           class: ['sort-button', active && 'is-active'],
-          onclick: () => onSort(s.value, next),
+          'data-key': `sort-${s.value}`,
+          onclick: (event) => {
+            keepFocusOnRerender(event.currentTarget);
+            onSort(s.value, next);
+          },
         },
         col.label,
         h(

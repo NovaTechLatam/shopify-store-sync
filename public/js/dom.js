@@ -61,6 +61,63 @@ export function replaceKeepingFocus(parent, ...children) {
   if (key) parent.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
 }
 
+/**
+ * What tells a control apart from its neighbours: its data-key, id or aria-label, else its text
+ * without decorations (a sort arrow is aria-hidden and changes with the order).
+ */
+function focusKey(el) {
+  const named = el.dataset?.key || el.id || el.getAttribute?.('aria-label');
+  if (named) return named;
+  const copy = el.cloneNode(true);
+  for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+  return copy.textContent.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Keeps keyboard focus where the merchant was when a view re-renders right after an action (a
+ * dialog's save reloads the section, a sort or page button redraws the table): when `el` is
+ * replaced and focus fell to the page, it moves to the new control with the same label, else,
+ * after a few seconds, to the page's heading, rather than to the top of the page. Leaves focus
+ * alone if anything else took it.
+ */
+export function keepFocusOnRerender(el, { within = document.querySelector('main') } = {}) {
+  if (!el || el === document.body || !within) return;
+  const key = focusKey(el);
+  const tag = el.tagName;
+  const lost = () => !document.activeElement || document.activeElement === document.body;
+  let done = false;
+  const stop = () => {
+    done = true;
+    observer.disconnect();
+    clearTimeout(timer);
+  };
+  const follow = () => {
+    if (done || el.isConnected) return;
+    if (!lost()) return stop();
+    const twin =
+      key &&
+      [...within.querySelectorAll(tag)].find(
+        (x) => focusKey(x) === key && x.getClientRects().length > 0 && !x.disabled,
+      );
+    if (twin) {
+      twin.focus();
+      stop();
+    }
+  };
+  const observer = new MutationObserver(follow);
+  observer.observe(within, { childList: true, subtree: true });
+  const timer = setTimeout(() => {
+    if (!done && !el.isConnected && lost()) {
+      const heading = within.querySelector('h1');
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus();
+      }
+    }
+    stop();
+  }, 3000);
+}
+
 let idCounter = 0;
 export const uid = (prefix = 'id') => `${prefix}-${++idCounter}`;
 

@@ -192,11 +192,21 @@ export class ShopifyGraphqlClient {
     this.sleep = opts.sleep ?? defaultSleep;
   }
 
+  /**
+   * `once`: a request that must not reach Shopify twice (a product write that may create one). A
+   * network error, a timeout, a 5xx answer or an unreadable one may mean it got through, so it
+   * isn't sent again here: it fails as transient, and the caller looks before trying again. Only
+   * throttling (429, THROTTLED), which Shopify refuses before doing anything, is retried.
+   * `timeoutMs` overrides the client's for this request.
+   */
   async request<T>(
     query: string,
     variables: Record<string, unknown> = {},
     estimatedCost = 10,
+    opts: { once?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
+    // Retries of failures that may mean the request was carried out.
+    const unsureRetries = opts.once ? 0 : this.maxRetries;
     let authRetried = false;
     for (let attempt = 0; ; attempt++) {
       const release = await this.reserveBudget(estimatedCost);
@@ -217,10 +227,10 @@ export class ShopifyGraphqlClient {
               'X-Shopify-Access-Token': token,
             },
             body: JSON.stringify({ query, variables }),
-            signal: AbortSignal.timeout(this.timeoutMs),
+            signal: AbortSignal.timeout(opts.timeoutMs ?? this.timeoutMs),
           });
         } catch (err) {
-          if (attempt < this.maxRetries) {
+          if (attempt < unsureRetries) {
             await pause(backoffMs(attempt));
             continue;
           }
@@ -252,7 +262,7 @@ export class ShopifyGraphqlClient {
           );
         }
         if (res.status === 429 || res.status >= 500) {
-          if (attempt < this.maxRetries) {
+          if (attempt < (res.status === 429 ? this.maxRetries : unsureRetries)) {
             const retryAfter = Number(res.headers.get('retry-after'));
             await pause(
               Number.isFinite(retryAfter) && retryAfter > 0
@@ -286,7 +296,7 @@ export class ShopifyGraphqlClient {
         try {
           json = (await res.json()) as GraphqlResponse<T>;
         } catch (err) {
-          if (attempt < this.maxRetries) {
+          if (attempt < unsureRetries) {
             await pause(backoffMs(attempt));
             continue;
           }
@@ -310,7 +320,7 @@ export class ShopifyGraphqlClient {
             throw new ShopifyApiError('Shopify API rate limit exceeded', 'transient', 200);
           }
           const internal = json.errors.some((e) => e.extensions?.code === 'INTERNAL_SERVER_ERROR');
-          if (internal && attempt < this.maxRetries) {
+          if (internal && attempt < unsureRetries) {
             await this.sleep(backoffMs(attempt));
             continue;
           }

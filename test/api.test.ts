@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setAlert } from '../src/alerts/alerts.js';
 import { createDb, type Db } from '../src/db/pool.js';
 import { buildServer } from '../src/http/server.js';
 import type { StoreCredentials } from '../src/shopify/registry.js';
@@ -365,6 +366,17 @@ describe('HTTP API', () => {
       400,
     );
     expect((await api('GET', '/api/alerts')).body).toEqual([]);
+    // A feature's alert says what it is about, so the dashboard can link to it.
+    await setAlert(db, {
+      open: true,
+      kind: 'catalog_publish_failed',
+      dedupeKey: 'catalog_publish_failed:7:1',
+      message: '“Linen tee” couldn’t be published.',
+      details: { masterProductId: 7 },
+    });
+    expect((await api('GET', '/api/alerts')).body).toEqual([
+      expect.objectContaining({ kind: 'catalog_publish_failed', details: { masterProductId: 7 } }),
+    ]);
   });
 
   it('validates and saves the currency, reorder, sales and cost settings', async () => {

@@ -265,9 +265,24 @@ async function receiveDialog(order, page) {
     return { line, control };
   });
   const note = input({ name: 'note', maxlength: 500, placeholder: 'e.g. Delivery note 4471' });
+  // The button says how many units it books, so a line left at "everything still to come" by
+  // mistake shows before it goes into the stock.
+  const total = () =>
+    inputs.reduce((n, { control }) => {
+      const value = Number(control.value);
+      return n + (Number.isInteger(value) && value > 0 ? value : 0);
+    }, 0);
+  const submitText = () => `Receive ${plural(total(), 'unit')}`;
+  const showTotal = () => {
+    const label = inputs[0]?.control.form?.querySelector('button[type="submit"] > span');
+    if (label) label.textContent = submitText();
+  };
+  for (const { control } of inputs) control.addEventListener('input', showTotal);
   const fillAll = (all) => {
     for (const { line, control } of inputs) control.value = all ? line.remaining : 0;
+    showTotal();
   };
+  let booked = [];
   const result = await formDialog({
     title: `Receive a delivery on ${order.number}`,
     intro: h(
@@ -312,7 +327,7 @@ async function receiveDialog(order, page) {
         hint: 'Shown in the order’s deliveries and the activity log.',
       }),
     ],
-    submitLabel: 'Receive units',
+    submitLabel: submitText(),
     initialFocus: () => inputs[0]?.control,
     onSubmit: async () => {
       const received = [];
@@ -327,6 +342,7 @@ async function receiveDialog(order, page) {
       }
       if (received.length === 0)
         throw new Error('Enter how many units arrived for at least one product.');
+      booked = received;
       const over = received.filter((r) => r.quantity > r.line.remaining);
       let allowOver = false;
       if (over.length) {
@@ -371,14 +387,20 @@ async function receiveDialog(order, page) {
     toast('This delivery was already recorded: nothing was added twice.', { tone: 'info' });
   } else {
     const units = result.receipt?.units ?? 0;
+    // What went in, per SKU: "TEE-S × 1, HOOD-M × 24".
+    const perSku = booked
+      .slice(0, 5)
+      .map((r) => `${r.line.sku} × ${num(r.quantity)}`)
+      .concat(booked.length > 5 ? [`${num(booked.length - 5)} more`] : [])
+      .join(', ');
     const waiting = result.waiting ?? [];
     const waitingNote = waiting.length
       ? ` ${waiting.map((w) => w.sku).join(', ')} ${waiting.length === 1 ? 'isn’t' : 'aren’t'} syncing yet: ${waiting.length === 1 ? 'its' : 'their'} units are added when ${waiting.length === 1 ? 'it starts' : 'they start'}.`
       : '';
     toast(
       result.syncPaused
-        ? `Received ${plural(units, 'unit')} on ${order.number}. Syncing is paused, so the stores get them when you resume it.${waitingNote}`
-        : `Received ${plural(units, 'unit')} on ${order.number}. Every store updates in a few seconds.${waitingNote}`,
+        ? `Received ${plural(units, 'unit')} on ${order.number} (${perSku}). Syncing is paused, so the stores get them when you resume it.${waitingNote}`
+        : `Received ${plural(units, 'unit')} on ${order.number} (${perSku}). Every store updates in a few seconds.${waitingNote}`,
     );
   }
   page.reload();

@@ -141,6 +141,7 @@ function toModel(product, stores) {
       ? product.variants.map((v) => ({
           key: ++rowKeys,
           id: v.id,
+          itemId: v.itemId,
           sku: v.sku,
           optionValues: [...v.optionValues],
           barcode: v.barcode ?? '',
@@ -763,7 +764,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       },
       { label: 'Weight', render: (v) => weightCell(v) },
       {
-        label: `Price (${baseCurrency})`,
+        label: `Base price (${baseCurrency})`,
         render: (v) =>
           cellInput(v, 'basePrice', `Base price of ${comboLabel(v.optionValues)}`, moneyAttrs),
       },
@@ -880,7 +881,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       h(
         'p',
         { class: 'field-hint' },
-        `Prices are base prices in ${baseCurrency}: each brand converts them with its exchange rate and price rule. A new SKU starts at 0 in stock when the product is first published; then add stock with a purchase order or “Add units” on its product page.`,
+        `Prices are base prices in ${baseCurrency}: each brand converts them with its exchange rate and price rule. A new SKU starts at 0 in stock when the product is first published; then add stock with a purchase order or “Add or remove units…” on its product page (click its stock).`,
       ),
     );
   }
@@ -929,6 +930,18 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
   }
 
   function stockCell(v) {
+    const value = stockValue(v);
+    // A saved SKU's product page has its stock, prices, reorder suggestion and sales.
+    if (!v.id || !v.itemId) return value;
+    return h(
+      'a',
+      { href: `#/items/${v.itemId}`, class: 'stock-link' },
+      value,
+      h('span', { class: 'sr-only' }, ` (open ${v.sku}’s product page)`),
+    );
+  }
+
+  function stockValue(v) {
     if (v.stockStarted) return h('span', { class: 'num' }, num(v.stock));
     // A SKU new to Store Sync starts at 0 when the product is first published.
     if (!v.id || v.stockStartsAtZero) {
@@ -1498,7 +1511,9 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       h(
         'p',
         { class: 'field-hint' },
-        'From the base prices and this brand’s price rule (see Prices), as last saved. Publishing sends them.',
+        'From the base prices and this brand’s price rule (see ',
+        h('a', { href: `#/prices${qs({ search: model.title })}` }, 'Prices'),
+        '), as last saved. Publishing sends them.',
       ),
     );
   }

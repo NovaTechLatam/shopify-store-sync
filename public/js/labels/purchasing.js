@@ -6,7 +6,10 @@ import { h } from '../dom.js';
  * imports this file.
  */
 
-/** Alert kind → { label, tone } (tone: neutral | success | warning | critical | info). */
+/**
+ * Alert kind → { label, tone, link } (tone: neutral | success | warning | critical | info; link:
+ * alert → { href, label } of the page where it's fixed, or null).
+ */
 export const ALERT_KINDS = {
   reorder: { label: 'Time to reorder', tone: 'warning' },
   cost_push_failed: { label: 'Costs not sent to Shopify', tone: 'warning' },

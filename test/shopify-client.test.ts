@@ -87,6 +87,20 @@ describe('ShopifyGraphqlClient', () => {
     await expect(failing.c.request('query { ok }')).rejects.toMatchObject({ kind: 'transient' });
   });
 
+  it('never sends a request marked `once` twice when it may have got through', async () => {
+    for (const unsure of [new Error('The operation was aborted due to timeout'), { status: 502 }]) {
+      const { c, requests } = client([unsure, { body: { data: { ok: 1 } } }]);
+      await expect(c.request('mutation { ok }', {}, 10, { once: true })).rejects.toMatchObject({
+        kind: 'transient',
+      });
+      expect(requests).toHaveLength(1);
+    }
+    // Throttling is refused before anything is done: that is retried.
+    const { c, requests } = client([{ status: 429 }, { body: { data: { ok: 1 } } }]);
+    await expect(c.request('mutation { ok }', {}, 10, { once: true })).resolves.toEqual({ ok: 1 });
+    expect(requests).toHaveLength(2);
+  });
+
   it('classifies auth and unavailable shops', async () => {
     await expect(client([{ status: 401 }, { status: 401 }]).c.request('q')).rejects.toMatchObject({
       kind: 'auth',
@@ -615,6 +629,35 @@ describe('GraphqlShopifyAdmin: product writes', () => {
       input: { title: 'New' },
     });
     expect(variablesOf(create.requests, 0).identifier).toBeNull();
+  });
+
+  it('sends a product write once, and refuses one over Shopify’s query cost limit', async () => {
+    const timedOut = client([new Error('The operation was aborted due to timeout')]);
+    await expect(
+      new GraphqlShopifyAdmin(timedOut.c).productSet({
+        identifier: { customId: '12' },
+        input: { title: 'Tee' },
+      }),
+    ).rejects.toMatchObject({ kind: 'transient' });
+    // The client didn't send the create again: the publish task looks for the product first.
+    expect(timedOut.requests).toHaveLength(1);
+
+    const huge = client([]);
+    const files = Array.from({ length: 450 }, (_, i) => ({
+      originalSource: `https://cdn.shopify.com/${i}.jpg`,
+      alt: '',
+      contentType: 'IMAGE' as const,
+    }));
+    await expect(
+      new GraphqlShopifyAdmin(huge.c).productSet({
+        identifier: null,
+        input: { title: 'Tee', files },
+      }),
+    ).rejects.toMatchObject({
+      kind: 'invalid',
+      message: expect.stringContaining('too many images'),
+    });
+    expect(huge.requests).toHaveLength(0);
   });
 
   it('turns userErrors into ShopifyUserErrors listing them', async () => {

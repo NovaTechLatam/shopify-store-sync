@@ -321,6 +321,10 @@ export const GRAPHQL_DOCUMENTS = {
           id
           name
           position
+          linkedMetafield {
+            namespace
+            key
+          }
           optionValues {
             id
             name
@@ -500,7 +504,7 @@ export const GRAPHQL_DOCUMENTS = {
     fragment StoreSyncProductSetResult on Product {
       id
       handle
-      media(first: 100) {
+      media(first: 50) {
         nodes {
           id
           alt
@@ -512,7 +516,7 @@ export const GRAPHQL_DOCUMENTS = {
           endCursor
         }
       }
-      variants(first: 100) {
+      variants(first: 50) {
         nodes {
           id
           sku
@@ -825,6 +829,7 @@ interface ProductNode {
     name: string;
     position: number;
     optionValues: { id: string; name: string }[];
+    linkedMetafield: { namespace: string; key: string } | null;
   }[];
   media: { nodes: MediaNode[]; pageInfo: PageInfo };
 }
@@ -900,13 +905,24 @@ interface ProductSetNode {
 /** Estimated cost of the order query (a page of 50 lines). */
 const ORDER_COST = 460;
 
-/** Rough Shopify cost of a productSet: the result's selection plus Shopify's input complexity. */
+/**
+ * Rough Shopify cost of a productSet: the result's selection (50 media and 50 variants, the rest
+ * is read in pages after) plus Shopify's input complexity.
+ */
 function productSetCost(input: ProductSetRequest['input']): number {
   const files = input.files?.length ?? 0;
   const variants = input.variants ?? [];
   const variantFiles = variants.filter((v) => v.file).length;
-  return Math.ceil(420 + files * 1.9 + variants.length * 0.2 + variantFiles * 0.6);
+  return Math.ceil(215 + files * 1.9 + variants.length * 0.2 + variantFiles * 0.6);
 }
+
+/** Shopify refuses a single query that costs more than this (MAX_COST_EXCEEDED). */
+const MAX_QUERY_COST = 1000;
+/**
+ * A big product (hundreds of variants and new images) can take Shopify longer than the usual 30
+ * seconds to write: waiting longer beats giving up on a write that may still go through.
+ */
+const PRODUCT_SET_TIMEOUT_MS = 120_000;
 
 /** Variants per productVariantsBulkUpdate call (Shopify's limit for input lists). */
 export const PRICE_UPDATE_CHUNK = 250;
@@ -1208,6 +1224,7 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
           name: o.name,
           position: o.position,
           values: o.optionValues.map((v) => ({ id: v.id, name: v.name })),
+          linkedMetafield: o.linkedMetafield ?? null,
         })),
       media: media.filter(isImage).map(toProductImage),
       variants: variants.sort((a, b) => a.position - b.position),
@@ -1263,17 +1280,26 @@ export class GraphqlShopifyAdmin implements ShopifyAdmin {
         { namespace: PRODUCT_ID_NAMESPACE, key: PRODUCT_ID_KEY, type: 'id', value },
       ];
     }
+    const cost = productSetCost(input);
+    if (cost > MAX_QUERY_COST) {
+      throw new ShopifyApiError(
+        'the product has too many images and variants to send in one go. Publish it with ' +
+          'fewer images, or fewer variants with their own image.',
+        'invalid',
+      );
+    }
+    // Not sent twice by the client: a write that timed out may still create the product. The
+    // publish task tries again later, after looking for the product it may have made.
     const data = await this.client.request<{
       productSet: {
         product: ProductSetNode | null;
         productSetOperation: { userErrors: UserError[] } | null;
         userErrors: UserError[];
       };
-    }>(
-      GRAPHQL_DOCUMENTS.productSet,
-      { identifier, input, synchronous: true },
-      productSetCost(input),
-    );
+    }>(GRAPHQL_DOCUMENTS.productSet, { identifier, input, synchronous: true }, cost, {
+      once: true,
+      timeoutMs: PRODUCT_SET_TIMEOUT_MS,
+    });
     const payload = data.productSet;
     const errors = [...payload.userErrors, ...(payload.productSetOperation?.userErrors ?? [])];
     if (errors.length) throw userErrors('Shopify didn’t accept the product', errors);

@@ -580,6 +580,20 @@ describe('buildProductSetInput: a new product', () => {
 });
 
 describe('buildProductSetInput: updating the store’s product', () => {
+  it('refuses to add a plain value to an option linked to a category metafield', () => {
+    const linked = live();
+    linked.options[1]!.linkedMetafield = { namespace: 'shopify', key: 'size' };
+    const refused = plan(product(), { live: linked });
+    expect(refused.problems).toEqual([
+      'Size is linked to a category metafield in this store (its swatches), so Store Sync can’t ' +
+        'add “M” to it. Add it to the option in Shopify first, then publish again.',
+    ]);
+    // Values the linked option already has go by id, as usual.
+    linked.options[0]!.linkedMetafield = { namespace: 'shopify', key: 'color-pattern' };
+    linked.options[1]!.linkedMetafield = null;
+    expect(plan(product(), { live: linked }).problems).toEqual([]);
+  });
+
   it('keeps each existing variant (matched by SKU, any case) with its id', () => {
     const existing = live({
       variants: [

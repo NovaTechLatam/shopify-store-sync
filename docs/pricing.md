@@ -27,10 +27,11 @@ For each product, in each store:
 
 1. If the product has a **fixed price** in that store, that's the price (and its compare-at price,
    if you gave one). This works even if the store's rule is off.
-2. Otherwise, if the store's **rule is off**, Store Sync has no price for it and never changes it.
-   You keep setting that store's prices in Shopify. (A product the [catalog](catalog.md) creates
-   in that store needs some price: it starts at the base price times the exchange rate, rounded
-   to the currency's decimals.)
+2. Otherwise, if the store's **rule is off**, Store Sync has no price for it and leaves it alone.
+   You keep setting that store's prices in Shopify. Two exceptions: a **sale** you include the
+   store in takes its percentage off the price the store charges (and puts it back afterwards),
+   and a product the [catalog](catalog.md) creates in that store needs some price: it starts at
+   the base price times the exchange rate, rounded to the currency's decimals.
 3. Otherwise, if the product has **no base price**, it is left as it is.
 4. Otherwise: base price × exchange rate × multiplier + amount to add, then rounded.
 
@@ -78,8 +79,8 @@ The Rules tab shows live examples while you edit a rule, with a few of your own 
    the prices one store charges now (divided by its exchange rate). Pick the store whose prices the
    others follow. Leave "Only products without a base price" on to keep the ones you already set.
 4. **Set up each store's rule** on the Rules tab and turn it on.
-5. Go back to the Prices tab and choose **Will change** to see every price that would change: what
-   the store charges now → what it will charge, and the margin.
+5. Go back to the Prices tab and choose **Prices to update** to see every price that would change:
+   what the store charges now → what it will charge, and the margin.
 6. Click **Update prices in stores…**, check the numbers per store, and confirm.
 
 ## Editing prices

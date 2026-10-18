@@ -147,6 +147,8 @@ export async function flows(ctx) {
     const table = page.locator('.card').filter({ hasText: 'By product' });
     await table.getByRole('button', { name: /^Units/ }).click();
     await settle(page);
+    // The table was drawn again: focus stays on the sort button.
+    await waitUntil(page, `document.activeElement?.textContent.startsWith('Units')`, 3000);
     const header = table.locator('th[aria-sort]');
     expect((await header.textContent()).startsWith('Units'), 'units is the sorted column');
     expect((await header.getAttribute('aria-sort')) === 'descending', 'highest first');
@@ -296,6 +298,12 @@ export async function flows(ctx) {
     expect(
       issues.includes('Its exchange rate is 1 USD = 1 CLP'),
       'says the rate of Little Fox Kids is still 1',
+    );
+    expect(
+      (await page
+        .locator('.report-issues a', { hasText: 'Open Harbor & Pine' })
+        .getAttribute('href')) === '#/stores/2',
+      'a note that sends the merchant to the store’s page links to it',
     );
     await shoot(page, 'reports-permission-gone-1280-light', { fullPage: false });
 

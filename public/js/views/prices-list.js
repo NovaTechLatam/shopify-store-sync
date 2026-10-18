@@ -29,7 +29,7 @@ import {
 
 const FILTERS = [
   { value: 'all', label: 'All' },
-  { value: 'changes', label: 'Will change' },
+  { value: 'changes', label: 'Prices to update' },
   { value: 'missing_base', label: 'No base price' },
   { value: 'overrides', label: 'Fixed prices' },
 ];
@@ -284,7 +284,7 @@ function pageNotes(data) {
         h(
           'p',
           {},
-          'Until a store’s rule is on, Store Sync leaves its prices alone (except fixed prices you set here).',
+          'Until a store’s rule is on, Store Sync leaves its prices alone, except fixed prices you set here, sales you include it in and new products you publish there.',
         ),
       ),
     );

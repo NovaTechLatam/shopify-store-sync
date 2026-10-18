@@ -254,7 +254,7 @@ export async function flows(ctx) {
     );
     await settle(page);
     await shoot(page, 'prices-updated-1280-light', { fullPage: false });
-    await page.getByRole('button', { name: 'Will change' }).click();
+    await page.getByRole('button', { name: 'Prices to update' }).click();
     await settle(page);
     expect(
       (await page.locator('.state-title').textContent()) === 'Every store already has its price',

@@ -1,7 +1,7 @@
 import { api, latestOnly } from '../api.js';
 import { h } from '../dom.js';
 import { absoluteTime, timeAgo } from '../format.js';
-import { alertBadge } from '../labels.js';
+import { alertBadge, alertLink } from '../labels.js';
 import { refreshStatus } from '../shell.js';
 import { toast } from '../toast.js';
 import { button, emptyState, filterBar, loadInto, pageHeader, withBusy } from '../ui.js';
@@ -84,6 +84,7 @@ function alertList(alerts, status, update) {
             'p',
             { class: 'alert-meta' },
             h('span', {}, 'Raised ', timeAgo(a.createdAt)),
+            alertLink(a) && h('a', { href: alertLink(a).href }, alertLink(a).label),
             a.itemId && h('a', { href: `#/items/${a.itemId}`, class: 'mono' }, a.sku ?? 'Product'),
             a.storeId && h('a', { href: `#/stores/${a.storeId}` }, a.storeName ?? 'Store'),
             a.notifiedAt

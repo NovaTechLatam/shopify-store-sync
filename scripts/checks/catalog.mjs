@@ -243,6 +243,30 @@ export async function flows(ctx) {
     );
   });
 
+  await step('catalog: a variant’s stock leads to its product page, prices to Prices', async () => {
+    await go('#/catalog/2');
+    const hrefs = await page
+      .locator('a.stock-link')
+      .evaluateAll((links) => links.map((a) => a.getAttribute('href')));
+    expect(
+      hrefs.length > 0 && hrefs.every((href) => /^#\/items\/\d+$/.test(href ?? '')),
+      `every variant's stock links to its product (${hrefs.slice(0, 3)})`,
+    );
+    // One the mock has a product page for (it makes up items for some catalog SKUs).
+    const known = hrefs.find((href) =>
+      ctx.server.state.items.some((i) => href === `#/items/${i.id}`),
+    );
+    const stock = page.locator(`a.stock-link[href="${known}"]`).first();
+    await go('#/catalog/4');
+    expect(
+      (await page.locator('main .field-hint a[href^="#/prices"]').count()) > 0,
+      'the brand prices hint links to Prices',
+    );
+    await go('#/catalog/2');
+    await stock.click();
+    await page.waitForURL(/#\/items\/\d+$/);
+  });
+
   await step('catalog: images can be reordered with buttons', async () => {
     await go('#/catalog/1');
     const shared = page

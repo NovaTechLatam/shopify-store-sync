@@ -117,6 +117,18 @@ export function buildProductSetInput(p: PlanInput): PublishPlan {
     content.options.length === 0 ? [{ name: 'Title', values: ['Default Title'] }] : content.options;
   const productOptions: ProductOptionSetInputJson[] = options.map((o, i) => {
     const existing = live?.options.find((x) => x.name === o.name);
+    // An option linked to a category metafield (a Color with swatches) takes its values from
+    // metafield entries: a plain new value can't be added to it (Shopify refuses mixing them).
+    const added = existing?.linkedMetafield
+      ? o.values.filter((name) => !existing.values.some((x) => x.name === name))
+      : [];
+    if (added.length) {
+      problems.push(
+        `${o.name} is linked to a category metafield in this store (its swatches), so Store Sync ` +
+          `can’t add ${added.map((v) => `“${v}”`).join(', ')} to it. Add ${added.length === 1 ? 'it' : 'them'} ` +
+          'to the option in Shopify first, then publish again.',
+      );
+    }
     return {
       ...(existing ? { id: existing.id } : {}),
       name: o.name,

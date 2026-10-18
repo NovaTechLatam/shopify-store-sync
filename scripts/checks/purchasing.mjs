@@ -106,12 +106,20 @@ export async function flows(ctx) {
     expect((await rows.nth(0).inputValue()) === '30', 'defaults to what is still to come');
     await rows.nth(0).fill('12');
     await rows.nth(1).fill('0');
+    expect(
+      (await dialog.getByRole('button', { name: 'Receive 12 units' }).count()) === 1,
+      'the button says how many units it books',
+    );
     await dialog.getByLabel('Note').fill('Box 1 of 3');
     await shoot(page, 'dialog-po-receive-1280-light', { fullPage: false });
     // A double click must book the delivery once.
-    await dialog.getByRole('button', { name: 'Receive units' }).dblclick();
+    await dialog.getByRole('button', { name: /^Receive [\d,]+ units?$/ }).dblclick();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('Received 12 units on PO-0008'), 'receive toast');
+    const received = await toastText(page);
+    expect(
+      received.includes('Received 12 units on PO-0008 (') && / × 12\)/.test(received),
+      `receive toast, per SKU (${received})`,
+    );
     await settle(page);
     await waitUntil(
       page,
@@ -153,7 +161,7 @@ export async function flows(ctx) {
       const dialog = page.getByRole('dialog').first();
       const first = dialog.locator('.po-receive-line input').first();
       await first.fill('40'); // 24 still to come
-      await dialog.getByRole('button', { name: 'Receive units' }).click();
+      await dialog.getByRole('button', { name: /^Receive [\d,]+ units?$/ }).click();
       const confirm = page.getByRole('dialog', { name: 'Receive more than you ordered?' });
       await confirm.waitFor();
       await shoot(page, 'dialog-po-over-receipt-1280-light', { fullPage: false });
@@ -403,6 +411,12 @@ export async function flows(ctx) {
     await waitUntil(
       page,
       `document.querySelector('[data-section="purchasing"]')?.textContent.includes('9 days (this product)')`,
+    );
+    // The section reloaded with a new button: focus is on it, not back at the top of the page.
+    await waitUntil(
+      page,
+      `document.activeElement?.textContent.trim() === 'Reorder settings…'`,
+      3000,
     );
   });
 

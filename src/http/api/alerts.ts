@@ -22,12 +22,13 @@ export async function loadAlerts(db: Queryable, q: { status: 'open' | 'all'; ite
     sku: string | null;
     store_id: number | null;
     store_name: string | null;
+    details: Record<string, unknown> | null;
     created_at: Date;
     notified_at: Date | null;
     resolved_at: Date | null;
   }>(
     `SELECT a.id, a.kind, a.message, a.item_id, i.sku, a.store_id, s.name AS store_name,
-            a.created_at, a.notified_at, a.resolved_at
+            a.details, a.created_at, a.notified_at, a.resolved_at
        FROM alerts a
        LEFT JOIN items i ON i.id = a.item_id
        LEFT JOIN stores s ON s.id = a.store_id
@@ -44,6 +45,8 @@ export async function loadAlerts(db: Queryable, q: { status: 'open' | 'all'; ite
     sku: a.sku,
     storeId: a.store_id,
     storeName: a.store_name,
+    /** What the alert is about beyond a product or store (a catalog product, a sale...). */
+    details: a.details,
     createdAt: a.created_at,
     notifiedAt: a.notified_at,
     resolvedAt: a.resolved_at,
