@@ -18,12 +18,35 @@ function localInput(days) {
 
 const item = (server, sku) => server.state.items.find((i) => i.sku === sku);
 
+/**
+ * Waits for a toast containing `text` (older toasts may still be on screen, so the newest isn't
+ * always the one to read).
+ */
+async function expectToast(ctx, text, message) {
+  try {
+    await ctx.waitUntil(
+      ctx.page,
+      `[...document.querySelectorAll('.toast-message')].some((t) => t.textContent.includes(${JSON.stringify(text)}))`,
+      5000,
+    );
+  } catch {
+    ctx.expect(false, `${message} (toast: ${await ctx.toastText(ctx.page).catch(() => 'none')})`);
+  }
+}
+
 /** Searches the product picker of the open dialog and ticks the first product found. */
 async function pickProduct(ctx, search) {
   const dialog = ctx.page.getByRole('dialog');
   await dialog.getByLabel('Find products').fill(search);
-  await ctx.page.waitForTimeout(350);
-  await ctx.waitUntil(ctx.page, `!document.querySelector('.picker-results[aria-busy]')`);
+  // The search is debounced: wait for its results, not the list that was there before.
+  await ctx.waitUntil(
+    ctx.page,
+    `(() => {
+      const first = document.querySelector('dialog .picker-option .mono');
+      return !document.querySelector('.picker-results[aria-busy]') && !!first &&
+        first.textContent.includes(${JSON.stringify(search)});
+    })()`,
+  );
   await dialog.locator('.picker-option').first().click();
 }
 
@@ -32,7 +55,7 @@ async function pickProduct(ctx, search) {
  * createMockState, setAllowHttpErrors } (see check-dashboard.mjs for each).
  */
 export async function flows(ctx) {
-  const { page, go, step, expect, shoot, toastText, waitUntil, settle, server } = ctx;
+  const { page, go, step, expect, shoot, waitUntil, settle, server } = ctx;
   const dialog = page.getByRole('dialog');
 
   await step('prices: edit a base price and save it', async () => {
@@ -47,7 +70,7 @@ export async function flows(ctx) {
     await shoot(page, 'prices-unsaved-1280-light', { fullPage: false });
     await page.getByRole('button', { name: 'Save base prices' }).click();
     await page.locator('.price-save-bar').waitFor({ state: 'hidden' });
-    expect((await toastText(page)).includes('1 base price saved'), 'save toast');
+    await expectToast(ctx, '1 base price saved', 'save toast');
     expect(item(server, 'CAP-WAX-OLI-L').basePrice === 21.5, 'base price saved in the mock');
     await settle(page);
     expect((await field.inputValue()) === '21.5', 'the list shows the saved price');
@@ -80,7 +103,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-bulk-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Apply change' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('3 base prices changed'), 'bulk toast');
+    await expectToast(ctx, '3 base prices changed', 'bulk toast');
     expect(item(server, 'TOTE-CNV-NAT-M').basePrice === 17.59, '15.99 + 10% = 17.59');
   });
 
@@ -101,7 +124,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-fixed-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Save' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('Fixed price saved'), 'fixed price toast');
+    await expectToast(ctx, 'Fixed price saved', 'fixed price toast');
     await settle(page);
     expect(
       (await page.locator('tbody tr').first().textContent()).includes('Fixed price'),
@@ -128,8 +151,7 @@ export async function flows(ctx) {
     await harbor.getByLabel('Ending (COP)').fill('900');
     await shoot(page, 'prices-rule-edit-1280-light', { fullPage: false });
     await harbor.getByRole('button', { name: 'Save rule' }).click();
-    await waitUntil(page, `!!document.querySelector('.toast')`);
-    expect((await toastText(page)).includes('Rule saved for Harbor & Pine'), 'rule toast');
+    await expectToast(ctx, 'Rule saved for Harbor & Pine', 'rule toast');
     expect(server.state.pricing.rules[2].multiplier === 1.5, 'rule saved in the mock');
   });
 
@@ -148,7 +170,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-update-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Update prices' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('Updating prices in 2 stores'), 'update toast');
+    await expectToast(ctx, 'Updating prices in 2 stores', 'update toast');
     await waitUntil(
       page,
       `document.querySelector('.price-progress .banner-title')?.textContent === 'Prices updated'`,
@@ -188,7 +210,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-sale-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Schedule sale' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('Sale “Spring sale” scheduled'), 'sale toast');
+    await expectToast(ctx, 'Sale “Spring sale” scheduled', 'sale toast');
     await settle(page);
     expect((await page.locator('tbody').textContent()).includes('Spring sale'), 'sale listed');
   });
@@ -213,7 +235,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-cancel-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Cancel sale' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('is cancelled'), 'cancel toast');
+    await expectToast(ctx, 'is cancelled', 'cancel toast');
     await settle(page);
     const row = page.locator('tbody tr').filter({ hasText: 'Black Friday' });
     expect((await row.textContent()).includes('Cancelled'), 'cancelled badge');
@@ -224,7 +246,7 @@ export async function flows(ctx) {
     await page.getByRole('button', { name: 'End now “Autumn hoodie weekend”…' }).click();
     await dialog.getByRole('button', { name: 'End sale now' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect((await toastText(page)).includes('ended'), 'end toast');
+    await expectToast(ctx, '“Autumn hoodie weekend” ended', 'end toast');
     await waitUntil(page, `!!document.querySelector('.price-progress .banner')`);
     expect(
       !server.state.pricing.overrides.some((o) => o.scheduleId === 1),
@@ -243,10 +265,7 @@ export async function flows(ctx) {
     await shoot(page, 'dialog-prices-base-change-1280-light', { fullPage: false });
     await dialog.getByRole('button', { name: 'Schedule price change' }).click();
     await dialog.waitFor({ state: 'detached' });
-    expect(
-      (await toastText(page)).includes('Price change “Autumn prices” scheduled'),
-      'price change toast',
-    );
+    await expectToast(ctx, 'Price change “Autumn prices” scheduled', 'price change toast');
     const s = server.state.pricing.schedules.find((x) => x.name === 'Autumn prices');
     expect(s?.changes[0]?.basePrice === 18.5, 'the new base price is kept');
   });
@@ -274,6 +293,7 @@ export async function phoneFlows(ctx) {
   const { page, go, step, expect, shoot } = ctx;
   const dialog = page.getByRole('dialog');
   const fits = async (name) => {
+    await dialog.waitFor();
     const box = await dialog.boundingBox();
     expect(box.x >= 0 && box.x + box.width <= 390, `${name}: dialog within the viewport`);
   };
