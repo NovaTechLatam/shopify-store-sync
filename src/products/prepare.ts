@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { removeProduct } from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
 import type { Db } from '../db/pool.js';
 import { ShopifyApiError } from '../shopify/client.js';
@@ -88,6 +89,14 @@ export async function prepare(
     }
   };
 
+  // Products our copy of the store's catalog still has but Shopify doesn't (deleted, and the
+  // notification not processed yet): forgotten, so they neither block nor get adopted.
+  const gone: string[] = [];
+  const forget = async (productId: string) => {
+    gone.push(productId);
+    if (mode === 'publish') await removeProduct(deps.db, store.id, productId);
+  };
+
   if (ps?.shopifyProductId) {
     out.live = await read(ps.shopifyProductId);
     if (!out.live) {
@@ -96,16 +105,18 @@ export async function prepare(
         `The product was deleted in ${store.name} since it was last published: publishing ` +
           'creates it again.',
       );
+      await forget(ps.shopifyProductId);
     }
   }
   if (!out.live) {
-    const existing = await findExistingProduct(deps.db, store, product.id, skus);
+    const existing = await findExistingProduct(deps.db, store, product.id, skus, gone);
     if (existing.kind === 'conflict') {
       out.blocked.push(existing.message);
       return out;
     }
     if (existing.kind === 'adopt') {
       const live = await read(existing.productId);
+      if (!live) await forget(existing.productId);
       if (live) {
         const problem = adoptionProblem(store.name, live, new Set(skus), normalizeSku);
         if (problem) {
@@ -121,7 +132,10 @@ export async function prepare(
   // A SKU the store's product doesn't have yet must not be in another of its products.
   const have = new Set((out.live?.variants ?? []).map((v) => normalizeSku(v.sku)));
   const toAdd = skus.filter((sku) => !have.has(sku));
-  const elsewhere = await storeProductsWithSkus(deps.db, store.id, toAdd, out.live?.id ?? null);
+  const elsewhere = await storeProductsWithSkus(deps.db, store.id, toAdd, [
+    ...gone,
+    ...(out.live ? [out.live.id] : []),
+  ]);
   if (elsewhere.length) {
     out.blocked.push(conflictMessage(store.name, elsewhere));
     return out;

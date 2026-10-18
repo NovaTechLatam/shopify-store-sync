@@ -52,12 +52,12 @@ export interface StoreProductMatch {
   others: number;
 }
 
-/** Products of the store that hold any of `skus` (normalised), except `exceptProductId`. */
+/** Products of the store that hold any of `skus` (normalised), except the `except` ones. */
 export async function storeProductsWithSkus(
   db: Queryable,
   storeId: number,
   skus: string[],
-  exceptProductId: string | null = null,
+  except: string[] = [],
 ): Promise<StoreProductMatch[]> {
   if (skus.length === 0) return [];
   const { rows } = await db.query<{
@@ -73,13 +73,13 @@ export async function storeProductsWithSkus(
               AS others
        FROM variants v
       WHERE v.store_id = $1 AND v.deleted_at IS NULL
-        AND v.shopify_product_id IS DISTINCT FROM $3::text
+        AND v.shopify_product_id <> ALL($3::text[])
         AND v.shopify_product_id IN (
           SELECT shopify_product_id FROM variants
            WHERE store_id = $1 AND deleted_at IS NULL AND NOT is_bundle AND sku = ANY($2::text[]))
       GROUP BY v.shopify_product_id
       ORDER BY min(v.product_title), v.shopify_product_id`,
-    [storeId, skus, exceptProductId],
+    [storeId, skus, except],
   );
   return rows.map((r) => ({
     productId: r.shopify_product_id,
@@ -104,8 +104,9 @@ export async function findExistingProduct(
   store: Pick<StoreContext, 'id' | 'name'>,
   masterProductId: number,
   skus: string[],
+  except: string[] = [],
 ): Promise<ExistingProduct> {
-  const matches = await storeProductsWithSkus(db, store.id, skus);
+  const matches = await storeProductsWithSkus(db, store.id, skus, except);
   if (matches.length === 0) return { kind: 'none' };
   if (matches.length === 1 && matches[0]!.others === 0) {
     const match = matches[0]!;

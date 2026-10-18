@@ -1,5 +1,5 @@
 import { normalizeSku } from '../catalog/sku.js';
-import type { Queryable } from '../db/pool.js';
+import type { Db, Queryable } from '../db/pool.js';
 import type { PriceRule, PriceRuleRow } from '../pricing/compute.js';
 import { rowToPriceRule } from '../pricing/compute.js';
 import type { WeightUnit } from '../shopify/types.js';
@@ -113,115 +113,114 @@ export const VERSION = `(extract(epoch FROM updated_at) * 1000000)::bigint::text
 /** Loads master products with everything (in the order of `ids`; missing ones are left out). */
 export async function loadMasterProducts(db: Queryable, ids: number[]): Promise<MasterProduct[]> {
   if (ids.length === 0) return [];
-  const [products, variants, media, stores, links] = await Promise.all([
-    db.query<{
-      id: number;
-      title: string;
-      description_html: string;
-      vendor: string;
-      product_type: string;
-      tags: string[];
-      handle: string | null;
-      seo_title: string | null;
-      seo_description: string | null;
-      status: MasterStatus;
-      options: MasterOption[];
-      created_at: Date;
-      updated_at: Date;
-      version: string;
-    }>(
-      `SELECT id, title, description_html, vendor, product_type, tags, handle, seo_title,
+  // One query after the other: `db` may be a transaction's client, which runs one at a time.
+  const products = await db.query<{
+    id: number;
+    title: string;
+    description_html: string;
+    vendor: string;
+    product_type: string;
+    tags: string[];
+    handle: string | null;
+    seo_title: string | null;
+    seo_description: string | null;
+    status: MasterStatus;
+    options: MasterOption[];
+    created_at: Date;
+    updated_at: Date;
+    version: string;
+  }>(
+    `SELECT id, title, description_html, vendor, product_type, tags, handle, seo_title,
               seo_description, status, options, created_at, updated_at, ${VERSION} AS version
          FROM master_products WHERE id = ANY($1::bigint[])`,
-      [ids],
-    ),
-    db.query<{
-      id: number;
-      master_product_id: number;
-      item_id: number;
-      sku: string;
-      item_sku: string;
-      option_values: string[];
-      barcode: string | null;
-      weight: number | null;
-      weight_unit: WeightUnit;
-      requires_shipping: boolean;
-      taxable: boolean;
-      position: number;
-      base_price: number | null;
-      base_compare_at_price: number | null;
-      cost: number | null;
-    }>(
-      `SELECT mv.id, mv.master_product_id, mv.item_id, mv.sku, i.sku AS item_sku, mv.option_values,
+    [ids],
+  );
+  const variants = await db.query<{
+    id: number;
+    master_product_id: number;
+    item_id: number;
+    sku: string;
+    item_sku: string;
+    option_values: string[];
+    barcode: string | null;
+    weight: number | null;
+    weight_unit: WeightUnit;
+    requires_shipping: boolean;
+    taxable: boolean;
+    position: number;
+    base_price: number | null;
+    base_compare_at_price: number | null;
+    cost: number | null;
+  }>(
+    `SELECT mv.id, mv.master_product_id, mv.item_id, mv.sku, i.sku AS item_sku, mv.option_values,
               mv.barcode, mv.weight, mv.weight_unit, mv.requires_shipping, mv.taxable, mv.position,
               i.base_price, i.base_compare_at_price, i.cost
          FROM master_variants mv JOIN items i ON i.id = mv.item_id
         WHERE mv.master_product_id = ANY($1::bigint[])
         ORDER BY mv.position, mv.id`,
-      [ids],
-    ),
-    db.query<{
-      id: number;
-      master_product_id: number;
-      store_id: number | null;
-      position: number;
-      alt: string;
-      file_id: number | null;
-      source_url: string | null;
-      option_value: string | null;
-      filename: string | null;
-      mime_type: string | null;
-      width: number | null;
-      height: number | null;
-    }>(
-      `SELECT m.id, m.master_product_id, m.store_id, m.position, m.alt, m.file_id, m.source_url,
+    [ids],
+  );
+  const media = await db.query<{
+    id: number;
+    master_product_id: number;
+    store_id: number | null;
+    position: number;
+    alt: string;
+    file_id: number | null;
+    source_url: string | null;
+    option_value: string | null;
+    filename: string | null;
+    mime_type: string | null;
+    width: number | null;
+    height: number | null;
+  }>(
+    `SELECT m.id, m.master_product_id, m.store_id, m.position, m.alt, m.file_id, m.source_url,
               m.option_value, f.filename, f.mime_type, f.width, f.height
          FROM master_media m LEFT JOIN media_files f ON f.id = m.file_id
         WHERE m.master_product_id = ANY($1::bigint[])
         ORDER BY m.position, m.id`,
-      [ids],
-    ),
-    db.query<{
-      master_product_id: number;
-      store_id: number;
-      enabled: boolean;
-      title: string | null;
-      description_html: string | null;
-      vendor: string | null;
-      product_type: string | null;
-      handle: string | null;
-      seo_title: string | null;
-      seo_description: string | null;
-      extra_tags: string[];
-      status: MasterStatus | null;
-      publish_to_online_store: boolean;
-      shopify_product_id: string | null;
-      publish_state: PublishState;
-      published_hash: string | null;
-      published_at: Date | null;
-      published_snapshot: DesiredContent | null;
-      last_error: string | null;
-      warnings: string[];
-    }>(
-      `SELECT master_product_id, store_id, enabled, title, description_html, vendor, product_type,
+    [ids],
+  );
+  const stores = await db.query<{
+    master_product_id: number;
+    store_id: number;
+    enabled: boolean;
+    title: string | null;
+    description_html: string | null;
+    vendor: string | null;
+    product_type: string | null;
+    handle: string | null;
+    seo_title: string | null;
+    seo_description: string | null;
+    extra_tags: string[];
+    status: MasterStatus | null;
+    publish_to_online_store: boolean;
+    shopify_product_id: string | null;
+    publish_state: PublishState;
+    published_hash: string | null;
+    published_at: Date | null;
+    published_snapshot: DesiredContent | null;
+    last_error: string | null;
+    warnings: string[];
+  }>(
+    `SELECT master_product_id, store_id, enabled, title, description_html, vendor, product_type,
               handle, seo_title, seo_description, extra_tags, status, publish_to_online_store,
               shopify_product_id, publish_state, published_hash, published_at, published_snapshot,
               last_error, warnings
          FROM master_product_stores WHERE master_product_id = ANY($1::bigint[])`,
-      [ids],
-    ),
-    db.query<{
-      master_product_id: number;
-      master_media_id: number;
-      store_id: number;
-      shopify_media_id: string;
-    }>(
-      `SELECT m.master_product_id, l.master_media_id, l.store_id, l.shopify_media_id
+    [ids],
+  );
+  const links = await db.query<{
+    master_product_id: number;
+    master_media_id: number;
+    store_id: number;
+    shopify_media_id: string;
+  }>(
+    `SELECT m.master_product_id, l.master_media_id, l.store_id, l.shopify_media_id
          FROM master_media_links l JOIN master_media m ON m.id = l.master_media_id
         WHERE m.master_product_id = ANY($1::bigint[])`,
-      [ids],
-    ),
-  ]);
+    [ids],
+  );
 
   const byId = new Map<number, MasterProduct>(
     products.rows.map((p) => [
@@ -342,10 +341,10 @@ export interface StoreContext {
 
 /**
  * Every store (or the given ones), with its price rule, its fixed prices for `itemIds` and its
- * synced locations. Ordered by id.
+ * synced locations. Ordered by id. Its queries run side by side: it takes the pool.
  */
 export async function loadStoreContexts(
-  db: Queryable,
+  db: Db,
   itemIds: number[],
   storeIds?: number[],
 ): Promise<StoreContext[]> {

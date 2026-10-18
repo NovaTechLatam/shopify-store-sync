@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import type { Queryable } from '../../db/pool.js';
+import type { Db } from '../../db/pool.js';
 import { withTransaction } from '../../db/pool.js';
 import { createProduct, deleteProduct, updateProduct } from '../../products/editor.js';
 import { importProduct, searchStoreProducts } from '../../products/import.js';
@@ -242,7 +242,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, deps: AppDeps)
 }
 
 /** The product page's catalog section: the item's catalog product, or where it could come from. */
-async function itemSection(db: Queryable, itemId: number) {
+async function itemSection(db: Db, itemId: number) {
   const item = await db.query('SELECT 1 FROM items WHERE id = $1', [itemId]);
   if (!item.rowCount) throw notFound('Item');
   const { rows } = await db.query<{ master_product_id: number }>(
