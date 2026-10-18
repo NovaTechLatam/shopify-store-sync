@@ -14,6 +14,7 @@ import { Harness, type TestStore } from './helpers/harness.js';
 let h: Harness;
 afterEach(async () => {
   await h?.close();
+  h = undefined as unknown as Harness;
 });
 
 function variantOf(store: TestStore, sku: string) {

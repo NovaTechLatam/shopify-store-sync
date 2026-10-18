@@ -112,6 +112,7 @@ export async function registerReportRoutes(app: FastifyInstance, deps: AppDeps):
       baseCurrency: ctx.baseCurrency,
       timezone: ctx.timezone,
       salesHistoryDays: ctx.settings.salesHistoryDays,
+      lookbackDays: ctx.settings.reorderLookbackDays,
       stores: await loadCoverage(db, ctx.allStores, ctx.timezone),
     };
   });

@@ -5,7 +5,9 @@
  */
 
 /** Alert kind → { label, tone } (tone: neutral | success | warning | critical | info). */
-export const ALERT_KINDS = {};
+export const ALERT_KINDS = {
+  sales_import_failed: { label: 'Order history not imported', tone: 'warning' },
+};
 
 /** Activity (inventory event) kind → label, also listed in the Activity page's filter. */
 export const EVENT_KINDS = {};

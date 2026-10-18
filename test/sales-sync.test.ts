@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { updateSettings } from '../src/settings.js';
-import { queueSalesWork } from '../src/sales/jobs.js';
+import { SALES_HOUSEKEEPING, queueSalesWork } from '../src/sales/jobs.js';
+import { FEATURE_HOUSEKEEPING, FEATURE_JOBS } from '../src/scheduler.js';
 import {
   BACKFILL_POLL_MS,
   SYNC_OVERLAP_MS,
@@ -18,6 +19,7 @@ const DAY = 24 * 60 * 60_000;
 let h: Harness;
 afterEach(async () => {
   await h?.close();
+  h = undefined as unknown as Harness;
 });
 
 /** A harness whose stores may read orders (and are recorded as such). */
@@ -494,6 +496,13 @@ describe('scheduled sales work', () => {
     ]);
   });
 
+  it('waits until the store’s permissions have been read', async () => {
+    await salesHarness();
+    await h.db.query('UPDATE stores SET granted_scopes = NULL, scopes_checked_at = NULL');
+    await queueSalesWork({ db: h.db, logger: silentLogger, now: Date.now() });
+    expect(await tasks()).toEqual([]);
+  });
+
   it('picks up a running import whose next check got lost', async () => {
     await salesHarness();
     const [store] = h.stores as [TestStore];
@@ -506,6 +515,46 @@ describe('scheduled sales work', () => {
     ]);
   });
 });
+
+describe('sales housekeeping', () => {
+  it('is registered with the scheduler', () => {
+    expect(FEATURE_JOBS.map((j) => j.name)).toContain('sales_orders');
+    expect(FEATURE_HOUSEKEEPING.map(([name]) => name)).toEqual(
+      expect.arrayContaining(['map sales lines', 'fill sales costs']),
+    );
+  });
+
+  it('maps a sold SKU once it becomes a product, and gives it the product’s cost', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    store.shop.addOrder({ lines: [{ sku: 'LATER-1', quantity: 2, unitPrice: 5 }] });
+    await syncOrdersFromScratch(store);
+    const ctx = { db: h.db, logger: silentLogger, now: Date.now() };
+    const run = async () => {
+      for (const [, step] of SALES_HOUSEKEEPING) await step(ctx);
+    };
+    await run();
+    const line = async () =>
+      (await h.db.query('SELECT item_id, unit_cost FROM sales_lines')).rows[0] as {
+        item_id: number | null;
+        unit_cost: number | null;
+      };
+    expect(await line()).toEqual({ item_id: null, unit_cost: null });
+    const item = await h.addItem('LATER-1', [null], []);
+    await h.db.query('UPDATE items SET cost = 1.5 WHERE id = $1', [item.itemId]);
+    await run();
+    expect(await line()).toEqual({ item_id: item.itemId, unit_cost: 1.5 });
+  });
+});
+
+async function syncOrdersFromScratch(store: TestStore) {
+  await h.db.query(
+    `UPDATE stores SET sales_backfill_status = 'done', orders_synced_at = now() - interval '1 day'
+      WHERE id = $1`,
+    [store.id],
+  );
+  await syncOrders(deps(), store.id);
+}
 
 async function setOpenImportAlert(storeId: number) {
   await h.db.query(

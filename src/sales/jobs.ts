@@ -6,10 +6,11 @@ import { fillMissingCosts, mapUnmatchedLines } from './ingest.js';
 export const ORDER_SYNC_INTERVAL_MS = 15 * 60_000;
 
 /**
- * Stores that may read orders: read_orders (or write_orders) granted, or never checked (then
- * Shopify's answer decides, as for every feature).
+ * Stores known to allow reading orders: read_orders (or write_orders) among the scopes last read
+ * from Shopify. A store whose scopes were never read waits (they are read when it connects, on
+ * "Test connection" and every 15 minutes), rather than asking Shopify blindly.
  */
-const MAY_READ_ORDERS = `(s.granted_scopes IS NULL OR s.granted_scopes && ARRAY['read_orders', 'write_orders'])`;
+const MAY_READ_ORDERS = `s.granted_scopes && ARRAY['read_orders', 'write_orders']`;
 
 /**
  * Queues each active store's sales work when it is due. The "due" state lives in the stores
