@@ -28,6 +28,7 @@ const PAGES = [
   ['products-attention', '#/items?filter=issues'],
   ['product', '#/items/5'],
   ['product-oversold', '#/items/3'],
+  ['product-not-published', '#/items/35'],
   ['matching', '#/mapping'],
   ['matching-conflicts', '#/mapping?tab=conflicts'],
   ['matching-ignored', '#/mapping?tab=ignored'],
@@ -268,6 +269,33 @@ async function flows(browser, baseUrl, server) {
     await page.locator('tbody .product-link').first().click();
     await settle(page);
     expect(/#\/items\/\d+$/.test(page.url()), 'row opens the product');
+  });
+
+  await step('products: a catalog product no store has yet isn’t “not started”', async () => {
+    await go('#/items?search=BEANIE');
+    const link = page.locator('tbody a.badge-link');
+    expect((await link.count()) === 1, 'the shared stock says it isn’t published yet');
+    expect(
+      (await link.textContent()).startsWith('Not published yet') &&
+        /#\/catalog\/\d+$/.test(await link.getAttribute('href')),
+      'and links to its catalog product',
+    );
+    await go('#/items?filter=uninitialized&search=BEANIE');
+    expect(
+      (await page.locator('tbody .product-link').count()) === 0,
+      '“Not started” doesn’t list it',
+    );
+    await go('#/items/35');
+    expect(
+      (await page.getByRole('link', { name: 'Start syncing' }).count()) === 0,
+      'its page offers no “Start syncing”',
+    );
+    expect(
+      (await page.getByRole('link', { name: 'Open in catalog' }).getAttribute('href')).startsWith(
+        '#/catalog/',
+      ),
+      'its page links to the catalog product',
+    );
   });
 
   await step('product: set stock, invalid removal, pause', async () => {

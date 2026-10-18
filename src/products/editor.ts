@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { EnsuredItem } from '../catalog/catalog.js';
 import { ensureItemsLocked, lockCatalog } from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
+import { lockItemRows } from '../db/locks.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { CatalogConflictError, CatalogInputError, CatalogNotFoundError } from './errors.js';
@@ -12,10 +13,10 @@ import { loadMasterProduct, VERSION } from './model.js';
  * WRITING MASTER PRODUCTS (the editor): create, update, delete.
  *
  * A master variant is an item (one SKU). Items are created under the catalog lock
- * (ensureItemsLocked), so SKU matching can't create the same item at the same moment; an item
- * created here is sold by no store yet, so it gets an `initialize` adjustment with the value 0:
- * it starts syncing at 0 when the product is first published, and stock is added with a purchase
- * order or "Add units". Existing items keep their stock. A SKU belongs to one master product.
+ * (ensureItemsLocked), so SKU matching can't create the same item at the same moment. Saving
+ * doesn't start an item's stock: the first publish of a SKU no store sells starts it at 0
+ * (publish.ts), so a SKU the merchant creates in a store first keeps that store's number. A SKU
+ * belongs to one master product.
  *
  * Base prices and the cost entered in the editor are the items' own columns (the Prices page
  * edits the same ones). Only values that are sent are written: an editor that didn't touch a price
@@ -42,18 +43,23 @@ const NullableText = (max: number) => z.preprocess(blankToNull, Text(max).nullab
 const Status = z.enum(['ACTIVE', 'DRAFT', 'ARCHIVED']);
 const Tag = z.string().trim().min(1).max(255);
 
+/** An option value: it may contain commas, never a line break (the editor's separator). */
+const OptionValue = Text(255)
+  .min(1)
+  .regex(/^[^\r\n]*$/, 'An option value can’t contain a line break');
+
 const OptionInput = z.object({
   name: Text(255).min(1),
   // Every value is used by a variant, so the variant limit is the only one (an import can bring
   // a size range of more than 100).
-  values: z.array(Text(255).min(1)).min(1).max(MAX_VARIANTS),
+  values: z.array(OptionValue).min(1).max(MAX_VARIANTS),
 });
 
 const VariantInput = z.object({
   /** An existing master variant (else matched by SKU, else new). */
   id: z.number().int().positive().optional(),
   sku: Text(255).min(1),
-  optionValues: z.array(Text(255).min(1)).max(3).default([]),
+  optionValues: z.array(OptionValue).max(3).default([]),
   barcode: NullableText(255).optional(),
   weight: z.number().finite().min(0).max(1_000_000).nullable().optional(),
   weightUnit: z.enum(['GRAMS', 'KILOGRAMS', 'OUNCES', 'POUNDS']).optional(),
@@ -173,7 +179,6 @@ export async function createProduct(db: Db, raw: unknown): Promise<number> {
     const id = rows[0]!.id;
     await writeVariants(client, id, body.variants, items, []);
     await writeItemPrices(client, body.variants, items);
-    await startNewItems(client, items);
     const rowsToWrite = [...stores.keys()].map(
       (storeId) =>
         body.stores.find((s) => s.storeId === storeId) ?? {
@@ -277,7 +282,6 @@ export async function updateProduct(db: Db, productId: number, raw: unknown): Pr
       }
       await writeVariants(client, productId, body.variants, items, product.variants);
       await writeItemPrices(client, body.variants, items);
-      await startNewItems(client, items);
       const kept = new Set(itemIdsOf(items));
       await dropUnusedItems(
         client,
@@ -549,6 +553,10 @@ async function writeItemPrices(
     (v) => v.basePrice !== undefined || v.baseCompareAtPrice !== undefined || v.cost !== undefined,
   );
   if (rows.length === 0) return;
+  const itemIds = rows.map((v) => items.get(normalizeSku(v.sku)!)!.itemId);
+  // In id order first (src/db/locks.ts): a bulk price edit or a delivery of the same items at the
+  // same moment waits instead of deadlocking.
+  await lockItemRows(client, itemIds);
   await client.query(
     `UPDATE items i
         SET base_price = CASE WHEN t.set_base THEN t.base ELSE i.base_price END,
@@ -562,7 +570,7 @@ async function writeItemPrices(
             AS t(id, set_base, base, set_compare, compare, set_cost, cost)
       WHERE i.id = t.id`,
     [
-      rows.map((v) => items.get(normalizeSku(v.sku)!)!.itemId),
+      itemIds,
       rows.map((v) => v.basePrice !== undefined),
       rows.map((v) => v.basePrice ?? null),
       rows.map((v) => v.baseCompareAtPrice !== undefined),
@@ -570,27 +578,6 @@ async function writeItemPrices(
       rows.map((v) => v.cost !== undefined),
       rows.map((v) => v.cost ?? null),
     ],
-  );
-}
-
-/**
- * Items created for this product (no store sells them) start at 0 when a store first does:
- * stock comes from a purchase order or "Add units". An item some store already has a variant
- * of is left to the usual start (onboarding), so no store's real number is overwritten with 0.
- */
-async function startNewItems(client: Queryable, items: Map<string, EnsuredItem>): Promise<void> {
-  const created = [...items.values()].filter((i) => i.created).map((i) => i.itemId);
-  if (created.length === 0) return;
-  await client.query(
-    `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value)
-     SELECT pl.id, 'initialize', 'value', 0 FROM pool_levels pl
-      WHERE pl.item_id = ANY($1::bigint[]) AND pl.quantity IS NULL
-        AND NOT EXISTS (SELECT 1 FROM pool_adjustments a
-                         WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
-                           AND a.applied_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM variants v
-                         WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL)`,
-    [created],
   );
 }
 

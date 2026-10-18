@@ -1,3 +1,4 @@
+import { LOCK_CLASSES, LOCKS } from '../db/locks.js';
 import type { Queryable } from '../db/pool.js';
 import { setAlert } from '../alerts/alerts.js';
 import { getSettings } from '../settings.js';
@@ -33,9 +34,9 @@ import type { StoreVariant } from './prices.js';
  */
 
 /** Advisory lock class (with the store id) held while one store's prices are written. */
-const APPLY_LOCK_CLASS = 727_004;
+const APPLY_LOCK_CLASS = LOCK_CLASSES.priceApply;
 /** Transaction lock taken while runs are created, so two can't both find a store free. */
-export const RUN_CREATE_LOCK = 727_005;
+export const RUN_CREATE_LOCK = LOCKS.priceRunCreate;
 /** A store whose prices can't be written for this long (Shopify unreachable) fails the run. */
 const GIVE_UP_AFTER_MS = 60 * 60_000;
 /** Up to this many products are read one by one; more and the whole store is read at once. */

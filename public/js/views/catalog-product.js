@@ -2,6 +2,7 @@ import { ApiError, api, apiUpload, latestOnly, qs } from '../api.js';
 import { confirmDialog, formDialog } from '../dialog.js';
 import { h, icon, replace, uid } from '../dom.js';
 import { money, num, plural, timeAgo } from '../format.js';
+import { optionValuesText, parseOptionValues } from '../option-values.js';
 import { toast } from '../toast.js';
 import {
   badge,
@@ -596,20 +597,24 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
 
   function optionRow(o, i) {
     const name = input({ value: o.name, maxlength: 255, dataset: { optionName: String(i) } });
-    const values = input({
-      value: o.values.join(', '),
-      placeholder: 'e.g. S, M, L',
+    // One value per line: a value may contain a comma ("Red, matte"), never a line break.
+    const values = h('textarea', {
+      class: 'input textarea option-values',
+      rows: Math.min(8, Math.max(3, o.values.length + 1)),
+      value: optionValuesText(o.values),
+      placeholder: 'S\nM\nL',
+      spellcheck: 'false',
       dataset: { optionValues: String(i) },
     });
     const commit = () => {
       const next = model.options.map((x, j) =>
-        j === i ? { name: name.value.trim(), values: splitList(values.value) } : x,
+        j === i ? { name: name.value.trim(), values: parseOptionValues(values.value) } : x,
       );
       pendingOptions = applyOptions(next);
       pendingOptions.then((ok) => {
         if (!ok) {
           name.value = model.options[i]?.name ?? '';
-          values.value = (model.options[i]?.values ?? []).join(', ');
+          values.value = optionValuesText(model.options[i]?.values ?? []);
         }
       });
     };
@@ -622,7 +627,7 @@ function createEditor({ product, stores, settings, signal, reload, back }) {
       field({
         label: `${o.name || `Option ${i + 1}`} values`,
         control: values,
-        hint: 'Separate values with commas.',
+        hint: 'One value per line.',
       }),
       button('Remove', {
         size: 'small',

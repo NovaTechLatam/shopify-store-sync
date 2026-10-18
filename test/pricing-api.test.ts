@@ -276,13 +276,72 @@ describe('editing base prices and costs', () => {
       rounding: { mode: 'ending', step: 1, ending: 0.99, direction: 'up' },
     });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ updated: 2, skipped: 1, unchanged: 0 });
+    expect(res.body).toEqual({
+      updated: 2,
+      skipped: 1,
+      unchanged: 0,
+      cleared: 0,
+      compareAtLost: 0,
+    });
     const list = await api('GET', '/api/prices');
     expect(list.body.items.map((i: any) => [i.sku, i.basePrice])).toEqual([
       ['CAP', 21.99],
       ['SOCK', null],
       ['TEE', 11.99],
     ]);
+  });
+
+  it('counts, without changing anything, what a bulk change would remove or make disappear', async () => {
+    const tee = await item('TEE', { base: 10 });
+    const cap = await item('CAP', { base: 20 });
+    const sock = await item('SOCK', { base: null });
+    await h.db.query('UPDATE items SET base_compare_at_price = 11.5 WHERE id = $1', [tee.itemId]);
+    await h.db.query('UPDATE items SET base_compare_at_price = 30 WHERE id = $1', [cap.itemId]);
+    const itemIds = [tee.itemId, cap.itemId, sock.itemId];
+    const bases = async () =>
+      (
+        await h.db.query<{ base_price: number | null }>('SELECT base_price FROM items ORDER BY id')
+      ).rows.map((r) => r.base_price);
+    // +20%: TEE (12) passes its compare-at price (11.50); CAP (24) stays below 30.
+    const raise = { itemIds, op: 'percent', field: 'basePrice', value: 20 };
+    const preview = await api('POST', '/api/prices/items/bulk', { ...raise, dryRun: true });
+    expect(preview.body).toEqual({
+      updated: 2,
+      skipped: 1,
+      unchanged: 0,
+      cleared: 0,
+      compareAtLost: 1,
+      dryRun: true,
+    });
+    expect(await bases()).toEqual([10, 20, null]);
+    // An empty "Set to an amount" removes them.
+    const clear = await api('POST', '/api/prices/items/bulk', {
+      itemIds,
+      op: 'set',
+      field: 'basePrice',
+      value: null,
+      dryRun: true,
+    });
+    expect(clear.body).toMatchObject({ updated: 2, cleared: 2, compareAtLost: 0 });
+    // A compare-at price set below the base price counts too.
+    const lower = await api('POST', '/api/prices/items/bulk', {
+      itemIds,
+      op: 'set',
+      field: 'baseCompareAtPrice',
+      value: 15,
+      dryRun: true,
+    });
+    expect(lower.body).toMatchObject({ updated: 3, compareAtLost: 1 }); // CAP: 15 under 20
+    // The same request without dryRun applies it and says the same.
+    const applied = await api('POST', '/api/prices/items/bulk', raise);
+    expect(applied.body).toEqual({
+      updated: 2,
+      skipped: 1,
+      unchanged: 0,
+      cleared: 0,
+      compareAtLost: 1,
+    });
+    expect(await bases()).toEqual([12, 24, null]);
   });
 
   it('changes every item matching a filter, and sets costs', async () => {

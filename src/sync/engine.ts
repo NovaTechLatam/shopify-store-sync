@@ -1128,7 +1128,8 @@ function describeStrategy(init: Adjustment, ctx: LevelContext): string {
     case 'sum':
       return 'sum of all stores';
     default:
-      return 'entered manually';
+      // A feature's start (a new product starts at 0) says why; otherwise the merchant typed it.
+      return init.note ?? 'entered manually';
   }
 }
 

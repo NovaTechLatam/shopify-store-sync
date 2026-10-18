@@ -88,6 +88,7 @@ function itemHeader(item, back, actions) {
 
 function itemStateBadge(item) {
   if (!item.syncEnabled) return badge('Paused', 'neutral', 'pause');
+  if (item.notPublished) return badge('Not published yet', 'info');
   if (item.levels.some((l) => l.quantity === null)) return badge('Not started', 'neutral');
   return badge('Syncing', 'success', 'check');
 }
@@ -201,6 +202,27 @@ function featureSection(name, section, item, signal) {
 function stockCard(item, level, settings, actions) {
   const multi = item.levels.length > 1;
   const title = multi ? `Stock in ${level.warehouseName}` : 'Shared stock';
+  if (level.quantity === null && item.notPublished) {
+    // A catalog product no store has yet: publishing starts it (at 0, plus what was received).
+    return card(
+      { title },
+      banner(
+        {
+          tone: 'info',
+          iconName: 'image',
+          title: 'Not published yet',
+          actions: linkButton('Open in catalog', `#/catalog/${item.catalogProduct.id}`, {
+            variant: 'primary',
+          }),
+        },
+        h(
+          'p',
+          {},
+          `No store sells this product yet. It starts syncing when you publish “${item.catalogProduct.title}” from the catalog, at 0 plus any units you receive with a purchase order.`,
+        ),
+      ),
+    );
+  }
   if (level.quantity === null) {
     return card(
       { title },

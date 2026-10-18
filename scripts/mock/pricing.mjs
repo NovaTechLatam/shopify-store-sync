@@ -17,6 +17,7 @@ const BASES = {
   'CAP-WAX': [19.99, null],
   'SOCK-MER': [12.99, null],
   'TOTE-CNV': [15.99, 19.99],
+  'BEANIE-WOL': [26, null],
   // JKT-RAIN has no base price yet ("No base price" filter).
 };
 
@@ -794,13 +795,26 @@ function bulkChange(state, body, list, HttpError) {
     }
     results.push([item, next]);
   }
+  // Like the API: what the confirmation warns about (values removed, compare-at prices that end up
+  // at or below the base price).
   let updated = 0;
+  let cleared = 0;
+  let compareAtLost = 0;
   for (const [item, next] of results) {
-    if ((item[field] ?? null) === next) continue;
-    item[field] = next;
+    const old = item[field] ?? null;
+    if (old === next) continue;
     updated++;
+    if (next === null) cleared++;
+    const price = field === 'basePrice' ? next : (item.basePrice ?? null);
+    const compareAt = field === 'baseCompareAtPrice' ? next : (item.baseCompareAtPrice ?? null);
+    const before = [item.basePrice ?? null, item.baseCompareAtPrice ?? null];
+    const wasAbove = before[0] === null || before[1] === null || before[1] > before[0];
+    if (field !== 'cost' && wasAbove && price !== null && compareAt !== null && compareAt <= price)
+      compareAtLost++;
+    if (!body.dryRun) item[field] = next;
   }
-  return { updated, skipped, unchanged: list.length - updated - skipped };
+  const counts = { updated, skipped, unchanged: list.length - updated - skipped };
+  return { ...counts, cleared, compareAtLost, ...(body.dryRun ? { dryRun: true } : {}) };
 }
 
 /**

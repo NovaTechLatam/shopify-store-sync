@@ -194,6 +194,48 @@ describe('suppliers API', () => {
     ).toBe(404);
   });
 
+  it('changes the currency of a supplier with prices only when asked to', async () => {
+    const tee = await startedItem('TEE-1', 0);
+    const cap = await startedItem('CAP-1', 0);
+    const acme = await newSupplier({ currencyCode: 'EUR' });
+    // No prices yet: nothing to reinterpret.
+    const free = await api('PATCH', `/api/purchasing/suppliers/${acme.id}`, {
+      currencyCode: 'USD',
+    });
+    expect(free.status).toBe(200);
+    for (const item of [tee, cap]) {
+      await api('PUT', `/api/purchasing/suppliers/${acme.id}/items/${item.itemId}`, {
+        unitCost: 2.5,
+      });
+    }
+    const refused = await api('PATCH', `/api/purchasing/suppliers/${acme.id}`, {
+      currencyCode: 'GBP',
+      notes: 'New contract',
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({
+      error:
+        '“Acme” has prices for 2 products in USD. They stay the same numbers, now in GBP (12.50 USD becomes 12.50 GBP). Confirm the change, or update the prices first.',
+      currencyChange: { pricedItems: 2 },
+    });
+    // Nothing was saved.
+    const before = await api('GET', `/api/purchasing/suppliers/${acme.id}`);
+    expect(before.body).toMatchObject({ currencyCode: 'USD', notes: null, pricedItemCount: 2 });
+    // The same currency, or other fields, need no confirmation.
+    expect(
+      (await api('PATCH', `/api/purchasing/suppliers/${acme.id}`, { currencyCode: 'USD' })).status,
+    ).toBe(200);
+    const confirmed = await api('PATCH', `/api/purchasing/suppliers/${acme.id}`, {
+      currencyCode: 'GBP',
+      notes: 'New contract',
+      confirmCurrencyChange: true,
+    });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body).toMatchObject({ currencyCode: 'GBP', notes: 'New contract' });
+    // The prices kept their numbers.
+    expect(confirmed.body.items.map((i: any) => i.unitCost)).toEqual([2.5, 2.5]);
+  });
+
   it('archives suppliers without open orders, and deletes only those that never had one', async () => {
     const item = await startedItem('TEE-1', 0);
     const acme = await newSupplier();

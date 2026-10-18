@@ -191,7 +191,10 @@ export interface VariantPricing {
    * null = no base price either.
    */
   fallback: { price: number; compareAtPrice: number | null } | null;
-  /** Unit cost in the store's currency (items.cost × rate); null = not set. */
+  /**
+   * Unit cost in the store's currency (items.cost × rate); null = not set, or not to be sent
+   * (costs go to Shopify only with the pushCostsToShopify setting on: see prepare.ts).
+   */
   cost: number | null;
 }
 

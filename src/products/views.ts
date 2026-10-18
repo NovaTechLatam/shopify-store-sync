@@ -113,7 +113,11 @@ export interface ItemStock {
   /** Σ of the started pool levels; null when none has started. */
   stock: number | null;
   started: boolean;
-  /** Not started, and waiting to start at 0 when a store first sells it (made by the catalog). */
+  /**
+   * Not started, and starts at 0 when a store first sells it: a start at 0 is waiting (a delivery
+   * came first, or it was published and the store hasn't linked it yet), or no store has the SKU
+   * yet, so its first publish starts it at 0 (src/catalog/catalog.ts, startUnsoldAtZero).
+   */
   startsAtZero: boolean;
 }
 
@@ -129,9 +133,15 @@ export async function loadItemStock(
     starts_at_zero: boolean;
   }>(
     `SELECT pl.item_id, sum(pl.quantity)::int AS stock, bool_or(pl.quantity IS NOT NULL) AS started,
-            bool_or(EXISTS (SELECT 1 FROM pool_adjustments a
-                             WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
-                               AND a.strategy = 'value' AND a.value = 0 AND a.applied_at IS NULL))
+            bool_or(pl.quantity IS NULL AND (
+              EXISTS (SELECT 1 FROM pool_adjustments a
+                       WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                         AND a.strategy = 'value' AND a.value = 0 AND a.applied_at IS NULL)
+              OR (NOT EXISTS (SELECT 1 FROM pool_adjustments a
+                               WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                                 AND a.applied_at IS NULL)
+                  AND NOT EXISTS (SELECT 1 FROM variants v
+                                   WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL))))
               AS starts_at_zero
        FROM pool_levels pl WHERE pl.item_id = ANY($1::bigint[]) GROUP BY pl.item_id`,
     [itemIds],

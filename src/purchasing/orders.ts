@@ -1,8 +1,8 @@
-import { lockCatalog } from '../catalog/catalog.js';
+import { lockCatalog, startUnsoldAtZero } from '../catalog/catalog.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { HttpError, badRequest, conflict, notFound } from '../http/errors.js';
-import type { Settings } from '../settings.js';
+import { reportToday, type Settings } from '../settings.js';
 import { enqueuePoolLevels } from '../sync/queue.js';
 import { enqueueTask } from '../tasks/queue.js';
 import { roundMoney, toMoneyString } from '../util/money.js';
@@ -109,9 +109,10 @@ async function lockLines(client: Queryable, orderId: number): Promise<LineRow[]>
 }
 
 /**
- * Locks the items' rows in id order. Receipts and reversals take these before writing anything
- * else that two of them could share (item costs, the sync queue rows of the items' stock), so two
- * deliveries with the same products wait for each other instead of deadlocking.
+ * Locks the items' rows in id order (the order every bulk change of items uses: src/db/locks.ts).
+ * Receipts and reversals take these before writing anything else that two of them could share
+ * (item costs, the sync queue rows of the items' stock), so two deliveries with the same products,
+ * or a delivery and a bulk price edit, wait for each other instead of deadlocking.
  */
 async function lockItems(
   client: Queryable,
@@ -699,21 +700,8 @@ async function receiveLocked(
   );
   const stockBefore = new Map(stock.map((s) => [s.item_id, s.stock]));
 
-  if (notStarted.length) {
-    await client.query(
-      `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
-       SELECT pl.id, 'initialize', 'value', 0, 'New product: starts at 0 plus deliveries'
-         FROM pool_levels pl
-        WHERE pl.id = ANY($1::bigint[]) AND pl.quantity IS NULL
-          AND NOT EXISTS (SELECT 1 FROM pool_adjustments pa
-                           WHERE pa.pool_level_id = pl.id AND pa.kind = 'initialize'
-                             AND pa.applied_at IS NULL)
-          AND NOT EXISTS (SELECT 1 FROM variants v
-                           WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL)
-        ORDER BY pl.id`,
-      [notStarted],
-    );
-  }
+  // The same rule as a catalog product's first publish: a product no store sells starts at 0.
+  if (notStarted.length) await startUnsoldAtZero(client, { poolLevelIds: notStarted });
 
   const { rows: receipt } = await client.query<{ id: number }>(
     `INSERT INTO po_receipts (purchase_order_id, request_id, note) VALUES ($1, $2, $3) RETURNING id`,
@@ -1026,13 +1014,14 @@ export async function loadOrder(
             s.email, s.phone, s.currency_code AS supplier_currency,
             s.archived_at IS NOT NULL AS supplier_archived,
             po.warehouse_id, w.name AS warehouse_name, po.currency_code, po.exchange_rate,
-            po.expected_on, (po.expected_on < current_date AND po.status IN ('ordered', 'partial')) AS overdue,
+            po.expected_on, (po.expected_on < $2::date AND po.status IN ('ordered', 'partial')) AS overdue,
             po.notes, po.ordered_at, po.closed_at, po.created_at, po.updated_at
        FROM purchase_orders po
        JOIN suppliers s ON s.id = po.supplier_id
        JOIN warehouses w ON w.id = po.warehouse_id
       WHERE po.id = $1`,
-    [orderId],
+    // Overdue from the day after the expected date, in the report time zone (not the server's).
+    [orderId, await reportToday(db)],
   );
   const po = rows[0];
   if (!po) throw notFound('Purchase order');
@@ -1231,7 +1220,8 @@ export async function listOrders(db: Queryable, q: OrderListQuery) {
   }>(
     `SELECT po.id, po.number, po.status, po.supplier_id, s.name AS supplier_name, po.warehouse_id,
             w.name AS warehouse_name, po.currency_code, po.exchange_rate, po.expected_on,
-            (po.expected_on < current_date AND po.status IN ('ordered', 'partial')) AS overdue,
+            (po.expected_on < $${params.length + 3}::date AND po.status IN ('ordered', 'partial'))
+              AS overdue,
             po.created_at, po.ordered_at, po.updated_at,
             t.lines, t.quantity_ordered, t.quantity_received, t.received_capped, t.total
        FROM purchase_orders po
@@ -1247,7 +1237,7 @@ export async function listOrders(db: Queryable, q: OrderListQuery) {
        ${where}
       ORDER BY po.id DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, q.pageSize, (q.page - 1) * q.pageSize],
+    [...params, q.pageSize, (q.page - 1) * q.pageSize, await reportToday(db)],
   );
   const statusCounts = Object.fromEntries(ORDER_STATUSES.map((s) => [s, 0])) as Record<
     OrderStatus,

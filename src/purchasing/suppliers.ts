@@ -1,5 +1,5 @@
 import type { Queryable } from '../db/pool.js';
-import { badRequest, conflict, notFound } from '../http/errors.js';
+import { HttpError, badRequest, conflict, notFound } from '../http/errors.js';
 import type { Settings } from '../settings.js';
 import { suggestedExchangeRate } from './orders.js';
 import { loadReorderRows } from './reorder.js';
@@ -16,6 +16,13 @@ export interface SupplierInput {
   notes?: string | null;
 }
 
+/** A currency change that would reinterpret the supplier's prices: refused until confirmed. */
+export class CurrencyChangeError extends HttpError {
+  constructor(message: string, pricedItems: number) {
+    super(409, message, { currencyChange: { pricedItems } });
+  }
+}
+
 interface SupplierRow {
   id: number;
   name: string;
@@ -29,6 +36,7 @@ interface SupplierRow {
   created_at: Date;
   updated_at: Date;
   items: number;
+  priced_items: number;
   preferred_items: number;
   open_orders: number;
   orders: number;
@@ -38,6 +46,8 @@ const SUPPLIER_SELECT = `
   SELECT s.id, s.name, s.contact_name, s.email, s.phone, s.currency_code, s.lead_time_days, s.notes,
          s.archived_at, s.created_at, s.updated_at,
          (SELECT count(*)::int FROM supplier_items si WHERE si.supplier_id = s.id) AS items,
+         (SELECT count(*)::int FROM supplier_items si
+           WHERE si.supplier_id = s.id AND si.unit_cost IS NOT NULL) AS priced_items,
          (SELECT count(*)::int FROM items i WHERE i.supplier_id = s.id) AS preferred_items,
          (SELECT count(*)::int FROM purchase_orders po
            WHERE po.supplier_id = s.id AND po.status IN ('draft', 'ordered', 'partial')) AS open_orders,
@@ -58,6 +68,8 @@ async function supplierView(db: Queryable, s: SupplierRow, baseCurrency: string)
     createdAt: s.created_at,
     updatedAt: s.updated_at,
     itemCount: s.items,
+    /** Products with a price from this supplier (in its currency). */
+    pricedItemCount: s.priced_items,
     preferredCount: s.preferred_items,
     openOrders: s.open_orders,
     orderCount: s.orders,
@@ -120,8 +132,31 @@ export async function updateSupplier(
   db: Queryable,
   supplierId: number,
   input: SupplierInput,
+  opts: { confirmCurrencyChange?: boolean } = {},
 ): Promise<void> {
   if (input.name !== undefined) await assertNameFree(db, input.name, supplierId);
+  // Its prices are numbers in its currency: a new currency changes what they mean, silently.
+  // That has to be what the merchant wants (the dialog asks first).
+  if (input.currencyCode !== undefined && !opts.confirmCurrencyChange) {
+    const { rows } = await db.query<{ name: string; currency_code: string; priced: number }>(
+      `SELECT s.name, s.currency_code,
+              (SELECT count(*)::int FROM supplier_items si
+                WHERE si.supplier_id = s.id AND si.unit_cost IS NOT NULL) AS priced
+         FROM suppliers s WHERE s.id = $1`,
+      [supplierId],
+    );
+    const s = rows[0];
+    if (!s) throw notFound('Supplier');
+    if (s.currency_code !== input.currencyCode && s.priced > 0) {
+      const products = s.priced === 1 ? '1 product' : `${s.priced} products`;
+      throw new CurrencyChangeError(
+        `“${s.name}” has prices for ${products} in ${s.currency_code}. They stay the same numbers, ` +
+          `now in ${input.currencyCode} (12.50 ${s.currency_code} becomes 12.50 ` +
+          `${input.currencyCode}). Confirm the change, or update the prices first.`,
+        s.priced,
+      );
+    }
+  }
   // A NULL-able field is only changed when it was sent (null clears it).
   const set = (key: keyof SupplierInput) => input[key] !== undefined;
   const { rowCount } = await db.query(
@@ -177,7 +212,12 @@ export async function archiveSupplier(db: Queryable, supplierId: number): Promis
     `UPDATE suppliers SET archived_at = COALESCE(archived_at, now()), updated_at = now() WHERE id = $1`,
     [supplierId],
   );
-  await db.query('UPDATE items SET supplier_id = NULL WHERE supplier_id = $1', [supplierId]);
+  // Locked in id order like every bulk change of items (src/db/locks.ts), in this one statement.
+  await db.query(
+    `UPDATE items SET supplier_id = NULL
+      WHERE id IN (SELECT id FROM items WHERE supplier_id = $1 ORDER BY id FOR NO KEY UPDATE)`,
+    [supplierId],
+  );
 }
 
 export async function restoreSupplier(db: Queryable, supplierId: number): Promise<void> {

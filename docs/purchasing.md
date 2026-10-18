@@ -25,6 +25,10 @@ Each product can have a **preferred supplier**: the one reorder suggestions and 
 The first supplier you add a product to becomes its preferred supplier; you can change it on the
 supplier's page, on the Reorder tab, or on the product's page.
 
+**Changing a supplier's currency** asks first when you have prices from it: they keep their
+numbers, now in the new currency (12.50 EUR becomes 12.50 USD), so check them afterwards. Orders
+already made keep their own currency.
+
 **Archiving** a supplier takes it out of your lists and stops new orders to it. Its past orders
 stay. Products that were ordered from it no longer have a preferred supplier, so choose another
 one for them. You can only archive a supplier once its orders are received, closed or cancelled.
@@ -43,6 +47,9 @@ order gets a number (PO-0001, PO-0002...) and goes through these steps:
 | Received        | Everything arrived.                                         | Change its notes, undo a delivery entered by mistake.                        |
 | Closed          | Part of it arrived and the rest is no longer expected.      | Change its notes, undo a delivery.                                           |
 | Cancelled       | Nothing arrived and nothing will.                           | Change its notes.                                                            |
+
+An ordered or partly received order is marked **Overdue** from the day after its expected date, by
+the calendar of your report time zone (Settings → Sales history), not the server's.
 
 To create one, click **New purchase order**, choose the supplier, and click **Add products…** to
 search your products (the supplier's products come first, with their price). Prices are filled in
@@ -127,7 +134,9 @@ Things to know:
 **Copying costs to Shopify.** With **Settings → Costs → Copy costs to Shopify** on, each new cost
 is written to every active store's "Cost per item", converted with the store's exchange rate. It
 only reaches stores where the product is linked. If a store refuses, you get an alert ("Costs not
-sent to Shopify") and nothing else stops.
+sent to Shopify") and nothing else stops. The same switch decides whether publishing a catalog
+product sends its cost (see [The catalog](catalog.md)): off, Store Sync never changes "Cost per
+item" in Shopify, from deliveries or from the catalog.
 
 ## Reorder suggestions
 
@@ -138,8 +147,9 @@ how many to order. It works from:
   the sales pace over"). A product that is newer than that is measured since it first appeared,
   so a product launched 5 days ago isn't diluted over 30 days. Test orders, gift cards and
   cancelled orders don't count; refunded units don't count either.
-- **The shared stock** you have now, and the units **on order** (ordered or partly received
-  orders; drafts don't count).
+- **The shared stock** you have now (a delivery counts as soon as you receive it, even while the
+  stores are still being updated or syncing is paused), and the units **on order** (ordered or
+  partly received orders; drafts don't count).
 - **The lead time**: the product's own (on its page), else its supplier's, else the "Usual
   delivery time" in Settings.
 
@@ -164,7 +174,10 @@ new order with just that product.
 **Alerts.** When a product needs reordering, you also get an alert ("Time to reorder") like the
 other alerts, for example "TEE-1 will run out in about 9 days at the current pace (3 a day). Lead
 time is 14 days. Suggested order: 108 units from Acme." It goes away by itself once the product
-has enough stock or enough on order. Turn these alerts off in Settings; the Reorder tab still
+has enough stock or enough on order: a little more than just enough, so a product right at the
+line doesn't alert you again and again as sales come in. Once the alert is open, the product stays
+on the Reorder tab until its stock lasts the lead time plus the safety margin plus 2 more days (or
+10% of those days, if that's more). Turn these alerts off in Settings; the Reorder tab still
 works. Store Sync checks every hour, and right after a delivery or an order change.
 
 **Products left out**: products whose syncing is paused, products that haven't started syncing
@@ -190,7 +203,7 @@ works. Store Sync checks every hour, and right after a delivery or an order chan
 - **Stock in transit isn't shown in Shopify**: Shopify's "incoming" numbers aren't used. Stores
   only change when you receive the delivery here.
 - **Costs follow deliveries received here.** If you also change costs in Shopify, the next
-  delivery (with "Copy costs to Shopify" on) overwrites them.
+  delivery or catalog publish (with "Copy costs to Shopify" on) overwrites them.
 - **The sales pace is an average**: seasonal peaks, promotions and stock-outs (no sales because
   nothing was in stock) make it less accurate. Check the suggestion before you order.
 
@@ -200,16 +213,21 @@ For developers. Code in `src/purchasing/`, routes in `src/http/api/purchasing.ts
 (`/api/purchasing/...`), tables in `migrations/002_catalog_pricing_sales_purchasing.sql`.
 
 - **Receiving** (`receiveOrder`, `src/purchasing/orders.ts`) is one transaction: the order row is
-  locked (`FOR UPDATE`), then its lines, then the items in id order (so two deliveries with the
-  same products queue instead of deadlocking). The receipt's `request_id` is unique: the dashboard
+  locked (`FOR UPDATE`), then its lines, then the items in id order, the order every bulk change of
+  items uses (`src/db/locks.ts`), so two deliveries, or a delivery and a bulk price edit or a
+  catalog save, queue instead of deadlocking. The receipt's `request_id` is unique: the dashboard
   makes one per delivery, so a retried request finds the first receipt (after the order lock) and
   returns it with `200` instead of `201`. For each line a `pool_adjustments` row (`kind 'adjust'`,
   `event_kind 'po_received'`, `details { purchaseOrderId, number, supplierName, receiptId }`) is
   inserted; the sync engine applies it like any adjustment and logs the event with those details.
   A pool level that hasn't started, of an item no store sells, without a pending start, first
-  gets an `initialize` (strategy `value`, 0), under the catalog lock. The pool levels are enqueued
+  gets an `initialize` (strategy `value`, 0), under the catalog lock (`startUnsoldAtZero` in
+  `src/catalog/catalog.ts`, the same rule as a catalog product's first publish). The pool levels are enqueued
   last, in the same transaction; `push_item_costs` tasks too (dedupe key
   `push_item_costs:<storeId>:<receiptId>`).
+- **Supplier currency.** `PATCH /suppliers/:id` with a new `currencyCode` answers 409 (with
+  `currencyChange: { pricedItems }`) when the supplier has prices, unless the body has
+  `confirmCurrencyChange: true`; the prices keep their numbers.
 - **Undo** adds the opposite adjustments (`event_kind 'po_receipt_reversed'`) in one transaction;
   a second undo is a no-op.
 - **Status changes** are checked on the locked order row. Orders on order are `ordered` and
@@ -220,7 +238,9 @@ For developers. Code in `src/purchasing/`, routes in `src/http/api/purchasing.ts
   listing it in `exchangeRatesNeeded` (with `baseCurrency`), before anything is created.
 - **Reorder** (`src/purchasing/reorder.ts`): `computeReorder` is the pure maths;
   `loadReorderRows` reads every input with one query; `runReorderCheck` opens or resolves alerts
-  `reorder:<itemId>` (kind `reorder`). The `reorder_check` task (a singleton) runs it; the hourly
+  `reorder:<itemId>` (kind `reorder`). An open alert raises the line by `reorderCloseMargin`
+  (max(2 days, 10% of lead + safety)) until it closes, so it doesn't flap; the Reorder tab uses the
+  same figures. The `reorder_check` task (a singleton) runs it; the hourly
   job and every change that affects it enqueue the task.
 - **Costs** (`src/purchasing/costs.ts`): `nextItemCost` (pure; the receipt passes it the started
   pool levels plus the item's pending `adjust` adjustments as the stock before) and the

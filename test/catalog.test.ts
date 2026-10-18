@@ -14,6 +14,7 @@ import {
   syncStoreLocations,
   withCatalogLock,
 } from '../src/catalog/catalog.js';
+import { LOCKS } from '../src/db/locks.js';
 import { createDb, type Db } from '../src/db/pool.js';
 import { updateSettings } from '../src/settings.js';
 import type { ShopifyVariant } from '../src/shopify/types.js';
@@ -496,7 +497,8 @@ describe('items created by features', () => {
       ]);
       // The lock is held until the transaction ends.
       const { rows } = await other.query<{ locked: boolean }>(
-        'SELECT pg_try_advisory_xact_lock(727002) AS locked',
+        'SELECT pg_try_advisory_xact_lock($1) AS locked',
+        [LOCKS.catalog],
       );
       expect(rows[0]!.locked).toBe(false);
       return result;

@@ -223,12 +223,15 @@ Shopify's notifications are not guaranteed, so Store Sync doesn't rely on them a
 ## What Store Sync never does
 
 - It never sets a store to zero because it was disconnected, paused or removed.
-- It never touches prices, images, titles, descriptions, tags or any other product details. Only the
-  available quantity.
+- The stock sync never touches prices, images, titles, descriptions, tags or any other product
+  details: only the available quantity. Those change only when you publish a product from the
+  Catalog or update prices from the Prices page ([catalog](catalog.md), [prices](pricing.md)).
 - It never changes the stock of a product you haven't started syncing.
 - It never sends a negative number to a store.
 - It never overwrites a sale: every update is conditional on the number it just read.
-- It never deletes or unpublishes products.
+- The stock sync never deletes or unpublishes products. Publishing a catalog product can (variants
+  and images the catalog product doesn't have, its Online Store visibility); the publish preview
+  says so first.
 
 In Shopify's inventory history, Store Sync's updates appear as **Correction** changes made by the
 app.

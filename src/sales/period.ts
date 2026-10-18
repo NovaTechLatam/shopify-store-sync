@@ -1,3 +1,5 @@
+import { todayIn } from '../util/time.js';
+
 /**
  * Calendar dates of reports ('YYYY-MM-DD'), pure. A report day starts and ends in the report's time
  * zone; Postgres does the bucketing (AT TIME ZONE), these only pick and walk the dates.
@@ -19,16 +21,8 @@ export function isDate(value: string): boolean {
   return d.toISOString().slice(0, 10) === value;
 }
 
-/** Today's date in a time zone. */
-export function todayIn(timeZone: string, now: Date = new Date()): string {
-  // en-CA writes dates as YYYY-MM-DD.
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-}
+// Shared with the other features ("today" in the report time zone).
+export { todayIn };
 
 export function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);

@@ -466,6 +466,17 @@ export function createMockState() {
       });
     events.push(base);
   }
+  // A catalog product's variant no store has yet (scripts/mock/catalog.mjs: "Wool beanie"), so
+  // nothing has happened to its stock.
+  items.push({
+    id: itemId++,
+    sku: 'BEANIE-WOL-RUS',
+    title: 'Wool beanie',
+    syncEnabled: true,
+    lowStockThreshold: null,
+    quantity: null,
+    updatedAt: minutesAgo(45),
+  });
 
   const state = {
     stores,
@@ -522,9 +533,14 @@ function itemSummary(state, item) {
   const issues = [];
   for (const v of linked)
     if (!v.tracked) issues.push(`Not tracked in ${storeName(state, v.storeId)}`);
+  // Like the API: a catalog product is only missing where it was published; where it's sold but
+  // not published yet, it's waiting.
+  const product = catalogProductOf(state, item.id);
   for (const s of state.stores) {
-    if (s.status === 'active' && !linked.some((v) => v.storeId === s.id))
-      issues.push(`Missing in ${s.name}`);
+    if (s.status !== 'active' || linked.some((v) => v.storeId === s.id)) continue;
+    const brand = product?.brands[s.id];
+    if (!product || (brand?.enabled && brand.shopifyProductId)) issues.push(`Missing in ${s.name}`);
+    else if (brand?.enabled) issues.push(`Not published in ${s.name} yet`);
   }
   const levels = state.warehouses.map((w) => ({
     poolLevelId: item.id * 10 + w.id,
@@ -565,8 +581,20 @@ function itemSummary(state, item) {
     lowStockThreshold: item.lowStockThreshold,
     levels,
     issues,
+    catalogProduct: product ? { id: product.id, title: product.title } : null,
+    notPublished: notPublishedYet(state, item),
   };
 }
+
+/** The catalog product (scripts/mock/catalog.mjs) an item is a variant of, or null. */
+function catalogProductOf(state, itemId) {
+  return state.catalog?.products.find((p) => p.variants.some((v) => v.itemId === itemId)) ?? null;
+}
+
+/** A catalog product's variant that no store has yet (it starts when published). */
+const notPublishedYet = (state, item) =>
+  catalogProductOf(state, item.id) !== null &&
+  !state.variants.some((v) => v.itemId === item.id && !v.deleted);
 
 const storeName = (state, id) => state.stores.find((s) => s.id === id)?.name ?? null;
 
@@ -586,9 +614,11 @@ function hasOpenAlert(state, itemId, kind) {
 
 const ITEM_FILTERS = {
   all: () => true,
+  // Like the API: a reorder alert isn't a sync problem (Purchasing → Reorder lists those).
   issues: (state, item) =>
-    hasOpenAlert(state, item.id) || itemSummary(state, item).issues.length > 0,
-  uninitialized: (_state, item) => item.quantity === null,
+    state.alerts.some((a) => a.itemId === item.id && !a.resolvedAt && a.kind !== 'reorder') ||
+    itemSummary(state, item).issues.length > 0,
+  uninitialized: (state, item) => item.quantity === null && !notPublishedYet(state, item),
   low: (state, item) => hasOpenAlert(state, item.id, 'low_stock'),
   oversold: (_state, item) => item.quantity !== null && item.quantity < 0,
   disabled: (_state, item) => !item.syncEnabled,

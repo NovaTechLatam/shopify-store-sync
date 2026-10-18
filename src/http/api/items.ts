@@ -39,7 +39,8 @@ const AdjustBody = z.object({
 /**
  * WHERE clause fragments for the list filters. "Issues" = anything the merchant should look at:
  * an open alert, a write that hasn't been confirmed, a store that sells the item untracked, a
- * duplicate SKU in a store, or an active store that doesn't sell it at all.
+ * duplicate SKU in a store, or an active store that doesn't sell it at all. Not a reorder alert:
+ * that isn't a sync problem (and Purchasing → Reorder lists those products).
  */
 /**
  * SQL: catalog item `i` was published in the brand `mps` (sold there, linked to a product, and in
@@ -50,15 +51,24 @@ const PUBLISHED_THERE = `mps.enabled AND mps.shopify_product_id IS NOT NULL
                     AS sent(v)
                WHERE upper(regexp_replace(btrim(sent.v->>'sku'), '\\s+', ' ', 'g')) = i.sku)`;
 
+/**
+ * SQL: item `i` belongs to a catalog product and no store has it yet. It isn't "not started": it
+ * starts when the product is first published (src/products/publish.ts), so it is never offered a
+ * start of its own.
+ */
+const NOT_PUBLISHED_YET = `(EXISTS (SELECT 1 FROM master_variants mv WHERE mv.item_id = i.id)
+  AND NOT EXISTS (SELECT 1 FROM variants v WHERE v.item_id = i.id AND v.deleted_at IS NULL))`;
+
 const FILTERS: Record<z.infer<typeof ListQuery>['filter'], string> = {
   all: 'TRUE',
   disabled: 'NOT i.sync_enabled',
-  uninitialized:
-    'EXISTS (SELECT 1 FROM pool_levels pl WHERE pl.item_id = i.id AND pl.quantity IS NULL)',
+  uninitialized: `EXISTS (SELECT 1 FROM pool_levels pl WHERE pl.item_id = i.id AND pl.quantity IS NULL)
+    AND NOT ${NOT_PUBLISHED_YET}`,
   oversold: 'EXISTS (SELECT 1 FROM pool_levels pl WHERE pl.item_id = i.id AND pl.quantity < 0)',
   low: `EXISTS (SELECT 1 FROM alerts a WHERE a.item_id = i.id AND a.kind = 'low_stock' AND a.resolved_at IS NULL)`,
   issues: `(
-      EXISTS (SELECT 1 FROM alerts a WHERE a.item_id = i.id AND a.resolved_at IS NULL)
+      EXISTS (SELECT 1 FROM alerts a
+               WHERE a.item_id = i.id AND a.resolved_at IS NULL AND a.kind <> 'reorder')
    OR EXISTS (SELECT 1 FROM pending_writes pw JOIN pool_levels pl ON pl.id = pw.pool_level_id WHERE pl.item_id = i.id)
    OR EXISTS (SELECT 1 FROM variants v WHERE v.item_id = i.id AND v.deleted_at IS NULL AND NOT v.tracked)
    OR EXISTS (SELECT 1 FROM variants v
@@ -101,6 +111,13 @@ export interface ItemSummary {
     }[];
   }[];
   issues: string[];
+  /** The catalog product the item is a variant of. */
+  catalogProduct: { id: number; title: string } | null;
+  /**
+   * In a catalog product and no store has it yet: it starts when the product is published, so it
+   * isn't shown or counted as "not started".
+   */
+  notPublished: boolean;
 }
 
 /** Builds dashboard summaries for the given items (in the given order). */
@@ -202,6 +219,15 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
     [itemIds],
   );
   const inCatalog = new Set(catalog.rows.map((c) => c.item_id));
+  const products = await db.query<{ item_id: number; id: number; title: string; sold: boolean }>(
+    `SELECT mv.item_id, mp.id, mp.title,
+            EXISTS (SELECT 1 FROM variants v WHERE v.item_id = mv.item_id AND v.deleted_at IS NULL)
+              AS sold
+       FROM master_variants mv JOIN master_products mp ON mp.id = mv.master_product_id
+      WHERE mv.item_id = ANY($1::bigint[])`,
+    [itemIds],
+  );
+  const productOf = new Map(products.rows.map((r) => [r.item_id, r]));
 
   const byId = new Map(items.rows.map((i) => [i.id, i]));
   return itemIds.flatMap((itemId) => {
@@ -268,6 +294,7 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
     if (itemLevels.some((l) => l.stores.some((s) => s.pendingWrite))) {
       issues.push('An update to a store is waiting to be confirmed');
     }
+    const product = productOf.get(itemId);
     return [
       {
         id: item.id,
@@ -277,6 +304,8 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
         lowStockThreshold: item.low_stock_threshold,
         levels: itemLevels,
         issues,
+        catalogProduct: product ? { id: product.id, title: product.title } : null,
+        notPublished: product !== undefined && !product.sold,
       },
     ];
   });
@@ -404,8 +433,11 @@ export async function registerItemRoutes(app: FastifyInstance, deps: AppDeps): P
       }
     }
     if (level.quantity === null) {
+      const [summary] = await loadItemSummaries(db, [itemId]);
       throw badRequest(
-        'This item has not started syncing yet. Start it from the onboarding screen first.',
+        summary?.notPublished
+          ? 'No store sells this product yet. Publish it from the catalog first, or receive units with a purchase order: they’re added when it starts.'
+          : 'This item has not started syncing yet. Start it from the onboarding screen first.',
       );
     }
     if (body.kind !== 'adjust' && body.value < 0) throw badRequest('Stock can’t be set below zero');

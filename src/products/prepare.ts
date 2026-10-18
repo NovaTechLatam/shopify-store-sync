@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 import { removeProduct } from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
 import type { Db } from '../db/pool.js';
+import { getSettings } from '../settings.js';
 import { ShopifyApiError } from '../shopify/client.js';
 import type { ShopifyProduct } from '../shopify/types.js';
 import type { ShopifyRegistry } from '../sync/engine.js';
@@ -150,8 +151,12 @@ export async function prepare(
     return out;
   }
 
+  // Costs reach Shopify only when the merchant asked for it: the same "Copy costs to Shopify"
+  // switch that deliveries follow. Off, the store's "Cost per item" is left as it is.
+  const { pushCostsToShopify } = await getSettings(deps.db);
   for (const v of product.variants) {
-    out.pricing.set(v.normalizedSku, variantPricing(v, store, currencyCode));
+    const pricing = variantPricing(v, store, currencyCode);
+    out.pricing.set(v.normalizedSku, pushCostsToShopify ? pricing : { ...pricing, cost: null });
   }
   out.plan = buildProductSetInput({
     content,

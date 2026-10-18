@@ -221,6 +221,69 @@ describe('reorder_check', () => {
     expect(await openAlerts()).toHaveLength(0);
   });
 
+  it('counts a delivery the stock sync hasn’t applied yet, so it never raises a false alert', async () => {
+    // 2 a day; 20 on the shelf + 50 on order: 35 days, fine (the line is 14 + 7 days).
+    const item = await startedItem('DELIV-1', 20);
+    await sale(h.stores[0]!.id, null, 1, 40);
+    await sale(h.stores[0]!.id, item.itemId, 60, 10);
+    const settings = await getSettings(h.db);
+    const supplierId = await createSupplier(h.db, { name: 'Acme', currencyCode: 'USD' });
+    const orderId = await createOrder(
+      h.db,
+      { supplierId, lines: [{ itemId: item.itemId, quantityOrdered: 50 }] },
+      settings,
+    );
+    await markOrdered(h.db, orderId);
+    expect(await runReorderCheck(h.db)).toEqual({ open: 0, resolved: 0 });
+    // The delivery arrives; the check queued with it runs before the sync engine applies it.
+    const po = await loadOrder(h.db, orderId, settings);
+    await receiveOrder(
+      h.db,
+      orderId,
+      { requestId: randomUUID(), lines: [{ lineId: po.lines[0]!.id, quantity: 50 }] },
+      settings,
+    );
+    // Not on order any more, not in the shared stock yet: it counts as on the shelf (else 20
+    // units = 10 days would open an alert, and notify, until the next check).
+    expect(await h.shared(item)).toBe(20);
+    let [row] = await loadReorderRows(h.db, settings);
+    expect([row!.available, row!.onOrder, row!.needsReorder]).toEqual([70, 0, false]);
+    expect(await runReorderCheck(h.db)).toEqual({ open: 0, resolved: 0 });
+    await h.drain();
+    [row] = await loadReorderRows(h.db, settings);
+    expect([row!.available, row!.onOrder]).toEqual([70, 0]);
+  });
+
+  it('keeps an alert open until the stock clearly covers the lead time again', async () => {
+    // 60 sold in the last 30 days: 2 a day. Lead 14 + safety 7 = 21 days = 42 units; the alert
+    // closes above 21 + 2.1 days = 46.2 units.
+    const item = await startedItem('EDGE-1', 40);
+    await sale(h.stores[0]!.id, null, 1, 40); // the store's sales history starts before the window
+    await sale(h.stores[0]!.id, item.itemId, 60, 10);
+    const add = async (units: number) => {
+      await h.db.query(
+        `INSERT INTO pool_adjustments (pool_level_id, kind, value) VALUES ($1, 'adjust', $2)`,
+        [item.poolLevelId, units],
+      );
+      await h.enqueue(item);
+      await h.drain();
+    };
+    expect(await runReorderCheck(h.db)).toEqual({ open: 1, resolved: 0 });
+    await add(4); // 44 units = 22 days: past the line, within the margin
+    expect(await runReorderCheck(h.db)).toEqual({ open: 1, resolved: 0 });
+    let [row] = await loadReorderRows(h.db, await getSettings(h.db));
+    expect([row!.needsReorder, row!.suggested > 0]).toEqual([true, true]);
+    await add(3); // 47 units = 23.5 days: clear
+    expect(await runReorderCheck(h.db)).toEqual({ open: 0, resolved: 1 });
+    [row] = await loadReorderRows(h.db, await getSettings(h.db));
+    expect(row!.needsReorder).toBe(false);
+    // Dropping back within the margin doesn't reopen it: only below the line again.
+    await add(-2); // 45 units
+    expect(await runReorderCheck(h.db)).toEqual({ open: 0, resolved: 0 });
+    await add(-4); // 41 units
+    expect(await runReorderCheck(h.db)).toEqual({ open: 1, resolved: 0 });
+  });
+
   it('resolves every reorder alert when the alerts are switched off', async () => {
     const low = await startedItem('LOW-1', 0);
     await sale(h.stores[0]!.id, low.itemId, 10, 1);

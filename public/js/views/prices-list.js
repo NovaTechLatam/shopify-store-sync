@@ -1,5 +1,5 @@
 import { api, latestOnly, qs } from '../api.js';
-import { formDialog } from '../dialog.js';
+import { confirmDialog, formDialog } from '../dialog.js';
 import { debounce, h, icon, replace, uid } from '../dom.js';
 import { money, plural, timeAgo } from '../format.js';
 import { roundPrice } from '../pricing-compute.js';
@@ -894,12 +894,25 @@ async function bulkDialog(target, data, onDone) {
           );
         }
       }
+      const body = {
+        ...(target.itemIds ? { itemIds: target.itemIds } : { filter: target.filter }),
+        ...c,
+      };
+      // Counted first: removing values, or losing compare-at prices, is confirmed with the count.
+      const preview = await api('/api/prices/items/bulk', {
+        method: 'POST',
+        body: { ...body, dryRun: true },
+        toastErrors: false,
+      });
+      if (
+        (preview.cleared > 0 || preview.compareAtLost > 0) &&
+        !(await confirmBulk(preview, c.field))
+      ) {
+        throw new Error('Nothing was changed.');
+      }
       const result = await api('/api/prices/items/bulk', {
         method: 'POST',
-        body: {
-          ...(target.itemIds ? { itemIds: target.itemIds } : { filter: target.filter }),
-          ...c,
-        },
+        body,
         toastErrors: false,
       });
       return { ...result, field: c.field };
@@ -916,6 +929,36 @@ async function bulkDialog(target, data, onDone) {
       : `${plural(done.updated, what)} changed.${skipped}${done.field === 'cost' ? '' : ' Stores get the new prices when you update prices in stores.'}`,
   );
   onDone();
+}
+
+/**
+ * Asks before a bulk change that removes values (an empty "Set to an amount") or leaves
+ * compare-at prices at or below the base price (stores drop those at the next update).
+ */
+function confirmBulk(preview, field) {
+  const what = FIELD_LABELS[field].toLowerCase();
+  const removed = {
+    basePrice: `${plural(preview.cleared, 'product')} will have no base price. Stores keep what they charge now: their price rules can’t update them until you set one again.`,
+    baseCompareAtPrice: `${plural(preview.cleared, 'product')} will have no compare-at price. Stores stop showing one at the next update.`,
+    cost: `${plural(preview.cleared, 'product')} will have no cost, so reports show no margin for them.`,
+  }[field];
+  return confirmDialog({
+    title:
+      preview.cleared > 0
+        ? `Remove the ${what} of ${plural(preview.cleared, 'product')}?`
+        : `Change ${plural(preview.updated, what)}?`,
+    message: [
+      preview.cleared > 0 && h('p', {}, `The amount is empty, so ${removed}`),
+      preview.compareAtLost > 0 &&
+        h(
+          'p',
+          {},
+          `${plural(preview.compareAtLost, 'product')} will have a compare-at price no higher than the base price. Those compare-at prices disappear from the stores at the next update.`,
+        ),
+    ].filter(Boolean),
+    confirmLabel: preview.cleared > 0 ? `Remove ${plural(preview.cleared, what)}` : 'Apply change',
+    tone: preview.cleared > 0 ? 'critical' : 'primary',
+  });
 }
 
 /** What a bulk change makes of one value, for the example line (as the server does it). */

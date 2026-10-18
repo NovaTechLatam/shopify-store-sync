@@ -317,6 +317,37 @@ export async function flows(ctx) {
     );
   });
 
+  await step('suppliers: changing the currency of one with prices asks first', async () => {
+    await go('#/purchasing?tab=suppliers&supplier=5');
+    await page.getByRole('button', { name: 'Edit…' }).first().click();
+    const dialog = page.getByRole('dialog').first();
+    await dialog.getByLabel('Currency').fill('GBP');
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    const confirm = page.getByRole('dialog', { name: 'Change “Linen House” to GBP?' });
+    await confirm.waitFor();
+    expect(
+      (await confirm.textContent()).includes('prices for 1 product in EUR') &&
+        (await confirm.textContent()).includes('12.50 EUR becomes 12.50 GBP'),
+      'the question names the prices and what happens to them',
+    );
+    await shoot(page, 'dialog-supplier-currency-1280-light', { fullPage: false });
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    await dialog.locator('.form-error', { hasText: 'currency wasn’t changed' }).waitFor();
+    expect(
+      server.state.purchasing.suppliers.find((s) => s.id === 5)?.currencyCode === 'EUR',
+      'cancelled: still EUR',
+    );
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await confirm.getByRole('button', { name: 'Change to GBP' }).click();
+    await dialog.waitFor({ state: 'detached' });
+    expect(
+      server.state.purchasing.suppliers.find((s) => s.id === 5)?.currencyCode === 'GBP',
+      'confirmed: GBP',
+    );
+    // Back as it was, for the steps that follow.
+    server.state.purchasing.suppliers.find((s) => s.id === 5).currencyCode = 'EUR';
+  });
+
   await step('reorder: a supplier in a new currency asks for its exchange rate', async () => {
     await go('#/purchasing?tab=reorder');
     const row = page

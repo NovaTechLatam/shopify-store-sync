@@ -17,7 +17,7 @@ const PNG = Buffer.from(
 
 const OVERFLOW = `document.documentElement.scrollWidth - document.documentElement.clientWidth`;
 
-/** Fills the option inputs of the editor (Tab commits a change, like leaving the field). */
+/** Fills an option's values, one per line (Tab commits the change, like leaving the field). */
 async function addOption(page, values) {
   await page.getByRole('button', { name: 'Add option' }).click();
   const field = page.locator('[data-option-values]').last();
@@ -58,8 +58,8 @@ export async function flows(ctx) {
   await step('catalog: create a product with two options and an image', async () => {
     await go('#/catalog/new');
     await page.getByLabel('Title').first().fill('Field jacket');
-    await addOption(page, 'S, M');
-    await addOption(page, 'Olive, Navy');
+    await addOption(page, 'S\nM');
+    await addOption(page, 'Olive\nNavy');
     const skus = page.locator('[data-field=sku]');
     expect((await skus.count()) === 4, `four variants from 2 × 2 values (${await skus.count()})`);
     const rows = await page.locator('.variant-grid tbody th').allTextContents();
@@ -87,10 +87,28 @@ export async function flows(ctx) {
     expect((await page.locator('.image-row img').count()) === 1, 'the image was saved');
   });
 
+  await step('catalog: option values keep their commas', async () => {
+    await go('#/catalog/new');
+    await page.getByLabel('Title').first().fill('Enamel mug');
+    await addOption(page, 'Red, matte\nRed, glossy');
+    const rows = await page.locator('.variant-grid tbody th').allTextContents();
+    expect(rows.join('|') === 'Red, matte|Red, glossy', `one variant per line (${rows})`);
+    // Leaving the box again keeps them as they are.
+    const box = page.locator('[data-option-values]').last();
+    await box.focus();
+    await box.press('Tab');
+    expect(
+      (await box.inputValue()) === 'Red, matte\nRed, glossy',
+      `the values read back one per line (${JSON.stringify(await box.inputValue())})`,
+    );
+    // Leave the page, so the next step's new product starts empty.
+    await go('#/catalog');
+  });
+
   await step('catalog: SKU mistakes are refused with a message', async () => {
     await go('#/catalog/new');
     await page.getByLabel('Title').first().fill('Duplicate test');
-    await addOption(page, 'S, M');
+    await addOption(page, 'S\nM');
     await page.locator('[data-field=sku]').nth(0).fill('DUP-1');
     await page.locator('[data-field=sku]').nth(1).fill('dup-1');
     await page.getByRole('button', { name: 'Create product' }).click();
@@ -269,7 +287,7 @@ export async function phoneFlows(ctx) {
     await page.getByLabel('Title').first().fill('Rib beanie');
     await page.getByRole('button', { name: 'Add option' }).click();
     const values = page.locator('[data-option-values]').last();
-    await values.fill('Black, Grey, Cream');
+    await values.fill('Black\nGrey\nCream');
     await values.press('Tab');
     expect((await page.locator('[data-field=sku]').count()) === 3, 'three variants');
     const overflow = await page.evaluate(OVERFLOW);

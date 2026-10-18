@@ -33,8 +33,8 @@ A catalog product has:
 1. On **Catalog**, click **New product**.
 2. Fill in the basics. The description takes simple HTML (paragraphs, bold, italics, lists, links
    and headings); the preview next to it shows how it reads.
-3. Under **Options and variants**, add your options and their values, separated by commas
-   (`S, M, L`). Store Sync makes one variant per combination. Give each a SKU and a base price. If
+3. Under **Options and variants**, add your options and their values, one per line (a value can
+   contain a comma, like `Red, matte`). Store Sync makes one variant per combination. Give each a SKU and a base price. If
    you don't sell a combination, remove it; you can add it back later.
 4. Add images, with a short description of each (alt text): screen readers read it aloud.
 5. Under **Brands**, untick the brands that don't sell it, and change what you want for the others.
@@ -45,13 +45,19 @@ Nothing is sent to your stores yet. When you're ready, click **Publish…**.
 
 ### New SKUs start at 0
 
-A SKU Store Sync didn't know before starts at **0** units, in every store, when the product is first
-published. Add stock with a purchase order (**Purchasing**) or **Add or remove units** on its page in
-**Products**. A SKU Store Sync already knew keeps its stock.
+A SKU no store sells yet starts at **0** units, in every store, when the product is first
+published. Add stock with a purchase order (**Purchasing**): a delivery received before the first
+publish is added then. A SKU a store already sells keeps its stock.
 
-On **Products**, such a variant says **Not published in <brand> yet** for each brand that sells
-the product, until you publish there. Once it was published, a variant deleted from that brand in
-Shopify says **Missing in <brand>** and needs attention, like any other product.
+If you create the SKU directly in a store before publishing it from the catalog, that store's
+number is kept: the product then starts like any other one (**Start syncing**), from the numbers
+your stores show.
+
+Until a store has it, **Products** shows such a variant as **Not published yet**, with a link to
+its catalog product: it isn't counted as waiting to start, and it has no **Start syncing** button
+(publishing starts it). Its issues say **Not published in <brand> yet** for each brand that sells
+the product. Once it was published, a variant deleted from that brand in Shopify says **Missing in
+<brand>** and needs attention, like any other product.
 
 ## Publishing
 
@@ -135,6 +141,8 @@ Every variant needs its own SKU to be imported, and a product can have at most 2
   it, publishing to that brand fails and says so: give the brand its own address.
 - **Stock is never set by publishing**, except a brand-new variant, which starts at 0 and then
   follows the shared stock.
+- **Costs** go to each brand's "Cost per item" only with **Settings → Costs → Copy costs to
+  Shopify** on, the same switch deliveries follow. Off, publishing leaves Shopify's costs alone.
 
 ## Permissions
 
@@ -171,9 +179,15 @@ Importing only reads products, which every store already allows.
   (`src/products/plan.ts`): variants matched by SKU are sent with their ids (never recreated: a new
   variant would get a new inventory item), images already there by media id, so the plan knows
   exactly what Shopify will delete; the preview uses the same code. `inventoryQuantities` (0 at the
-  synced locations) are only sent for variants being created. After the write every returned
-  variant is linked at once (`refreshInventoryItem`), so stock syncing starts without waiting for
-  the next catalog read.
+  synced locations) are only sent for variants being created, and `inventoryItem.cost` only with
+  the `pushCostsToShopify` setting on. Just before the write, the SKUs being added that no store
+  sells get their start at 0 (`startUnsoldAtZero` in `src/catalog/catalog.ts`, under the catalog
+  lock: levels not started, no start pending, no live variant linked in any store); a write
+  Shopify refuses removes those starts again. After the write every returned variant is linked at
+  once (`refreshInventoryItem`), so stock syncing starts without waiting for the next catalog read.
+- **Products page.** An item of a catalog product with no live variant in any store has
+  `notPublished: true` (and `catalogProduct`) in `/api/items`; the "Not started" filter and the
+  overview's counts leave it out.
 - **Retries.** `productSet` has no idempotency key. Updates go by product id with absolute values.
   Creates first look for a product of the store holding exactly our SKUs (our copy of its catalog,
   then Shopify), and otherwise upsert by a custom id (`$app:store_sync.master_product_id` metafield,

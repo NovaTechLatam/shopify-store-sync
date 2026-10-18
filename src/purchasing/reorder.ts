@@ -1,6 +1,7 @@
 import { setAlert } from '../alerts/alerts.js';
 import type { Queryable } from '../db/pool.js';
-import { getSettings, type Settings } from '../settings.js';
+import { getSettings, reportTimezone, type Settings } from '../settings.js';
+import { todayIn } from '../util/time.js';
 
 /**
  * Reorder planning: how fast each item sells (all stores together), how long the shared stock
@@ -15,7 +16,10 @@ export interface ReorderInputs {
   unitsSold: number;
   /** Length of the sales window in days (at least 1). */
   windowDays: number;
-  /** Shared stock available to sell: the sum of the item's started pool levels (can be < 0). */
+  /**
+   * Shared stock available to sell: the sum of the item's started pool levels (can be < 0), plus
+   * units added to them and not applied yet (a delivery just received).
+   */
   available: number;
   /** Units ordered from suppliers and not received yet (ordered or partly received orders). */
   onOrder: number;
@@ -25,6 +29,11 @@ export interface ReorderInputs {
   /** The preferred supplier's minimum order quantity and pack size for the item. */
   minOrderQty: number | null;
   packSize: number | null;
+  /**
+   * A reorder alert is open for the item: it stays needed until the stock lasts clearly longer
+   * than the line (reorderCloseMargin), so an item right at the line doesn't flap.
+   */
+  alertOpen?: boolean;
 }
 
 export interface ReorderFigures {
@@ -56,11 +65,21 @@ export function roundToOrderQuantity(
 }
 
 /**
+ * Extra days of cover an item needs before its open reorder alert closes: the larger of 2 days and
+ * 10% of lead time + safety days. Without it, an item right at the line would close and reopen
+ * its alert (notifying each time) as the sales window moves by a sale or two.
+ */
+export function reorderCloseMargin(leadTimeDays: number, safetyDays: number): number {
+  return Math.max(2, 0.1 * (leadTimeDays + safetyDays));
+}
+
+/**
  * The reorder figures of one item.
  *
  * - velocity = units sold ÷ window days;
  * - it needs a reorder when it sells and (available + on order) lasts no longer than the lead
- *   time plus the safety margin;
+ *   time plus the safety margin; once its alert is open, until it lasts longer than that plus
+ *   reorderCloseMargin (hysteresis);
  * - the suggestion brings the stock, once the order arrives, to `coverDays` of sales:
  *   velocity × (lead + cover) − (available + on order), rounded up, at least the supplier's
  *   minimum and in whole packs. When the safety margin is longer than the cover (an unusual
@@ -75,7 +94,11 @@ export function computeReorder(input: ReorderInputs): ReorderFigures {
   const position = input.available + input.onOrder;
   const daysLeft = Math.max(0, input.available) / velocity;
   const coverageDays = Math.max(0, position) / velocity;
-  const needsReorder = tidy(position / velocity) <= input.leadTimeDays + input.safetyDays;
+  const line =
+    input.leadTimeDays +
+    input.safetyDays +
+    (input.alertOpen ? reorderCloseMargin(input.leadTimeDays, input.safetyDays) : 0);
+  const needsReorder = tidy(position / velocity) <= line;
   if (!needsReorder) return { velocity, daysLeft, coverageDays, needsReorder, suggested: 0 };
   const targetDays = input.leadTimeDays + Math.max(input.coverDays, input.safetyDays);
   const raw = Math.max(1, Math.ceil(tidy(velocity * targetDays - position)));
@@ -88,10 +111,13 @@ export function computeReorder(input: ReorderInputs): ReorderFigures {
   };
 }
 
-/** The calendar day (YYYY-MM-DD, UTC) the stock runs out, `daysLeft` days after `now`. */
-export function stockoutDate(daysLeft: number | null, now: Date): string | null {
+/**
+ * The calendar day (YYYY-MM-DD) the stock runs out, `daysLeft` days after `now`, in `timeZone`
+ * (the report time zone, like every "today").
+ */
+export function stockoutDate(daysLeft: number | null, now: Date, timeZone = 'UTC'): string | null {
   if (daysLeft === null || !Number.isFinite(daysLeft)) return null;
-  return new Date(now.getTime() + Math.floor(daysLeft) * 86_400_000).toISOString().slice(0, 10);
+  return todayIn(timeZone, new Date(now.getTime() + Math.floor(daysLeft) * 86_400_000));
 }
 
 export type LeadTimeSource = 'item' | 'supplier' | 'default';
@@ -141,10 +167,13 @@ interface ReorderSqlRow {
   on_order: number;
   units_sold: number;
   window_days: number;
+  alert_open: boolean;
 }
 
 /**
- * The reorder figures of every item that syncs (or of `itemIds`), from one query.
+ * The reorder figures of every item that syncs (or of `itemIds`), from one query. An item whose
+ * reorder alert is open keeps needing a reorder until it clears the line by reorderCloseMargin,
+ * so the Reorder tab and the alerts agree.
  *
  * The sales window is the last `reorderLookbackDays`, but starts no earlier than the first order
  * we have (any store) and than the item's first appearance (created in Store Sync, or its first
@@ -157,6 +186,7 @@ export async function loadReorderRows(
   opts: { now?: Date; itemIds?: number[] } = {},
 ): Promise<ReorderRow[]> {
   const now = opts.now ?? new Date();
+  const timeZone = await reportTimezone(db, settings);
   const { rows } = await db.query<ReorderSqlRow>(
     `WITH bounds AS (
        SELECT $2::timestamptz - make_interval(days => $1) AS lookback_start,
@@ -167,14 +197,26 @@ export async function loadReorderRows(
             sup.lead_time_days AS supplier_lead_time_days,
             si.supplier_sku, si.unit_cost AS supplier_unit_cost, si.min_order_qty, si.pack_size,
             lv.available, lv.started_levels, oo.on_order, s.units_sold,
-            GREATEST(1, EXTRACT(EPOCH FROM ($2::timestamptz - w.start)) / 86400)::float8 AS window_days
+            GREATEST(1, EXTRACT(EPOCH FROM ($2::timestamptz - w.start)) / 86400)::float8 AS window_days,
+            EXISTS (SELECT 1 FROM alerts a
+                     WHERE a.kind = 'reorder' AND a.dedupe_key = 'reorder:' || i.id
+                       AND a.resolved_at IS NULL) AS alert_open
        FROM items i
        CROSS JOIN bounds b
        LEFT JOIN suppliers sup ON sup.id = i.supplier_id AND sup.archived_at IS NULL
        LEFT JOIN supplier_items si ON si.supplier_id = sup.id AND si.item_id = i.id
+       -- Units added but not applied to the stock yet (a delivery the sync engine hasn't reached,
+       -- or syncing is paused) count: they are on the shelf, and no longer on order.
        CROSS JOIN LATERAL (
-         SELECT sum(pl.quantity)::int AS available, count(pl.quantity)::int AS started_levels
-           FROM pool_levels pl WHERE pl.item_id = i.id) lv
+         SELECT (sum(pl.quantity) + COALESCE(sum(p.pending) FILTER (WHERE pl.quantity IS NOT NULL), 0))::int
+                  AS available,
+                count(pl.quantity)::int AS started_levels
+           FROM pool_levels pl
+           LEFT JOIN LATERAL (
+             SELECT sum(pa.value) AS pending FROM pool_adjustments pa
+              WHERE pa.pool_level_id = pl.id AND pa.kind = 'adjust' AND pa.applied_at IS NULL) p
+             ON true
+          WHERE pl.item_id = i.id) lv
        CROSS JOIN LATERAL (
          SELECT COALESCE(sum(GREATEST(l.quantity_ordered - l.quantity_received, 0)), 0)::int AS on_order
            FROM purchase_order_lines l
@@ -218,6 +260,7 @@ export async function loadReorderRows(
       safetyDays: settings.reorderSafetyDays,
       minOrderQty: r.min_order_qty,
       packSize: r.pack_size,
+      alertOpen: r.alert_open,
     });
     // Without a known stock (not started) or with reordering switched off, never suggest one.
     const counts = stockKnown && r.reorder_enabled;
@@ -237,7 +280,7 @@ export async function loadReorderRows(
       leadTimeDays,
       leadTimeSource,
       coverDays,
-      stockoutOn: stockKnown ? stockoutDate(figures.daysLeft, now) : null,
+      stockoutOn: stockKnown ? stockoutDate(figures.daysLeft, now, timeZone) : null,
       supplier:
         r.supplier_id !== null
           ? { id: r.supplier_id, name: r.supplier_name!, currencyCode: r.supplier_currency! }
@@ -278,7 +321,8 @@ export function reorderMessage(row: ReorderRow): string {
 /**
  * Opens a `reorder` alert (key `reorder:<itemId>`) for every item that needs ordering and
  * resolves the others; with reorder alerts switched off, resolves them all. Safe to run any
- * number of times: an open alert is only updated (and not notified again).
+ * number of times: an open alert is only updated (and not notified again), and stays open until
+ * the item clears the line by a margin (see computeReorder).
  */
 export async function runReorderCheck(
   db: Queryable,

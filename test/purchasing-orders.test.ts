@@ -6,6 +6,7 @@ import {
   createDraftOrders,
   createOrder,
   deleteOrder,
+  listOrders,
   loadOrder,
   markOrdered,
   receiveOrder,
@@ -16,11 +17,13 @@ import {
 } from '../src/purchasing/orders.js';
 import { createSupplier, putSupplierItem } from '../src/purchasing/suppliers.js';
 import { getSettings, updateSettings, type Settings } from '../src/settings.js';
+import { addDays, todayIn } from '../src/sales/period.js';
 import { enqueuePoolLevels } from '../src/sync/queue.js';
 import { Harness, type TestItem } from './helpers/harness.js';
 
 let h: Harness;
 let settings: Settings;
+const ORDER_QUERY = { status: 'all', page: 1, pageSize: 50 } as const;
 
 beforeEach(async () => {
   h = await Harness.create(2);
@@ -535,6 +538,27 @@ describe('order status', () => {
     ).rejects.toMatchObject({ statusCode: 409 });
     await updateOrder(h.db, orderId, { notes: 'Rest never came' }, settings);
     expect((await loadOrder(h.db, orderId, settings)).notes).toBe('Rest never came');
+  });
+
+  it('says an order is overdue by the calendar of the report time zone', async () => {
+    const item = await startedItem('TEE-1', 0);
+    const supplierId = await supplier();
+    const expected = async (timeZone: string, daysFromToday: number) => {
+      await updateSettings(h.db, { reportTimezone: timeZone });
+      const orderId = await order(supplierId, [{ itemId: item.itemId, quantityOrdered: 5 }]);
+      const expectedOn = addDays(todayIn(timeZone), daysFromToday);
+      await updateOrder(h.db, orderId, { expectedOn }, settings);
+      await markOrdered(h.db, orderId);
+      const listed = (await listOrders(h.db, ORDER_QUERY)).orders.find((o) => o.id === orderId)!;
+      const loaded = await loadOrder(h.db, orderId, settings);
+      expect(listed.overdue).toBe(loaded.overdue);
+      return loaded.overdue;
+    };
+    // 14 hours ahead of UTC and 11 behind: whatever the database server's clock says.
+    expect(await expected('Pacific/Kiritimati', 0)).toBe(false);
+    expect(await expected('Pacific/Kiritimati', -1)).toBe(true);
+    expect(await expected('Pacific/Pago_Pago', 0)).toBe(false);
+    expect(await expected('Pacific/Pago_Pago', -1)).toBe(true);
   });
 
   it('marks a draft as ordered when it is received straight away', async () => {

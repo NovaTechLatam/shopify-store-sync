@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Queryable } from './db/pool.js';
 import { CURRENCY_CODE } from './util/money.js';
+import { todayIn } from './util/time.js';
 
 /**
  * An IANA time zone name ('America/Bogota', 'UTC') that both Intl and Postgres understand. Offsets
@@ -63,7 +64,10 @@ export const SettingsSchema = z.object({
   salesHistoryDays: z.number().int().min(1).max(3650),
   /** How a delivery changes an item's cost: weighted average with the stock on hand, or last price. */
   costMethod: z.enum(['average', 'last']),
-  /** Copy item costs to each store's "Cost per item" in Shopify when they change. */
+  /**
+   * Copy item costs to each store's "Cost per item" in Shopify: after a delivery changes them, and
+   * when a catalog product is published. Off, Store Sync never writes costs to Shopify.
+   */
   pushCostsToShopify: z.boolean(),
   /** Days in reports start and end in this time zone; '' = the first store's time zone. */
   reportTimezone: z
@@ -151,6 +155,41 @@ export async function updateSettings(db: Queryable, patch: SettingsPatch): Promi
     );
   }
   return getSettings(db);
+}
+
+/**
+ * The time zone report days follow, and every "today" Store Sync works out (an order overdue, the
+ * day stock runs out): the reportTimezone setting, else the first store's time zone, else UTC.
+ */
+export async function reportTimezone(db: Queryable, settings?: Settings): Promise<string> {
+  const setting = (settings ?? (await getSettings(db))).reportTimezone;
+  if (setting) return setting;
+  const { rows } = await db.query<{ iana_timezone: string }>(
+    'SELECT iana_timezone FROM stores WHERE iana_timezone IS NOT NULL ORDER BY id',
+  );
+  // Shopify's names are IANA names; a name our Intl (and Postgres) don't know is skipped.
+  return rows.find((r) => isTimeZone(r.iana_timezone))?.iana_timezone ?? 'UTC';
+}
+
+/** Today's date ('YYYY-MM-DD') in the report time zone. */
+export async function reportToday(
+  db: Queryable,
+  settings?: Settings,
+  now: Date = new Date(),
+): Promise<string> {
+  return todayIn(await reportTimezone(db, settings), now);
+}
+
+/**
+ * Whether Postgres knows a time zone name: reports group sales by day `AT TIME ZONE` it, so a name
+ * only Node knows would make every report fail. Checked when the setting is saved.
+ */
+export async function postgresKnowsTimeZone(db: Queryable, name: string): Promise<boolean> {
+  const { rows } = await db.query<{ known: boolean }>(
+    'SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE lower(name) = lower($1)) AS known',
+    [name],
+  );
+  return rows[0]!.known;
 }
 
 /** Resumes sync after a manual or automatic pause, and gives the circuit breaker a fresh start. */

@@ -1,4 +1,5 @@
 import { setAlert } from '../alerts/alerts.js';
+import { LOCK_CLASSES } from '../db/locks.js';
 import type { Db } from '../db/pool.js';
 import { getSettings } from '../settings.js';
 import { ShopifyApiError } from '../shopify/client.js';
@@ -26,8 +27,8 @@ export const SYNC_OVERLAP_MS = 10 * 60_000;
 export const SYNC_BUDGET_MS = 4 * 60_000;
 /** How long to wait between checks of a running history export. */
 export const BACKFILL_POLL_MS = 45_000;
-/** Advisory lock space (pg_advisory_lock(int, int)) for one store's history import. */
-const BACKFILL_LOCK = 727_005;
+/** Advisory lock class (pg_advisory_lock(int, int), with the store id) of a history import. */
+const BACKFILL_LOCK = LOCK_CLASSES.salesBackfill;
 
 /** Webhook-driven: re-reads one order and saves it as Shopify has it now. */
 export async function refreshOrder(deps: TaskDeps, storeId: number, orderId: string) {

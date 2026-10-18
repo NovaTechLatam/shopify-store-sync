@@ -414,6 +414,18 @@ describe('HTTP API', () => {
     for (const patch of invalid) {
       expect((await api('PATCH', '/api/settings', patch)).status, JSON.stringify(patch)).toBe(400);
     }
+    // A name Node knows but Postgres doesn't (reports would fail on it): refused, saying why.
+    const unknown = await api('PATCH', '/api/settings', { reportTimezone: 'US/Pacific-New' });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toBe(
+      '“US/Pacific-New” isn’t a time zone our database knows, so reports can’t use it. Use a name like America/Bogota.',
+    );
+    expect((await api('GET', '/api/settings')).body.reportTimezone).toBe('');
+    // Case doesn't matter to either.
+    expect((await api('PATCH', '/api/settings', { reportTimezone: 'europe/madrid' })).status).toBe(
+      200,
+    );
+    await api('PATCH', '/api/settings', { reportTimezone: '' });
 
     // Reorder suggestions depend on these: they are re-checked.
     const reorder = await api('PATCH', '/api/settings', {

@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import { ensureItemsLocked, lockCatalog, refreshInventoryItem } from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
+import { lockItemRows } from '../db/locks.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { ShopifyApiError } from '../shopify/client.js';
@@ -307,7 +308,9 @@ export async function importProduct(
         ),
       ],
     );
-    // Base prices and costs the items don't have yet, converted back to the base currency.
+    // Base prices and costs the items don't have yet, converted back to the base currency. The
+    // items are locked in id order first, like every bulk change of items (src/db/locks.ts).
+    await lockItemRows(client, kept.map(itemOf));
     await client.query(
       `UPDATE items i
           SET base_price = COALESCE(i.base_price, t.base),

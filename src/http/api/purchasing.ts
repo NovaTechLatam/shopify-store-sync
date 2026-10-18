@@ -77,7 +77,12 @@ const SupplierBody = z
     notes: optionalText(2000),
   })
   .strict();
-const SupplierPatch = SupplierBody.partial().strict();
+const SupplierPatch = SupplierBody.partial()
+  .extend({
+    /** Change the currency even though the supplier has prices (they keep their numbers). */
+    confirmCurrencyChange: z.boolean().optional(),
+  })
+  .strict();
 const SupplierListQuery = z.object({ archived: z.enum(['true', 'false']).default('false') });
 
 const SupplierItemBody = z
@@ -210,8 +215,8 @@ export async function registerPurchasingRoutes(app: FastifyInstance, deps: AppDe
 
   app.patch('/api/purchasing/suppliers/:id', async (request) => {
     const id = parseId(params(request).id);
-    const body = SupplierPatch.parse(request.body);
-    await updateSupplier(db, id, body);
+    const { confirmCurrencyChange, ...body } = SupplierPatch.parse(request.body);
+    await updateSupplier(db, id, body, { confirmCurrencyChange });
     if (body.leadTimeDays !== undefined) await recheckReorder();
     return supplierView(id);
   });

@@ -3,6 +3,7 @@ import { nextItemCost, toBaseCost } from '../src/purchasing/costs.js';
 import { csvCell, toCsv } from '../src/purchasing/csv.js';
 import {
   computeReorder,
+  reorderCloseMargin,
   reorderMessage,
   roundToOrderQuantity,
   stockoutDate,
@@ -100,6 +101,58 @@ describe('computeReorder', () => {
   });
 });
 
+describe('reorder alert hysteresis', () => {
+  // 3 a day; the line is 14 lead + 7 safety = 21 days (63 units). Margin: max(2, 2.1) = 2.1 days.
+  it('opens at the line, as before', () => {
+    expect(computeReorder({ ...base, available: 63 }).needsReorder).toBe(true);
+    expect(computeReorder({ ...base, available: 64 }).needsReorder).toBe(false);
+  });
+
+  it('keeps an open alert until the stock lasts longer than the line plus the margin', () => {
+    const held = computeReorder({ ...base, available: 64, alertOpen: true });
+    expect(held.needsReorder).toBe(true);
+    // Still a real suggestion while held: 3 × (14 + 30) − 64.
+    expect(held.suggested).toBe(68);
+    // 69 units = 23 days ≤ 23.1: still open. 70 = 23.3 days: closes.
+    expect(computeReorder({ ...base, available: 69, alertOpen: true }).needsReorder).toBe(true);
+    expect(computeReorder({ ...base, available: 70, alertOpen: true }).needsReorder).toBe(false);
+    // Stock on order counts towards it too.
+    expect(
+      computeReorder({ ...base, available: 30, onOrder: 40, alertOpen: true }).needsReorder,
+    ).toBe(false);
+    // An item that stops selling closes it.
+    expect(computeReorder({ ...base, unitsSold: 0, alertOpen: true }).needsReorder).toBe(false);
+  });
+
+  it('uses a margin of 2 days, or 10% of lead time + safety when that is more', () => {
+    expect(reorderCloseMargin(14, 7)).toBeCloseTo(2.1);
+    expect(reorderCloseMargin(5, 3)).toBe(2);
+    expect(reorderCloseMargin(0, 0)).toBe(2);
+    expect(reorderCloseMargin(60, 20)).toBe(8);
+  });
+
+  it('opens once while the stock hovers around the line', () => {
+    let open = false;
+    let opened = 0;
+    for (const available of [66, 63, 64, 62, 65, 64, 66, 69, 63, 75, 63]) {
+      const needed: boolean = computeReorder({ ...base, available, alertOpen: open }).needsReorder;
+      if (needed && !open) opened++;
+      open = needed;
+    }
+    // Opened at 63, held through 69, closed at 75, opened again at 63: twice, not four times.
+    expect(opened).toBe(2);
+    // Without the margin it would have flapped.
+    let flaps = 0;
+    let was = false;
+    for (const available of [66, 63, 64, 62, 65, 64, 66, 69, 63, 75, 63]) {
+      const needed = computeReorder({ ...base, available }).needsReorder;
+      if (needed && !was) flaps++;
+      was = needed;
+    }
+    expect(flaps).toBe(4);
+  });
+});
+
 describe('roundToOrderQuantity', () => {
   it('leaves 0 alone and rounds up', () => {
     expect(roundToOrderQuantity(0, 10, 6)).toBe(0);
@@ -118,6 +171,14 @@ describe('stockoutDate', () => {
     expect(stockoutDate(9.7, now)).toBe('2026-10-27');
     expect(stockoutDate(0, now)).toBe('2026-10-18');
     expect(stockoutDate(null, now)).toBeNull();
+  });
+
+  it('counts days in the report time zone', () => {
+    // 23:30 on Oct 18 in Bogotá is already Oct 19 in UTC.
+    const late = new Date('2026-10-19T04:30:00Z');
+    expect(stockoutDate(0, late, 'America/Bogota')).toBe('2026-10-18');
+    expect(stockoutDate(2.5, late, 'America/Bogota')).toBe('2026-10-20');
+    expect(stockoutDate(0, late)).toBe('2026-10-19');
   });
 });
 

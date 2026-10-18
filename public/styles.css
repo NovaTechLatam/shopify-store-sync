@@ -910,6 +910,17 @@ h1 {
   color: var(--info);
 }
 
+/* A badge that is a link (to another page about the same thing). */
+.badge-link {
+  display: inline-flex;
+  border-radius: 999px;
+  text-decoration: none;
+}
+
+.badge-link:hover .badge {
+  text-decoration: underline;
+}
+
 /* ---------- Buttons ---------- */
 
 .button {

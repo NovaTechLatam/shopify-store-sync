@@ -4,8 +4,9 @@ Store Sync keeps stock in step across several Shopify stores that sell the same 
 shared stock. You might run one store per brand, each with its own prices, photos and product
 names. When a unit sells, is refunded, is returned or is edited in any store, every other store
 shows the new number within seconds. That way no store keeps selling something you no longer have.
-Store Sync only ever changes the **available quantity**. It never touches prices, images, titles or
-descriptions.
+The stock sync only ever changes the **available quantity**. Prices, titles, images and descriptions
+change only when you ask for it: when you publish a product from the **Catalog**, or update prices
+from the **Prices** page.
 
 ## Features
 
@@ -34,6 +35,14 @@ descriptions.
   arrives, remove units, or enter a shelf count (units sold but not shipped yet are subtracted for
   you).
 - **Several warehouses**, if your stock is split across places.
+- **Catalog**: write a product once and publish it to every brand, each with its own title,
+  description, images and tags ([docs/catalog.md](docs/catalog.md)).
+- **Prices**: a price rule per brand ("base × 1.3, ending in .90"), fixed prices, bulk edits and
+  scheduled sales ([docs/pricing.md](docs/pricing.md)).
+- **Reports**: sales, margins and days of stock left across every brand
+  ([docs/reports.md](docs/reports.md)).
+- **Purchasing**: suppliers, purchase orders, deliveries that add to the shared stock, average
+  costs and reorder suggestions ([docs/purchasing.md](docs/purchasing.md)).
 - Runs anywhere Docker runs: one small server plus a Postgres database.
 
 ## Quick start
@@ -119,6 +128,8 @@ the dashboard.
   returns, CSV imports and new stores, and what the app never does.
 - [Operations](docs/operations.md): deploying, backups, upgrades, monitoring, and what to do when
   something looks wrong.
+- [The catalog](docs/catalog.md), [Prices](docs/pricing.md), [Reports](docs/reports.md) and
+  [Purchasing](docs/purchasing.md): the features beyond stock syncing.
 - [Roadmap](docs/roadmap.md): what's in this version and the features worth adding next.
 
 ## Development

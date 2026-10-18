@@ -1,5 +1,6 @@
 import pg from 'pg';
 import type { Logger } from 'pino';
+import { LOCKS } from '../db/locks.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { setAlert } from '../alerts/alerts.js';
@@ -65,8 +66,7 @@ export class CatalogError extends Error {
   }
 }
 
-// Arbitrary constant, distinct from the migration lock.
-const CATALOG_LOCK_ID = 727_002;
+const CATALOG_LOCK_ID = LOCKS.catalog;
 /** Variants per upsert statement: bounds statement size for very large catalogs. */
 const UPSERT_CHUNK = 5_000;
 
@@ -415,6 +415,44 @@ export async function ensureItemsLocked(
   // keeps that true if some store already has a variant with one of them (usually a no-op).
   if (created.size) await relinkSkus(client, [...created]);
   return result;
+}
+
+/** The note of a start at 0 (the activity log says "Started syncing at 0 (new product)"). */
+const NEW_PRODUCT_START_NOTE = 'new product';
+
+/**
+ * Starts a product no store sells yet at 0: an `initialize` (strategy 'value', 0) for each of the
+ * given pool levels (or every level of the given items) that hasn't started, has no start pending,
+ * and whose item has no live variant in any store. The engine applies it when a store first sells
+ * the item, so a new product goes on sale with exactly what was received for it.
+ *
+ * Used when a catalog product is first published to a store (before the write) and when a delivery
+ * arrives for a product no store sells. An item some store already has a variant of is left to the
+ * usual start (onboarding, "Start syncing"), so the store's real number is never replaced with 0.
+ * The caller holds the catalog lock (lockCatalog), so a store linking the item at this moment
+ * can't slip in between. Returns the adjustments created.
+ */
+export async function startUnsoldAtZero(
+  client: Queryable,
+  levels: { itemIds: number[] } | { poolLevelIds: number[] },
+): Promise<number[]> {
+  const byItem = 'itemIds' in levels;
+  const ids = byItem ? levels.itemIds : levels.poolLevelIds;
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<{ id: number }>(
+    `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
+     SELECT pl.id, 'initialize', 'value', 0, $2 FROM pool_levels pl
+      WHERE ${byItem ? 'pl.item_id' : 'pl.id'} = ANY($1::bigint[]) AND pl.quantity IS NULL
+        AND NOT EXISTS (SELECT 1 FROM pool_adjustments a
+                         WHERE a.pool_level_id = pl.id AND a.kind = 'initialize'
+                           AND a.applied_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM variants v
+                         WHERE v.item_id = pl.item_id AND v.deleted_at IS NULL)
+      ORDER BY pl.id
+     RETURNING id`,
+    [ids, NEW_PRODUCT_START_NOTE],
+  );
+  return rows.map((r) => r.id);
 }
 
 // ---- variants ---------------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOCK_CLASSES } from '../src/db/locks.js';
 import { withTransaction } from '../src/db/pool.js';
 import type { RestoreEntry } from '../src/pricing/runs.js';
 import { applyPrices, createPriceRun } from '../src/pricing/runs.js';
@@ -405,7 +406,10 @@ describe('apply_prices', () => {
     const run = await newRun({ storeIds: [usd.id] });
     // Another worker is writing this store's prices.
     const other = await h.db.connect();
-    await other.query('SELECT pg_advisory_lock(727004, $1::integer)', [usd.id]);
+    await other.query('SELECT pg_advisory_lock($1, $2::integer)', [
+      LOCK_CLASSES.priceApply,
+      usd.id,
+    ]);
     try {
       await runTasksOnce(h.db, deps(), silentLogger);
       expect((await runStores(run!.runId))[0]!.status).toBe('queued');
@@ -413,7 +417,10 @@ describe('apply_prices', () => {
       const { rows } = await h.db.query<{ last_error: string }>('SELECT last_error FROM tasks');
       expect(rows[0]!.last_error).toContain('still running');
     } finally {
-      await other.query('SELECT pg_advisory_unlock(727004, $1::integer)', [usd.id]);
+      await other.query('SELECT pg_advisory_unlock($1, $2::integer)', [
+        LOCK_CLASSES.priceApply,
+        usd.id,
+      ]);
       other.release();
     }
     await settle();

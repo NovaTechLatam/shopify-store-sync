@@ -69,7 +69,11 @@ export function seed(state, { minutesAgo }) {
         cost: null,
         stock: item ? item.quantity : null,
         stockStarted: item ? item.quantity !== null : false,
-        stockStartsAtZero: !item,
+        // New to Store Sync, or no store has it yet: its first publish starts it at 0.
+        stockStartsAtZero:
+          !item ||
+          (item.quantity === null &&
+            !state.variants.some((x) => x.itemId === item.id && !x.deleted)),
         position,
         ...v,
       };
@@ -262,6 +266,15 @@ export function seed(state, { minutesAgo }) {
       1: { enabled: true, state: 'publishing', readsLeft: PUBLISH_READS },
       2: { enabled: true, state: 'queued', readsLeft: PUBLISH_READS + 1 },
     },
+  });
+  // Never published: its item has no variant in any store (Products says "Not published yet").
+  add({
+    title: 'Wool beanie',
+    vendor: 'Northwind',
+    productType: 'Hats',
+    updatedAt: minutesAgo(45),
+    variants: [{ sku: 'BEANIE-WOL-RUS', optionValues: [], basePrice: 26, cost: 8 }],
+    brands: { 1: { enabled: true }, 2: { enabled: true } },
   });
 }
 

@@ -97,7 +97,9 @@ Some details:
 
 - **Days.** A sale counts on the day its order was placed, in the report time zone (Settings →
   Sales history; by default your first store's time zone). An order placed at 11:30 pm in Bogotá
-  counts on that day, even though it is already the next day in UTC.
+  counts on that day, even though it is already the next day in UTC. The same time zone decides
+  "today" elsewhere too: when a purchase order is overdue, and the day stock runs out on the
+  Reorder tab. Settings only accepts a time zone the database knows (a name like America/Bogota).
 - **Currencies.** Each store's amounts are in that store's currency (what Shopify calls the shop
   currency, whatever currency the customer paid in). Totals convert them to your base currency
   with each store's exchange rate **as it is now** (on the store's page). If you change a rate,
@@ -188,7 +190,8 @@ key).
   has no file: `done`. The `bulk_operations/finish` webhook runs a check right away. A task can't
   push its own next run later (re-queuing its own key makes it run again at once), so delayed
   checks alternate between the plain key and a `poll: true` one. Only one check per store runs at
-  a time (`pg_try_advisory_lock(727005, storeId)` on a dedicated connection), so the file is
+  a time (`pg_try_advisory_lock(LOCK_CLASSES.salesBackfill, storeId)` on a dedicated connection; every
+  lock id is listed in `src/db/locks.ts`), so the file is
   downloaded once.
 - Permissions: without `read_orders` (as last read from Shopify) no task calls Shopify. An
   `ACCESS_DENIED` from Shopify records the problem on the store's sales columns
@@ -206,7 +209,9 @@ runs. Housekeeping maps unmatched lines once products or variants change, and fi
 costs.
 
 **Report queries** (`src/sales/reports.ts`). Days are bucketed by Postgres
-(`(processed_at AT TIME ZONE tz)::date`); the period's bounds are local midnights turned into
+(`(processed_at AT TIME ZONE tz)::date`), so the setting is checked against `pg_timezone_names`
+when it is saved (a name only Node knows is refused with a 400); `reportTimezone` and
+`reportToday` (`src/settings.ts`) give every feature the same zone and "today"; the period's bounds are local midnights turned into
 instants, so the `(store_id, processed_at)` indexes of `sales_lines` and `sales_orders` are used.
 Orders are counted from `sales_orders` (counting distinct orders of the lines needs a big sort).
 Amounts are summed per store, then divided by the store's exchange rate. The products report sums

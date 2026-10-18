@@ -107,6 +107,41 @@ export async function flows(ctx) {
     expect(item(server, 'TOTE-CNV-NAT-M').basePrice === 17.59, '15.99 + 10% = 17.59');
   });
 
+  await step('prices: removing prices, or losing compare-at prices, asks first', async () => {
+    await go('#/prices?search=TOTE');
+    await page.getByLabel('Select every product on this page').check();
+    await page.getByRole('button', { name: 'Change 3 prices…' }).click();
+    const bulk = page.getByRole('dialog').first();
+    // +20% puts the totes (17.59) above their compare-at price (19.99).
+    await bulk.getByLabel('Percentage', { exact: true }).fill('20');
+    await bulk.getByRole('button', { name: 'Apply change' }).click();
+    const confirm = page.getByRole('dialog', { name: 'Change 3 base prices?' });
+    await confirm.waitFor();
+    expect(
+      (await confirm.textContent()).includes(
+        '3 products will have a compare-at price no higher than the base price',
+      ),
+      'it counts the compare-at prices that go',
+    );
+    await shoot(page, 'dialog-prices-bulk-compare-at-1280-light', { fullPage: false });
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    await bulk.locator('.form-error', { hasText: 'Nothing was changed.' }).waitFor();
+    // An empty "Set to an amount" removes the base prices: named, with the count.
+    await bulk.getByText('Set to an amount').click();
+    await bulk.getByLabel(/^New amount/).fill('');
+    await bulk.getByRole('button', { name: 'Apply change' }).click();
+    const remove = page.getByRole('dialog', { name: 'Remove the base price of 3 products?' });
+    await remove.waitFor();
+    expect(
+      (await remove.getByRole('button', { name: 'Remove 3 base prices' }).count()) === 1,
+      'the button says what it removes',
+    );
+    await remove.getByRole('button', { name: 'Cancel' }).click();
+    await page.keyboard.press('Escape');
+    await bulk.waitFor({ state: 'detached' });
+    expect(item(server, 'TOTE-CNV-NAT-M').basePrice === 17.59, 'nothing changed');
+  });
+
   await step(
     'prices: a change to “the products in this list” keeps to the store shown',
     async () => {

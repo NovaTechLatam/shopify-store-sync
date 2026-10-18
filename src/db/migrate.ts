@@ -1,14 +1,15 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LOCKS } from './locks.js';
 import type { Db } from './pool.js';
 
 const MIGRATIONS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../migrations',
 );
-// Arbitrary constant so concurrent instances don't run migrations at the same time.
-const MIGRATION_LOCK_ID = 727_001;
+// Concurrent instances don't run migrations at the same time.
+const MIGRATION_LOCK_ID = LOCKS.migrations;
 
 /**
  * Applies every `migrations/NNN_name.sql` file that hasn't been applied yet, in filename order.

@@ -2,8 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { reevaluateStockAlerts } from '../../alerts/alerts.js';
 import { sendTestAlert } from '../../alerts/notifier.js';
-import { SettingsPatchSchema, getSettings, resumeSync, updateSettings } from '../../settings.js';
+import {
+  SettingsPatchSchema,
+  getSettings,
+  postgresKnowsTimeZone,
+  resumeSync,
+  updateSettings,
+} from '../../settings.js';
 import { enqueueTask } from '../../tasks/queue.js';
+import { badRequest } from '../errors.js';
 import type { AppDeps } from '../server.js';
 
 /** Settings the dashboard may change directly (pause state goes through pause/resume). */
@@ -32,6 +39,12 @@ export async function registerSettingsRoutes(app: FastifyInstance, deps: AppDeps
 
   app.patch('/api/settings', async (request) => {
     const patch = EditableSettings.parse(request.body);
+    // Node knows it (the schema checked), but reports need Postgres to know it too.
+    if (patch.reportTimezone && !(await postgresKnowsTimeZone(db, patch.reportTimezone))) {
+      throw badRequest(
+        `“${patch.reportTimezone}” isn’t a time zone our database knows, so reports can’t use it. Use a name like America/Bogota.`,
+      );
+    }
     const settings = await updateSettings(db, patch);
     if (patch.lowStockThreshold !== undefined) await reevaluateStockAlerts(db);
     if (REORDER_SETTINGS.some((key) => patch[key] !== undefined)) {

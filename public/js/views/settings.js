@@ -365,7 +365,7 @@ function settingsForm(settings, reload) {
         field({
           label: 'Report days follow the time zone',
           control: timezone,
-          hint: 'Decides when a day starts and ends in reports.',
+          hint: 'Decides when a day starts and ends in reports, and when a purchase order is overdue.',
         }),
       ),
     ),
@@ -390,7 +390,7 @@ function settingsForm(settings, reload) {
             h(
               'span',
               { class: 'field-hint block' },
-              'Updates “Cost per item” in every store when a product’s cost changes, so Shopify’s profit reports match.',
+              'Updates “Cost per item” in every store when a delivery changes a product’s cost, and when you publish a catalog product, so Shopify’s profit reports match. Off, Store Sync never changes costs in Shopify.',
             ),
           ),
         ),

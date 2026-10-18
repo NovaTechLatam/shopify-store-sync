@@ -1,6 +1,11 @@
 import type { Logger } from 'pino';
 import { setAlert } from '../alerts/alerts.js';
-import { refreshInventoryItem, removeInventoryItem } from '../catalog/catalog.js';
+import {
+  refreshInventoryItem,
+  removeInventoryItem,
+  startUnsoldAtZero,
+  withCatalogLock,
+} from '../catalog/catalog.js';
 import { normalizeSku } from '../catalog/sku.js';
 import type { Db, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
@@ -247,7 +252,30 @@ async function publish(
     }
     identifier = { customId: String(productId) };
   }
-  const result = await admin.productSet({ identifier, input: plan.input, synchronous: true });
+  // A SKU no store sells yet starts at 0 with its first publish: written before the product, so
+  // the start is there when its new variant is linked below. A SKU the merchant created in a
+  // store first keeps that store's number and starts like any other product (startUnsoldAtZero).
+  const added = new Set(plan.addedVariants.map((sku) => normalizeSku(sku)));
+  const startItems = product.variants
+    .filter((v) => added.has(v.normalizedSku))
+    .map((v) => v.itemId);
+  const starts = startItems.length
+    ? await withCatalogLock(db, (client) => startUnsoldAtZero(client, { itemIds: startItems }))
+    : [];
+  let result: ProductSetResult;
+  try {
+    result = await admin.productSet({ identifier, input: plan.input, synchronous: true });
+  } catch (err) {
+    // Refused for good: no variant was made, so no start is left waiting for one (a SKU created in
+    // the store by hand later must keep its number). A retried write keeps it.
+    if (starts.length && failureMessage(err, store) !== null) {
+      await db.query(
+        'DELETE FROM pool_adjustments WHERE id = ANY($1::bigint[]) AND applied_at IS NULL',
+        [starts],
+      );
+    }
+    throw err;
+  }
   log.debug(
     { productId: result.productId, mode: plan.mode, removed: plan.removedVariants.length },
     'productSet done',

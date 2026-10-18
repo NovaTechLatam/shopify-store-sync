@@ -86,7 +86,10 @@ The Rules tab shows live examples while you edit a rule, with a few of your own 
   prices…**: set an amount, change by a percentage, add or subtract an amount, or round. You can
   round the results ("+10%, ending in .99"). Products without a value are skipped by relative
   changes. Nothing is changed if any result would be negative. With no product ticked, the change
-  applies to the list as shown, store filter included.
+  applies to the list as shown, store filter included. Two kinds of change ask first, saying how
+  many products they touch: **Set to an amount** with the amount left empty (it removes the value),
+  and a change that leaves compare-at prices at or below the base price (stores stop showing those
+  compare-at prices at the next update).
 - **A fixed price**: the edit button in a store's column. It replaces the rule for that product in
   that store until you remove it. Add a note to remember why. In a store whose rule is off, removing
   a fixed price leaves the store at the price it has in Shopify: change it there if needed.

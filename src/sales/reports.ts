@@ -1,5 +1,5 @@
 import type { Queryable } from '../db/pool.js';
-import { getSettings, isTimeZone, type Settings } from '../settings.js';
+import { getSettings, reportTimezone, type Settings } from '../settings.js';
 import { missingScopes } from '../shopify/scopes.js';
 import { roundMoney } from '../util/money.js';
 import { paceDays, productFigures } from './metrics.js';
@@ -74,17 +74,6 @@ export async function reportContext(
     stores: wanted ? allStores.filter((s) => wanted.has(s.id)) : allStores,
     allStores,
   };
-}
-
-/** The reportTimezone setting, else the first store's time zone, else UTC. */
-export async function reportTimezone(db: Queryable, settings?: Settings): Promise<string> {
-  const setting = (settings ?? (await getSettings(db))).reportTimezone;
-  if (setting) return setting;
-  const { rows } = await db.query<{ iana_timezone: string }>(
-    'SELECT iana_timezone FROM stores WHERE iana_timezone IS NOT NULL ORDER BY id',
-  );
-  // Shopify's names are IANA names; a name our Intl (and Postgres) don't know is skipped.
-  return rows.find((r) => isTimeZone(r.iana_timezone))?.iana_timezone ?? 'UTC';
 }
 
 async function loadReportStores(db: Queryable): Promise<ReportStore[]> {

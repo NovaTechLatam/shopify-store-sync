@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { lockItemRows } from '../../db/locks.js';
 import type { Queryable } from '../../db/pool.js';
 import { withTransaction } from '../../db/pool.js';
 import { bulkValue } from '../../pricing/bulk.js';
@@ -98,6 +99,8 @@ const BulkBody = z
     field: z.enum(['basePrice', 'baseCompareAtPrice', 'cost']),
     value: z.number().min(-1_000_000_000_000).max(1_000_000_000_000).nullable().optional(),
     rounding: BulkRoundingBody.nullable().optional(),
+    /** Only count what would change (for the confirmation), change nothing. */
+    dryRun: z.boolean().optional(),
   })
   .superRefine((b, ctx) => {
     const issue = (path: string, message: string) =>
@@ -353,7 +356,9 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
       const { rows } = await client.query<{
         base_price: number | null;
         base_compare_at_price: number | null;
-      }>('SELECT base_price, base_compare_at_price FROM items WHERE id = $1 FOR UPDATE', [itemId]);
+      }>('SELECT base_price, base_compare_at_price FROM items WHERE id = $1 FOR NO KEY UPDATE', [
+        itemId,
+      ]);
       if (!rows[0]) throw notFound('Item');
       const price = body.basePrice !== undefined ? body.basePrice : rows[0].base_price;
       const compareAt =
@@ -403,15 +408,28 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
       cost: 'cost',
     }[body.field];
     return withTransaction(db, async (client) => {
-      const { rows } = await client.query<{ id: number; sku: string; value: number | null }>(
-        `SELECT id, sku, ${column} AS value FROM items WHERE id = ANY($1::bigint[])
-          ORDER BY id FOR UPDATE`,
+      // In id order, like every bulk change of items (src/db/locks.ts): no deadlock with a
+      // delivery or a catalog save of the same products.
+      if (!body.dryRun) await lockItemRows(client, itemIds);
+      const { rows } = await client.query<{
+        id: number;
+        sku: string;
+        value: number | null;
+        base_price: number | null;
+        base_compare_at_price: number | null;
+      }>(
+        `SELECT id, sku, ${column} AS value, base_price, base_compare_at_price
+           FROM items WHERE id = ANY($1::bigint[]) ORDER BY id`,
         [itemIds],
       );
       const changes: { id: number; value: number | null }[] = [];
       const negative: string[] = [];
       const tooBig: string[] = [];
       let skipped = 0;
+      // What the confirmation warns about: values removed, and compare-at prices that end up at
+      // or below the base price (stores drop those at the next update: computeTargetPrice).
+      let cleared = 0;
+      let compareAtLost = 0;
       for (const row of rows) {
         const next = bulkValue(
           row.value,
@@ -421,7 +439,18 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
         if (next === undefined) skipped++;
         else if (next !== null && next < 0) negative.push(row.sku);
         else if (next !== null && next > MAX_AMOUNT) tooBig.push(row.sku);
-        else if (next !== row.value) changes.push({ id: row.id, value: next });
+        else if (next !== row.value) {
+          changes.push({ id: row.id, value: next });
+          if (next === null) cleared++;
+          const price = body.field === 'basePrice' ? next : row.base_price;
+          const compareAt = body.field === 'baseCompareAtPrice' ? next : row.base_compare_at_price;
+          const wasAbove =
+            row.base_price === null ||
+            row.base_compare_at_price === null ||
+            row.base_compare_at_price > row.base_price;
+          const lost = price !== null && compareAt !== null && compareAt <= price;
+          if (body.field !== 'cost' && wasAbove && lost) compareAtLost++;
+        }
       }
       const what = body.field === 'cost' ? 'cost' : 'price';
       const skus = (list: string[]) =>
@@ -437,6 +466,16 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
             'Nothing was changed. Check the amount or percentage.',
         );
       }
+      if (body.dryRun) {
+        return {
+          updated: changes.length,
+          skipped,
+          unchanged: rows.length - changes.length - skipped,
+          cleared,
+          compareAtLost,
+          dryRun: true,
+        };
+      }
       if (changes.length > 0) {
         await client.query(
           `UPDATE items i SET ${column} = t.value, updated_at = now()
@@ -450,6 +489,8 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
         updated: changes.length,
         skipped,
         unchanged: rows.length - changes.length - skipped,
+        cleared,
+        compareAtLost,
       };
     });
   });
@@ -476,7 +517,7 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
            FROM variants v JOIN items i ON i.id = v.item_id
           WHERE v.store_id = $1 AND v.deleted_at IS NULL AND NOT v.is_bundle
             AND (NOT $2::boolean OR i.base_price IS NULL)
-          ORDER BY v.item_id FOR UPDATE OF i`,
+          ORDER BY v.item_id FOR NO KEY UPDATE OF i`,
         [store.id, body.onlyMissing],
       );
       const known = rows.filter((r) => r.price !== null);

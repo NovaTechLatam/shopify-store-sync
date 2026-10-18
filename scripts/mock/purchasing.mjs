@@ -13,6 +13,8 @@ const UNFINISHED = ['draft', 'ordered', 'partial'];
 function velocityOf(item) {
   if (item.sku.startsWith('JKT')) return 2.4;
   if (item.sku.startsWith('CAP')) return 0;
+  // The catalog's beanie isn't in any store yet.
+  if (item.sku.startsWith('BEANIE')) return 0;
   return ((item.id * 37) % 45) / 10;
 }
 
@@ -26,7 +28,9 @@ function computeReorder(i) {
   const position = i.available + i.onOrder;
   const daysLeft = Math.max(0, i.available) / velocity;
   const coverageDays = Math.max(0, position) / velocity;
-  const needsReorder = tidy(position / velocity) <= i.leadTimeDays + i.safetyDays;
+  // An open alert stays open until the stock clears the line by a margin (reorderCloseMargin).
+  const margin = i.alertOpen ? Math.max(2, 0.1 * (i.leadTimeDays + i.safetyDays)) : 0;
+  const needsReorder = tidy(position / velocity) <= i.leadTimeDays + i.safetyDays + margin;
   if (!needsReorder) return { velocity, daysLeft, coverageDays, needsReorder, suggested: 0 };
   const days = i.leadTimeDays + Math.max(i.coverDays, i.safetyDays);
   let q = Math.max(1, Math.ceil(tidy(velocity * days - position)));
@@ -375,6 +379,8 @@ function supplierView(state, s) {
     ...s,
     updatedAt: s.createdAt,
     itemCount: p.supplierItems.filter((si) => si.supplierId === s.id).length,
+    pricedItemCount: p.supplierItems.filter((si) => si.supplierId === s.id && si.unitCost !== null)
+      .length,
     preferredCount: Object.values(p.itemInfo).filter((i) => i.supplierId === s.id).length,
     openOrders: orders.filter((o) => UNFINISHED.includes(o.status)).length,
     orderCount: orders.length,
@@ -570,6 +576,9 @@ function reorderRows(state) {
         safetyDays: settings.reorderSafetyDays,
         minOrderQty: si?.minOrderQty ?? null,
         packSize: si?.packSize ?? null,
+        alertOpen: state.alerts.some(
+          (a) => a.kind === 'reorder' && a.itemId === item.id && !a.resolvedAt,
+        ),
       });
       const counts = stockKnown && info.reorderEnabled;
       return {
@@ -906,6 +915,17 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
             s.name.toLowerCase() === body.name.toLowerCase(),
         );
       if (taken) throw new HttpError(409, `A supplier called “${body.name}” already exists`);
+      // Like the API: its prices would be read in the new currency, so that must be confirmed.
+      const priced = supplierView(state, supplier).pricedItemCount;
+      if (body.currencyCode && body.currencyCode !== supplier.currencyCode && priced > 0) {
+        if (!body.confirmCurrencyChange) {
+          throw new HttpError(
+            409,
+            `“${supplier.name}” has prices for ${priced === 1 ? '1 product' : `${priced} products`} in ${supplier.currencyCode}. They stay the same numbers, now in ${body.currencyCode} (12.50 ${supplier.currencyCode} becomes 12.50 ${body.currencyCode}). Confirm the change, or update the prices first.`,
+            { currencyChange: { pricedItems: priced } },
+          );
+        }
+      }
       const keys = [
         'name',
         'contactName',

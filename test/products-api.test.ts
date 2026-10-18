@@ -195,6 +195,37 @@ describe('catalog products', () => {
     expect((await h.db.query('SELECT 1 FROM items')).rowCount).toBe(0);
   });
 
+  it('keeps an option value with a comma as one value, and refuses a line break in one', async () => {
+    const created = await api(
+      'POST',
+      '/api/catalog/products',
+      tee({
+        options: [{ name: 'Finish', values: ['Red, matte', 'Red, glossy'] }],
+        variants: [
+          { sku: 'MUG-RM', optionValues: ['Red, matte'], basePrice: 9 },
+          { sku: 'MUG-RG', optionValues: ['Red, glossy'], basePrice: 9 },
+        ],
+      }),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.options).toEqual([
+      { name: 'Finish', values: ['Red, matte', 'Red, glossy'] },
+    ]);
+    expect(created.body.variants.map((v: any) => v.optionValues)).toEqual([
+      ['Red, matte'],
+      ['Red, glossy'],
+    ]);
+    const broken = await api('PATCH', `/api/catalog/products/${created.body.id}`, {
+      options: [{ name: 'Finish', values: ['Red, matte', 'Red\nglossy'] }],
+      variants: [
+        { sku: 'MUG-RM', optionValues: ['Red, matte'] },
+        { sku: 'MUG-RG', optionValues: ['Red\nglossy'] },
+      ],
+    });
+    expect(broken.status).toBe(400);
+    expect(JSON.stringify(broken.body)).toContain('can’t contain a line break');
+  });
+
   it('takes an option with as many values as a product can have variants', async () => {
     const values = Array.from({ length: 120 }, (_, i) => `EU ${i}`);
     const res = await api('POST', '/api/catalog/products', {
@@ -230,14 +261,12 @@ describe('catalog products', () => {
     expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
     const owners = await h.db.query('SELECT DISTINCT master_product_id FROM master_variants');
     expect(owners.rowCount).toBe(1);
-    // One item per SKU, one start at 0 each.
-    const inits = await h.db.query(
-      `SELECT 1 FROM pool_adjustments WHERE kind = 'initialize' AND applied_at IS NULL`,
-    );
-    expect(inits.rowCount).toBe(2);
+    // One item per SKU.
+    const items = await h.db.query('SELECT 1 FROM items');
+    expect(items.rowCount).toBe(2);
   });
 
-  it('starts new items at 0 but leaves an existing item’s stock alone', async () => {
+  it('says a new SKU starts at 0 (when first published) and leaves an existing item’s stock alone', async () => {
     const existing = await h.addItem('TEE-M', [4, 4, 4]);
     await h.initialize(existing, 'max');
     await h.drain();
@@ -248,12 +277,9 @@ describe('catalog products', () => {
       ['TEE-S', null, false, true],
       ['TEE-M', 4, true, false],
     ]);
-    const inits = await h.db.query<{ sku: string; strategy: string; value: number }>(
-      `SELECT i.sku, a.strategy, a.value FROM pool_adjustments a
-         JOIN pool_levels pl ON pl.id = a.pool_level_id JOIN items i ON i.id = pl.item_id
-        WHERE a.applied_at IS NULL`,
-    );
-    expect(inits.rows).toEqual([{ sku: 'TEE-S', strategy: 'value', value: 0 }]);
+    // Saving starts nothing: the first publish does (products-publish.test.ts).
+    const inits = await h.db.query('SELECT 1 FROM pool_adjustments WHERE applied_at IS NULL');
+    expect(inits.rowCount).toBe(0);
     expect(await h.shared(existing)).toBe(4);
   });
 
@@ -880,6 +906,46 @@ describe('the product page', () => {
     expect(item.issues).toEqual(['Not published in brand0 yet', 'Not published in brand2 yet']);
     const attention = (await api('GET', '/api/items?filter=issues')).body;
     expect(attention.total).toBe(0);
+  });
+
+  it('shows a variant no store has yet as “not published”, never as waiting to start', async () => {
+    const [a] = h.stores;
+    // An ordinary product that hasn't started syncing, for comparison.
+    await h.addItem('LOOSE-1', [3, 3, 3]);
+    const created = (await api('POST', '/api/catalog/products', tee())).body;
+    const all = (await api('GET', '/api/items')).body;
+    const bySku = new Map(all.items.map((i: any) => [i.sku, i]));
+    expect(bySku.get('TEE-S')).toMatchObject({
+      notPublished: true,
+      catalogProduct: { id: created.id, title: 'Linen tee' },
+    });
+    expect(bySku.get('LOOSE-1')).toMatchObject({ notPublished: false, catalogProduct: null });
+    // Not offered a start: not in "Not started", not counted on the overview.
+    const notStarted = (await api('GET', '/api/items?filter=uninitialized')).body;
+    expect(notStarted.items.map((i: any) => i.sku)).toEqual(['LOOSE-1']);
+    expect((await api('GET', '/api/status')).body.items).toMatchObject({
+      total: 1,
+      uninitialized: 1,
+    });
+    // Adding units by hand waits for the publish.
+    const tees = await h.db.query<{ id: number }>(`SELECT id FROM items WHERE sku = 'TEE-S'`);
+    const adjust = await api('POST', `/api/items/${tees.rows[0]!.id}/adjust`, {
+      kind: 'adjust',
+      value: 5,
+    });
+    expect(adjust.status).toBe(400);
+    expect(adjust.body.error).toContain('Publish it from the catalog first');
+
+    // Created by hand in a store before publishing: now it's an ordinary product to start.
+    const own = a!.shop.addVariant('TEE-S');
+    a!.shop.stock(own.inventoryItemId, a!.locationId, 4);
+    await readCatalog(a!);
+    const after = (await api('GET', '/api/items?filter=uninitialized')).body;
+    expect(after.items.map((i: any) => [i.sku, i.notPublished])).toEqual([
+      ['LOOSE-1', false],
+      ['TEE-S', false],
+    ]);
+    expect((await api('GET', '/api/status')).body.items.uninitialized).toBe(2);
   });
 
   it('says “missing” again once a published variant is gone from a brand', async () => {

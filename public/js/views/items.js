@@ -203,6 +203,7 @@ function productCell(item) {
 }
 
 function sharedCell(item, defaultThreshold) {
+  if (item.notPublished) return notPublishedLink(item.catalogProduct);
   if (item.levels.length === 0) return muted('—');
   const threshold = item.lowStockThreshold ?? defaultThreshold;
   return item.levels.map((level) =>
@@ -212,6 +213,19 @@ function sharedCell(item, defaultThreshold) {
       item.levels.length > 1 && h('span', { class: 'qty-warehouse' }, level.warehouseName),
       quantity(level.quantity, threshold),
     ),
+  );
+}
+
+/**
+ * A catalog product's variant that no store has yet: it starts when the product is published
+ * (not from "Start syncing"), so the link goes to the product in the catalog.
+ */
+export function notPublishedLink(product) {
+  return h(
+    'a',
+    { href: `#/catalog/${product.id}`, class: 'badge-link' },
+    badge('Not published yet', 'info'),
+    srOnly(`: open “${product.title}” in the catalog`),
   );
 }
 

@@ -101,7 +101,9 @@ export async function render({ root, query, signal, setTitle }) {
       toast(
         run.status === 'failed'
           ? 'Some stores couldn’t be updated. The reasons are at the top of this page.'
-          : `Prices updated: ${plural(updated, 'price')} changed in your stores.`,
+          : updated === 0
+            ? 'Prices checked: your stores already had the right prices.'
+            : `Prices updated: ${plural(updated, 'price')} changed in your stores.`,
         { tone: run.status === 'failed' ? 'error' : 'success' },
       );
       // Show the new prices without losing what the merchant is typing (unsaved base prices,

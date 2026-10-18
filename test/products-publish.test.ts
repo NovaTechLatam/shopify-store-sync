@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { refreshInventoryItem, syncStoreCatalog } from '../src/catalog/catalog.js';
+import {
+  refreshInventoryItem,
+  startUnsoldAtZero,
+  syncStoreCatalog,
+  withCatalogLock,
+} from '../src/catalog/catalog.js';
 import { createProduct, updateProduct } from '../src/products/editor.js';
 import { saveImage } from '../src/products/media.js';
 import { loadMasterProduct, loadStoreContexts } from '../src/products/model.js';
 import { loadCurrentPrices, storeState } from '../src/products/views.js';
 import type { ProductSetRequest } from '../src/shopify/types.js';
+import { updateSettings } from '../src/settings.js';
 import { enqueuePoolLevels } from '../src/sync/queue.js';
 import { enqueueTask } from '../src/tasks/queue.js';
 import { runTasksOnce } from '../src/tasks/runner.js';
@@ -160,6 +166,8 @@ describe('publishing a new product', () => {
 
   it('sends the store’s rule prices, fixed prices and the cost in the store’s currency', async () => {
     const [a] = h.stores;
+    // Costs go to Shopify only with "Copy costs to Shopify" on.
+    await updateSettings(h.db, { pushCostsToShopify: true });
     await h.db.query(
       `INSERT INTO price_rules (store_id, enabled, multiplier, round_mode, round_step,
                                 round_ending, round_direction)
@@ -183,6 +191,24 @@ describe('publishing a new product', () => {
     expect(request!.input.variants![1]!.inventoryItem!.cost).toBeUndefined();
   });
 
+  it('leaves Shopify’s cost alone while “Copy costs to Shopify” is off', async () => {
+    const [a] = h.stores;
+    const id = await createProduct(h.db, tee());
+    await publish(id, [a!]);
+    await settle();
+    const create = productSets(a!)[0]!;
+    expect(create.input.variants!.map((v) => v.inventoryItem!.cost)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    // The same switch for both: turned on, the next publish sends the cost.
+    await updateSettings(h.db, { pushCostsToShopify: true });
+    await publish(id, [a!]);
+    await settle();
+    const update = productSets(a!)[1]!;
+    expect(update.input.variants!.map((v) => v.inventoryItem!.cost)).toEqual(['4.00', undefined]);
+  });
+
   it('refuses a new product without a price, naming the SKU', async () => {
     const id = await createProduct(
       h.db,
@@ -199,6 +225,110 @@ describe('publishing a new product', () => {
     expect(row.publish_state).toBe('failed');
     expect(row.last_error).toContain('SKU TEE-S has no price');
     expect(productSets(h.stores[0]!)).toHaveLength(0);
+  });
+});
+
+describe('when a new SKU starts at 0', () => {
+  /** Pending starts at 0, by SKU. */
+  const pendingStarts = async () =>
+    (
+      await h.db.query<{ sku: string }>(
+        `SELECT i.sku FROM pool_adjustments a
+           JOIN pool_levels pl ON pl.id = a.pool_level_id JOIN items i ON i.id = pl.item_id
+          WHERE a.kind = 'initialize' AND a.applied_at IS NULL ORDER BY i.sku`,
+      )
+    ).rows.map((r) => r.sku);
+  const shared = async (sku: string) =>
+    (
+      await h.db.query<{ quantity: number | null }>(
+        `SELECT pl.quantity FROM pool_levels pl JOIN items i ON i.id = pl.item_id WHERE i.sku = $1`,
+        [sku],
+      )
+    ).rows[0]!.quantity;
+  const shows = (s: TestStore, sku: string) => {
+    const v = s.shop.variants.find((x) => x.sku === sku)!;
+    return s.shop.level(v.inventoryItemId, s.locationId);
+  };
+
+  it('starts nothing when the product is saved, and each new SKU at 0 when first published', async () => {
+    const id = await createProduct(h.db, tee());
+    expect(await pendingStarts()).toEqual([]);
+    await publish(id, [h.stores[0]!]);
+    await settle();
+    expect([await shared('TEE-S'), await shared('TEE-M')]).toEqual([0, 0]);
+    const { rows } = await h.db.query<{ message: string }>(
+      `SELECT message FROM inventory_events WHERE kind = 'initialized' ORDER BY id LIMIT 1`,
+    );
+    expect(rows[0]!.message).toBe('Started syncing at 0 (new product)');
+    // The second brand joins the shared number.
+    await publish(id, [h.stores[1]!]);
+    await settle();
+    expect(shows(h.stores[1]!, 'TEE-S')).toBe(0);
+  });
+
+  it('keeps the stock of a SKU the merchant created in a store before publishing', async () => {
+    const [a, b] = h.stores;
+    const id = await createProduct(h.db, tee());
+    // Made by hand in the first brand, with 7 on the shelf, before the catalog published it.
+    const own = a!.shop.addVariant('TEE-S', { productTitle: 'Linen tee' });
+    a!.shop.stock(own.inventoryItemId, a!.locationId, 7);
+    await refreshInventoryItem(
+      { db: h.db, shopify: h.registry, logger: silentLogger },
+      a!.id,
+      own.inventoryItemId,
+    );
+    await publish(id);
+    await settle();
+    // Only TEE-M, which no store had, started at 0. TEE-S waits for the usual start, and the
+    // brand that had it still shows its 7.
+    expect(await shared('TEE-M')).toBe(0);
+    expect(await shared('TEE-S')).toBeNull();
+    expect(await pendingStarts()).toEqual([]);
+    expect(shows(a!, 'TEE-S')).toBe(7);
+    expect(productsWithSku(a!, 'TEE-S')).toEqual(new Set([own.productId]));
+    // Started like any other product: from the stores' numbers.
+    const { rows } = await h.db.query<{ id: number }>(
+      `SELECT pl.id FROM pool_levels pl JOIN items i ON i.id = pl.item_id WHERE i.sku = 'TEE-S'`,
+    );
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, strategy) VALUES ($1, 'initialize', 'max')`,
+      [rows[0]!.id],
+    );
+    await enqueuePoolLevels(h.db, [rows[0]!.id], 'test');
+    await h.drain();
+    expect(await shared('TEE-S')).toBe(7);
+    expect([shows(a!, 'TEE-S'), shows(b!, 'TEE-S')]).toEqual([7, 7]);
+  });
+
+  it('adds a delivery received before the first publish, once', async () => {
+    const id = await createProduct(h.db, tee());
+    const { rows } = await h.db.query<{ id: number }>(
+      `SELECT pl.id FROM pool_levels pl JOIN items i ON i.id = pl.item_id WHERE i.sku = 'TEE-S'`,
+    );
+    // What a purchase order delivery does for a product no store sells (purchasing's own start).
+    await withCatalogLock(h.db, (client) =>
+      startUnsoldAtZero(client, { poolLevelIds: [rows[0]!.id] }),
+    );
+    await h.db.query(
+      `INSERT INTO pool_adjustments (pool_level_id, kind, value) VALUES ($1, 'adjust', 12)`,
+      [rows[0]!.id],
+    );
+    expect(await pendingStarts()).toEqual(['TEE-S']);
+    await publish(id);
+    await settle();
+    expect(await pendingStarts()).toEqual([]);
+    expect([await shared('TEE-S'), await shared('TEE-M')]).toEqual([12, 0]);
+    expect(h.stores.map((s) => shows(s, 'TEE-S'))).toEqual([12, 12]);
+  });
+
+  it('leaves no start behind when the store refuses the product', async () => {
+    const id = await createProduct(h.db, tee({ handle: 'linen-tee' }));
+    // The web address is taken in that store: Shopify refuses the product.
+    h.stores[0]!.shop.addProduct({ title: 'Other', handle: 'linen-tee' });
+    await publish(id, [h.stores[0]!]);
+    await settle();
+    expect((await brandRow(id, h.stores[0]!.id)).publish_state).toBe('failed');
+    expect(await pendingStarts()).toEqual([]);
   });
 });
 

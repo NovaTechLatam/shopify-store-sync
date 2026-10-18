@@ -1,3 +1,4 @@
+import { lockItemRows, LOCKS } from '../db/locks.js';
 import type { Db, DbClient, Queryable } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { setAlert } from '../alerts/alerts.js';
@@ -33,7 +34,7 @@ import { createPriceRun, pendingRestores, readCurrentPrices, saveCurrentPrices }
  */
 
 /** Serialises creating and editing schedules (the overlap check). */
-const SCHEDULE_LOCK = 727_006;
+const SCHEDULE_LOCK = LOCKS.priceSchedules;
 
 export interface SaleInput {
   kind: 'sale';
@@ -410,7 +411,8 @@ async function startSale(
   // the regular price) or after (and takes the item out of the sale).
   await client.query(
     `SELECT 1 FROM price_overrides
-      WHERE store_id = ANY($1::bigint[]) AND item_id = ANY($2::bigint[]) FOR UPDATE`,
+      WHERE store_id = ANY($1::bigint[]) AND item_id = ANY($2::bigint[])
+      ORDER BY store_id, item_id FOR UPDATE`,
     [storeIds, itemIds],
   );
   const overrideAt = byCell(await loadOverrides(client, itemIds, storeIds));
@@ -551,7 +553,9 @@ async function otherSalesPrevious(
 async function endSale(client: DbClient, s: ScheduleRow): Promise<CreatedRun | null> {
   const previous = (s.previous ?? []) as SalePrevious[];
   const { rows: owned } = await client.query<{ store_id: number; item_id: number }>(
-    'SELECT store_id, item_id FROM price_overrides WHERE schedule_id = $1 FOR UPDATE',
+    // In the same order as a starting sale locks them: back-to-back sales don't deadlock.
+    `SELECT store_id, item_id FROM price_overrides WHERE schedule_id = $1
+      ORDER BY store_id, item_id FOR UPDATE`,
     [s.id],
   );
   const stillOwned = new Set(owned.map((o) => cellKey(o.store_id, o.item_id)));
@@ -602,13 +606,17 @@ async function endSale(client: DbClient, s: ScheduleRow): Promise<CreatedRun | n
 }
 
 async function applyBaseChange(client: DbClient, s: ScheduleRow): Promise<CreatedRun | null> {
+  await lockItemRows(
+    client,
+    s.changes.map((c) => c.itemId),
+  );
   const { rows } = await client.query<{
     id: number;
     base_price: number | null;
     base_compare_at_price: number | null;
   }>(
     `SELECT id, base_price, base_compare_at_price FROM items
-      WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`,
+      WHERE id = ANY($1::bigint[]) ORDER BY id`,
     [s.changes.map((c) => c.itemId)],
   );
   if (rows.length === 0) {

@@ -189,6 +189,10 @@ const HOUSEKEEPING_BATCH = 5000;
 /**
  * Maps lines that had no item when they were saved (the SKU wasn't matched yet, or the product
  * was created later) the same way upsertOrder does. Returns how many were mapped.
+ *
+ * Lines are taken in id order and those being written right now are skipped (the next run gets
+ * them): a batch of orders holds its lines while it saves the next order, so waiting for them
+ * here, with lines of later orders already taken, could deadlock with it.
  */
 export async function mapUnmatchedLines(
   db: Queryable,
@@ -207,7 +211,9 @@ export async function mapUnmatchedLines(
                ) mapped
                JOIN items i ON i.id = mapped.item_id
               WHERE l2.item_id IS NULL
-              LIMIT $1) m
+              ORDER BY l2.id
+              LIMIT $1
+              FOR UPDATE OF l2 SKIP LOCKED) m
       WHERE l.id = m.id AND l.item_id IS NULL`,
     [limit],
   );
@@ -217,6 +223,7 @@ export async function mapUnmatchedLines(
 /**
  * Gives lines without a cost snapshot their item's cost, once the item has one (sales imported
  * before costs were entered would otherwise never show a margin). Returns how many were filled.
+ * Lines are locked in id order, skipping those being written now (see mapUnmatchedLines).
  */
 export async function fillMissingCosts(db: Queryable, limit = HOUSEKEEPING_BATCH): Promise<number> {
   // From the items that have a cost, down the index of lines without one: cheap when there is
@@ -224,12 +231,16 @@ export async function fillMissingCosts(db: Queryable, limit = HOUSEKEEPING_BATCH
   const { rowCount } = await db.query(
     `UPDATE sales_lines l SET unit_cost = i.cost
        FROM items i
-      WHERE l.id IN (SELECT x.id FROM items i2
-                      CROSS JOIN LATERAL (SELECT l2.id FROM sales_lines l2
-                                           WHERE l2.item_id = i2.id AND l2.unit_cost IS NULL
-                                           LIMIT $1) x
-                      WHERE i2.cost IS NOT NULL
-                      LIMIT $1)
+      WHERE l.id IN (SELECT ll.id FROM sales_lines ll
+                      WHERE ll.id IN (SELECT x.id FROM items i2
+                                       CROSS JOIN LATERAL (SELECT l2.id FROM sales_lines l2
+                                                            WHERE l2.item_id = i2.id
+                                                              AND l2.unit_cost IS NULL
+                                                            LIMIT $1) x
+                                       WHERE i2.cost IS NOT NULL
+                                       LIMIT $1)
+                      ORDER BY ll.id
+                      FOR UPDATE SKIP LOCKED)
         AND i.id = l.item_id AND l.unit_cost IS NULL AND i.cost IS NOT NULL`,
     [limit],
   );

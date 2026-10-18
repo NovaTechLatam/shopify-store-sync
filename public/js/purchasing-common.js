@@ -1,7 +1,7 @@
-import { api } from './api.js';
-import { formDialog } from './dialog.js';
+import { ApiError, api } from './api.js';
+import { confirmDialog, formDialog } from './dialog.js';
 import { h } from './dom.js';
-import { days, num } from './format.js';
+import { days, num, plural } from './format.js';
 import { badge, field, input } from './ui.js';
 
 /** Pieces shared by the purchasing pages (views/purchasing.js, views/purchase-order.js) and the
@@ -212,14 +212,55 @@ export async function supplierDialog(supplier, { baseCurrency }) {
       if (body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
         throw new Error('Enter an email address like orders@supplier.com, or leave it empty.');
       }
-      return api(
-        supplier ? `/api/purchasing/suppliers/${supplier.id}` : '/api/purchasing/suppliers',
-        {
-          method: supplier ? 'PATCH' : 'POST',
-          body,
+      if (!supplier) {
+        return api('/api/purchasing/suppliers', { method: 'POST', body, toastErrors: false });
+      }
+      const save = (confirmCurrencyChange) =>
+        api(`/api/purchasing/suppliers/${supplier.id}`, {
+          method: 'PATCH',
+          body: confirmCurrencyChange ? { ...body, confirmCurrencyChange } : body,
           toastErrors: false,
-        },
-      );
+        });
+      const changing = code !== supplier.currencyCode;
+      if (changing && supplier.pricedItemCount > 0) {
+        if (!(await confirmCurrencyChange(supplier, code, supplier.pricedItemCount))) {
+          throw new Error('The currency wasn’t changed. Put it back, or confirm to change it.');
+        }
+        return save(true);
+      }
+      try {
+        return await save(false);
+      } catch (err) {
+        // Prices were added since the page loaded: the server asks for the same confirmation.
+        const priced = err instanceof ApiError && err.body?.currencyChange?.pricedItems;
+        if (!changing || !priced) throw err;
+        if (!(await confirmCurrencyChange(supplier, code, priced))) {
+          throw new Error('The currency wasn’t changed. Put it back, or confirm to change it.', {
+            cause: err,
+          });
+        }
+        return save(true);
+      }
     },
+  });
+}
+
+/** Asks before a supplier's prices are read in another currency (they keep their numbers). */
+function confirmCurrencyChange(supplier, code, priced) {
+  return confirmDialog({
+    title: `Change “${supplier.name}” to ${code}?`,
+    message: [
+      h(
+        'p',
+        {},
+        `${supplier.name} has prices for ${plural(priced, 'product')} in ${supplier.currencyCode}. They stay as the same numbers, now in ${code}: a price of 12.50 ${supplier.currencyCode} becomes 12.50 ${code}.`,
+      ),
+      h(
+        'p',
+        { class: 'muted' },
+        'Check them on the supplier’s page afterwards. Orders already made keep their own currency.',
+      ),
+    ],
+    confirmLabel: `Change to ${code}`,
   });
 }
