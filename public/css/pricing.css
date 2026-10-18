@@ -1,3 +1,378 @@
 /* Prices: the price list, rules, sales and price changes, history.
    Loaded after styles.css: use its tokens (colours, spacing) and shared pieces (.thumb, .num,
    .table-totals, .chart and --series-N, print rules). */
+
+/* ---------- Page ---------- */
+
+.price-progress:not(:empty) {
+  margin-bottom: var(--space-4);
+}
+
+.tab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.tab-toolbar > p {
+  flex: 1 1 320px;
+  max-width: 70ch;
+}
+
+.run-store-list,
+.rule-examples,
+.chosen-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+/* ---------- Prices tab ---------- */
+
+.price-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-4) 0 var(--space-3);
+}
+
+.select-all {
+  margin-bottom: var(--space-3);
+  font-size: 14px;
+}
+
+.price-table .col-product {
+  min-width: 200px;
+}
+
+.price-table .col-base {
+  min-width: 150px;
+}
+
+.price-table .col-store {
+  min-width: 150px;
+}
+
+.price-product {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.row-check {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.price-base {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.price-input {
+  width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+
+.price-input[aria-invalid='true'] {
+  border-color: var(--critical);
+}
+
+.price-cell {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+}
+
+.price-main {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.price-change {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px var(--space-1);
+}
+
+.price-old {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.price-delta {
+  font-weight: 600;
+}
+
+.price-target {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 2px var(--space-2);
+}
+
+.price-compare {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.price-notes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px var(--space-2);
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.price-base .price-notes {
+  justify-content: flex-start;
+}
+
+.price-margin {
+  white-space: nowrap;
+}
+
+.price-fixed {
+  width: 32px;
+  height: 32px;
+}
+
+.price-save-bar[hidden] {
+  display: none;
+}
+
+.price-save-bar {
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 639px) {
+  /* Phones: the base price cell sits on the right like the others. */
+  .price-base {
+    justify-items: end;
+  }
+
+  .price-base .price-notes {
+    justify-content: flex-end;
+  }
+
+  .price-table .col-product,
+  .price-table .col-base,
+  .price-table .col-store {
+    min-width: 0;
+  }
+}
+
+/* ---------- Dialogs ---------- */
+
+.update-stores {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.update-stores > legend {
+  margin-bottom: var(--space-2);
+}
+
+.update-store {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.update-store.is-disabled {
+  background: var(--surface-2);
+}
+
+.update-store.is-disabled .checkbox {
+  cursor: not-allowed;
+}
+
+.big-drops {
+  margin: var(--space-2) 0 0 calc(18px + var(--space-3));
+  font-size: 13px;
+}
+
+.big-drops-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.big-drops .plain-list {
+  padding-left: var(--space-4);
+}
+
+.rounding-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.rounding-fields[hidden] {
+  display: none;
+}
+
+.checkbox-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* ---------- Rules ---------- */
+
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3) var(--space-4);
+  align-items: start;
+}
+
+.rule-grid > [hidden] {
+  display: none;
+}
+
+.rule-preview {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.rule-examples {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Sales and price changes ---------- */
+
+.product-picker {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.product-picker .picker-results {
+  min-height: 0;
+  max-height: 240px;
+  margin-top: 0;
+}
+
+.chosen-products {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.chosen-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.chosen-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.chosen-item > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chosen-item-prices {
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+}
+
+.chosen-name {
+  display: grid;
+  flex: 1 1 140px;
+}
+
+.chosen-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chosen-inputs label {
+  display: grid;
+  gap: 2px;
+  color: var(--text-muted);
+}
+
+.chosen-inputs .input-short {
+  width: 110px;
+}
+
+/* ---------- History ---------- */
+
+.run-table .col-run-stores {
+  min-width: 280px;
+}
+
+.run-store-list {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.refusals {
+  margin-top: var(--space-1);
+  font-size: 13px;
+}
+
+@media (max-width: 639px) {
+  .run-table .col-run-stores {
+    min-width: 0;
+  }
+
+  /* Phones: the per-store lines read left to right under the "Stores" label. */
+  .run-table td.col-run-stores {
+    display: block;
+    text-align: left;
+  }
+
+  .run-table td.col-run-stores::before {
+    display: block;
+    max-width: none;
+    margin-bottom: var(--space-1);
+  }
+}
+
+.schedule-when {
+  display: grid;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+@media (max-width: 639px) {
+  .schedule-when {
+    justify-items: end;
+  }
+}
+
+.schedule-count {
+  white-space: nowrap;
+}

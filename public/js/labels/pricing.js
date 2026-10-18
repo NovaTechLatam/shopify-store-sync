@@ -5,7 +5,12 @@
  */
 
 /** Alert kind → { label, tone } (tone: neutral | success | warning | critical | info). */
-export const ALERT_KINDS = {};
+export const ALERT_KINDS = {
+  // A sale or a base price change couldn't start (src/pricing/schedules.ts).
+  price_schedule_failed: { label: 'Sale or price change failed', tone: 'critical' },
+  // A scheduled update couldn't write a store's prices (src/pricing/runs.ts).
+  price_update_failed: { label: 'Prices not updated', tone: 'warning' },
+};
 
 /** Activity (inventory event) kind → label, also listed in the Activity page's filter. */
 export const EVENT_KINDS = {};
