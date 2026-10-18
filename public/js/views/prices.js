@@ -1,5 +1,5 @@
 import { api, isAbort, qs } from '../api.js';
-import { formDialog } from '../dialog.js';
+import { formDialog, isDialogOpen } from '../dialog.js';
 import { h, icon, replace, uid } from '../dom.js';
 import { money, percent, plural } from '../format.js';
 import { toast } from '../toast.js';
@@ -50,19 +50,22 @@ export async function render({ root, query, signal, setTitle }) {
   // What each tab gets: its own signal (aborted when another tab is shown), the query it was
   // opened with, and ways to start an update and reload itself.
   let tabController = null;
-  function showTab(tabQuery) {
+  let current = null;
+  async function showTab(tabQuery) {
     tabController?.abort();
     const controller = new AbortController();
     tabController = controller;
     signal.addEventListener('abort', () => controller.abort(), { once: true });
     replace(body);
-    return tab.view.render(body, {
+    current = null;
+    const shown = await tab.view.render(body, {
       query: tabQuery,
       signal: controller.signal,
       startUpdate: (opts) => openUpdate(opts),
       watchRun: (runId) => watch(runId),
       reload: () => showTab(new URLSearchParams(location.hash.split('?')[1] ?? '')),
     });
+    if (!controller.signal.aborted) current = shown ?? null;
   }
 
   async function openUpdate({ itemIds, trigger = update } = {}) {
@@ -101,7 +104,9 @@ export async function render({ root, query, signal, setTitle }) {
           : `Prices updated: ${plural(updated, 'price')} changed in your stores.`,
         { tone: run.status === 'failed' ? 'error' : 'success' },
       );
-      showTab(new URLSearchParams(location.hash.split('?')[1] ?? ''));
+      // Show the new prices without losing what the merchant is typing (unsaved base prices,
+      // rule edits, an open dialog): only tabs that can refresh in place do.
+      if (!isDialogOpen()) current?.refresh?.();
     };
     poll();
   }

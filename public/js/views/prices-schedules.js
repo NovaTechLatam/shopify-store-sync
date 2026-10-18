@@ -97,7 +97,7 @@ function scheduleTable(schedules, ctx, reload) {
         render: (s) =>
           h(
             'span',
-            { title: s.items.map((i) => i.sku).join(', ') },
+            { class: 'schedule-count', title: s.items.map((i) => i.sku).join(', ') },
             plural(s.items.length, 'product'),
           ),
       },

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import pino from 'pino';
-import { PRICING_JOBS } from '../src/pricing/jobs.js';
+import { PRICING_HOUSEKEEPING, PRICING_JOBS } from '../src/pricing/jobs.js';
 import type { ScheduleInput } from '../src/pricing/schedules.js';
 import {
   cancelSchedule,
@@ -438,5 +438,23 @@ describe('base price changes', () => {
         changes: [{ itemId: tee.itemId, basePrice: 20, baseCompareAtPrice: 20 }],
       }),
     ).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+describe('housekeeping', () => {
+  it('finishes a run whose last open store was deleted', async () => {
+    const tee = await item('TEE', 24.99, [20, 99000]);
+    const id = await createSchedule(h.db, sale([tee.itemId], { storeIds: [ruled.id] }));
+    await runSchedule(deps(), id);
+    const { rows } = await h.db.query<{ id: number }>('SELECT id FROM price_runs');
+    await h.db.query(`UPDATE price_runs SET created_at = now() - interval '10 minutes'`);
+    await h.db.query('DELETE FROM stores WHERE id = $1', [ruled.id]);
+    const ctx = { db: h.db, logger: silentLogger, now: Date.now() };
+    for (const [, run] of PRICING_HOUSEKEEPING) await run(ctx);
+    const after = await h.db.query<{ status: string }>(
+      'SELECT status FROM price_runs WHERE id = $1',
+      [rows[0]!.id],
+    );
+    expect(after.rows[0]!.status).toBe('done');
   });
 });

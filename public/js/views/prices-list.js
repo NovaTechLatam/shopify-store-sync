@@ -248,6 +248,8 @@ export async function render(container, { query, signal }) {
     update();
   });
   await update();
+  // After an update of the stores: new prices, same filters and unsaved base prices.
+  return { refresh: () => update() };
 }
 
 /** The store filter's options, once the stores are known. */

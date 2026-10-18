@@ -372,3 +372,7 @@
     justify-items: end;
   }
 }
+
+.schedule-count {
+  white-space: nowrap;
+}

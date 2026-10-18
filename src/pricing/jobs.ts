@@ -23,4 +23,21 @@ export const PRICING_JOBS: FeatureJob[] = [
   },
 ];
 
-export const PRICING_HOUSEKEEPING: FeatureHousekeepingStep[] = [];
+export const PRICING_HOUSEKEEPING: FeatureHousekeepingStep[] = [
+  // A run whose last open store was deleted (its row went with it) would show as running forever.
+  [
+    'finish orphaned price runs',
+    async ({ db }) => {
+      await db.query(
+        `UPDATE price_runs r
+            SET status = CASE WHEN EXISTS (SELECT 1 FROM price_run_stores
+                                            WHERE run_id = r.id AND status = 'failed')
+                              THEN 'failed' ELSE 'done' END,
+                finished_at = now()
+          WHERE r.status IN ('queued', 'running') AND r.created_at < now() - interval '5 minutes'
+            AND NOT EXISTS (SELECT 1 FROM price_run_stores
+                             WHERE run_id = r.id AND status IN ('queued', 'running'))`,
+      );
+    },
+  ],
+];

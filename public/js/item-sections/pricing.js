@@ -1,14 +1,8 @@
 import { api, qs } from '../api.js';
 import { h } from '../dom.js';
-import { money } from '../format.js';
+import { money, percent } from '../format.js';
 import { card, dataTable, facts, linkButton, muted } from '../ui.js';
-import {
-  marginText,
-  noTargetText,
-  shortDateTime,
-  sourceBadge,
-  targetText,
-} from '../views/prices-shared.js';
+import { noTargetText, shortDateTime, sourceBadge, targetText } from '../views/prices-shared.js';
 
 /**
  * Prices: base price, cost, each brand’s price and margin.
@@ -77,7 +71,14 @@ export async function section(item, { signal }) {
               {
                 label: 'Margin',
                 align: 'end',
-                render: (r) => marginText(r.cell.margin) ?? muted('—'),
+                render: (r) =>
+                  r.cell.margin === null
+                    ? muted('—')
+                    : h(
+                        'span',
+                        { class: r.cell.margin < 0 ? 'text-critical' : null },
+                        percent(r.cell.margin),
+                      ),
               },
             ],
           }),

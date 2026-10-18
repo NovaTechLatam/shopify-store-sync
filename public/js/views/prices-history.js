@@ -41,6 +41,7 @@ export async function render(container, { signal }) {
       },
     });
   await reload();
+  return { refresh: () => reload() };
 }
 
 function runTable(runs) {
