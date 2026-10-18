@@ -128,7 +128,12 @@
   margin-left: auto;
 }
 
-/* Under a product's units: each store's share. */
+/* A product's units, with each store's share under them. */
+.units-cell {
+  display: grid;
+  justify-items: end;
+}
+
 .store-units {
   display: flex;
   flex-wrap: wrap;

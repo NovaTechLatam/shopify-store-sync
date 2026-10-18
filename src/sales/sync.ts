@@ -82,10 +82,14 @@ export async function syncOrders(
   const store = await loadSalesState(db, storeId);
   if (!store) return;
   const from = store.orders_synced_at ?? store.sales_history_from ?? (await defaultStart(db));
-  const since = new Date(from.getTime() - SYNC_OVERLAP_MS).toISOString();
+  // A run that ran out of time goes on where it stopped; otherwise from the newest order.
+  const resumed = store.orders_sync_since !== null && store.orders_sync_cursor !== null;
+  const since = resumed
+    ? store.orders_sync_since!.toISOString()
+    : new Date(from.getTime() - SYNC_OVERLAP_MS).toISOString();
   const admin = await deps.shopify.forStore(storeId);
 
-  let cursor: string | null = null;
+  let cursor: string | null = resumed ? store.orders_sync_cursor : null;
   let pages = 0;
   const totals = { inserted: 0, updated: 0, skipped: 0 };
   for (;;) {
@@ -93,7 +97,12 @@ export async function syncOrders(
     try {
       page = await admin.listOrdersUpdatedSince(since, cursor);
     } catch (err) {
-      if (!isAuthError(err)) throw err;
+      if (!isAuthError(err)) {
+        // A cursor Shopify no longer takes would fail every retry: start over from the newest
+        // order next time.
+        if (cursor !== null && pages === 0 && resumed) await saveSyncPlace(db, storeId, null, null);
+        throw err;
+      }
       await recordSyncProblem(db, storeId, permissionMessage(store.name));
       logger.warn({ storeId, err }, 'order sync refused by shopify');
       return;
@@ -118,7 +127,8 @@ export async function syncOrders(
     cursor = page.nextCursor;
     if (!cursor) break;
     if (Date.now() - started >= budgetMs) {
-      // The rest is read by the next run, from the newest order saved so far.
+      // The rest is read by the next run, from this page on.
+      await saveSyncPlace(db, storeId, since, cursor);
       await enqueueTask(db, 'sync_orders', { storeId });
       logger.info({ storeId, pages, ...totals }, 'order sync paused; continues in a moment');
       return;
@@ -126,7 +136,8 @@ export async function syncOrders(
   }
   await db.query(
     `UPDATE stores SET orders_checked_at = now(), orders_sync_error = NULL,
-                       orders_synced_at = COALESCE(orders_synced_at, $2)
+                       orders_synced_at = COALESCE(orders_synced_at, $2),
+                       orders_sync_since = NULL, orders_sync_cursor = NULL
       WHERE id = $1`,
     [storeId, from],
   );
@@ -300,7 +311,7 @@ async function importExport(
     `UPDATE stores
         SET sales_backfill_status = 'done', sales_backfill_finished_at = now(),
             sales_backfill_error = NULL, sales_backfill_objects = $2, orders_synced_at = $3,
-            orders_checked_at = NULL
+            orders_checked_at = NULL, orders_sync_since = NULL, orders_sync_cursor = NULL
       WHERE id = $1 AND sales_backfill_status = 'running'`,
     [storeId, op.objectCount, syncFrom],
   );
@@ -329,7 +340,8 @@ async function failBackfill(
     `UPDATE stores
         SET sales_backfill_status = 'failed', sales_backfill_finished_at = now(),
             sales_backfill_error = $2,
-            orders_synced_at = COALESCE(sales_history_from, orders_synced_at)
+            orders_synced_at = COALESCE(sales_history_from, orders_synced_at),
+            orders_sync_since = NULL, orders_sync_cursor = NULL
       WHERE id = $1 AND sales_backfill_status = 'running'`,
     [storeId, error],
   );
@@ -370,6 +382,18 @@ async function recordPermissionProblem(db: Db, storeId: number, message: string)
   );
 }
 
+async function saveSyncPlace(
+  db: Db,
+  storeId: number,
+  since: string | null,
+  cursor: string | null,
+): Promise<void> {
+  await db.query(
+    'UPDATE stores SET orders_sync_since = $2, orders_sync_cursor = $3 WHERE id = $1',
+    [storeId, since, cursor],
+  );
+}
+
 async function recordSyncProblem(db: Db, storeId: number, message: string) {
   // Checked anyway: the schedule then waits its 15 minutes instead of asking again at once.
   await db.query(
@@ -393,6 +417,8 @@ interface SalesStateRow {
   name: string;
   granted_scopes: string[] | null;
   orders_synced_at: Date | null;
+  orders_sync_since: Date | null;
+  orders_sync_cursor: string | null;
   sales_history_from: Date | null;
   sales_backfill_status: 'none' | 'running' | 'done' | 'failed';
   sales_backfill_operation_id: string | null;
@@ -400,8 +426,8 @@ interface SalesStateRow {
 
 async function loadSalesState(db: Db, storeId: number): Promise<SalesStateRow | undefined> {
   const { rows } = await db.query<SalesStateRow>(
-    `SELECT name, granted_scopes, orders_synced_at, sales_history_from, sales_backfill_status,
-            sales_backfill_operation_id
+    `SELECT name, granted_scopes, orders_synced_at, orders_sync_since, orders_sync_cursor,
+            sales_history_from, sales_backfill_status, sales_backfill_operation_id
        FROM stores WHERE id = $1`,
     [storeId],
   );

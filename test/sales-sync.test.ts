@@ -206,6 +206,50 @@ describe('sync_orders', () => {
     expect((await storeRow(store.id)).orders_checked_at).not.toBeNull();
   });
 
+  it('goes on where it stopped, even through many orders changed at the same moment', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    store.shop.orderPageSize = 2;
+    await h.db.query(
+      `UPDATE stores SET sales_backfill_status = 'done', orders_synced_at = now() - interval '1 day'`,
+    );
+    // A bulk edit in Shopify: every order gets the same updatedAt.
+    const at = new Date().toISOString();
+    for (let i = 0; i < 7; i++) store.shop.addOrder({ updatedAt: at, lines: [{ sku: 'A' }] });
+    for (let run = 0; run < 10; run++) {
+      await syncOrders(deps(), store.id, { budgetMs: 0 });
+      if ((await storeRow(store.id)).orders_checked_at) break;
+    }
+    expect(await orderCount()).toBe(7);
+    const calls = store.shop.calls.filter((c) => c.op === 'listOrdersUpdatedSince');
+    // One page per run, each from the cursor the run before stopped at.
+    expect(calls).toHaveLength(4);
+    expect(calls.slice(1).every((c) => (c.args as { after: string | null }).after !== null)).toBe(
+      true,
+    );
+    const { rows } = await h.db.query(
+      'SELECT orders_sync_since, orders_sync_cursor FROM stores WHERE id = $1',
+      [store.id],
+    );
+    expect(rows[0]).toEqual({ orders_sync_since: null, orders_sync_cursor: null });
+  });
+
+  it('starts over when Shopify no longer takes the cursor it stopped at', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    await h.db.query(
+      `UPDATE stores SET sales_backfill_status = 'done', orders_synced_at = now() - interval '1 day',
+                         orders_sync_since = now() - interval '2 days', orders_sync_cursor = 'stale'`,
+    );
+    store.shop.addOrder({ lines: [{ sku: 'A' }] });
+    store.shop.failNext('listOrdersUpdatedSince', 'throw_before');
+    await expect(syncOrders(deps(), store.id)).rejects.toThrow(ShopifyApiError);
+    await syncOrders(deps(), store.id);
+    expect(await orderCount()).toBe(1);
+    const last = store.shop.calls.filter((c) => c.op === 'listOrdersUpdatedSince').at(-1)!;
+    expect((last.args as { after: string | null }).after).toBeNull();
+  });
+
   it('records a missing permission on the store’s sales columns and stops', async () => {
     await salesHarness();
     const [store] = h.stores as [TestStore];

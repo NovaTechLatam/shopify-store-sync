@@ -125,9 +125,11 @@ export async function flows(ctx) {
     const header = table.locator('th[aria-sort]');
     expect((await header.textContent()).startsWith('Units'), 'units is the sorted column');
     expect((await header.getAttribute('aria-sort')) === 'descending', 'highest first');
-    const units = (await table.locator('tbody td[data-label="Units"]').allTextContents()).map((t) =>
-      Number.parseInt(t.replace(/,/g, ''), 10),
-    );
+    const units = (
+      await table
+        .locator('tbody td[data-label="Units"] .units-cell > span:first-child')
+        .allTextContents()
+    ).map((t) => Number.parseInt(t.replace(/,/g, ''), 10));
     expect(
       units.length > 1 && units.every((u, i) => i === 0 || units[i - 1] >= u),
       `rows go from most to fewest units (${units.slice(0, 5)})`,

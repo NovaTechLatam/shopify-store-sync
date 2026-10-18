@@ -162,7 +162,9 @@ key).
 - `remove_order` (orders/delete): writes the deletion marker, even while the store is paused.
 - `sync_orders`: reads orders updated since `stores.orders_synced_at` minus 10 minutes, oldest
   update first, and moves `orders_synced_at` forward after each page. After about 4 minutes it
-  queues itself again and stops, so one big store never hogs a worker.
+  saves where it stopped (`orders_sync_since` and Shopify's page cursor), queues itself again and
+  ends, so one big store never hogs a worker and thousands of orders changed at the same moment
+  are still read once. A cursor Shopify no longer takes makes the next run start over.
 - `sales_backfill`, a state machine on `stores.sales_backfill_status`: `none` → start a bulk
   export of the orders updated in the window (`salesHistoryDays`, at most 60 without
   `read_all_orders`) → `running`: poll the operation, again in 45 seconds while it runs →

@@ -1104,7 +1104,13 @@ function productsTable(list, state, status, { onSort, onPage }) {
     {
       label: 'Units',
       align: 'end',
-      render: (r) => [num(r.units), list.stores.length > 1 && storeUnits(r, list, status)],
+      render: (r) =>
+        h(
+          'div',
+          { class: 'units-cell' },
+          h('span', {}, num(r.units)),
+          list.stores.length > 1 && storeUnits(r, list, status),
+        ),
     },
     { label: 'Revenue', align: 'end', render: (r) => money(r.revenue, base) },
     { label: 'Margin', align: 'end', render: (r) => percent(r.margin) },

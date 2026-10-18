@@ -8,6 +8,11 @@ ALTER TABLE stores
   ADD COLUMN orders_checked_at          timestamptz,
   -- Why the last incremental sync stopped (a missing permission...); NULL when it worked.
   ADD COLUMN orders_sync_error          text,
+  -- Where a sync that ran out of time stopped (its query's start and Shopify's page cursor), so
+  -- the next run goes on from there instead of from the newest order: many orders changed at
+  -- the same moment (a bulk edit in Shopify) could otherwise be read again and again.
+  ADD COLUMN orders_sync_since          timestamptz,
+  ADD COLUMN orders_sync_cursor         text,
   -- Start of the history the last backfill asked for: reports cover sales from here on.
   ADD COLUMN sales_history_from         timestamptz,
   -- The backfill asked for less than salesHistoryDays: Shopify only gives 60 days of orders
