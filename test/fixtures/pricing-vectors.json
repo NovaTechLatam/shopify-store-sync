@@ -1,0 +1,881 @@
+{
+  "about": "Price maths examples shared by the server (src/pricing/compute.ts, src/util/money.ts) and the dashboard's port (public/js/pricing-compute.js); test/pricing-vectors.test.ts runs both against them.",
+  "roundMoney": [
+    {
+      "value": 1.005,
+      "decimals": 2,
+      "expected": 1.01
+    },
+    {
+      "value": 2.675,
+      "decimals": 2,
+      "expected": 2.68
+    },
+    {
+      "value": -1.005,
+      "decimals": 2,
+      "expected": -1.01
+    },
+    {
+      "value": 41899.95,
+      "decimals": 0,
+      "expected": 41900
+    },
+    {
+      "value": 0.0049,
+      "decimals": 2,
+      "expected": 0
+    },
+    {
+      "value": 1234.5678,
+      "decimals": 4,
+      "expected": 1234.5678
+    },
+    {
+      "value": 2.8249999999999997,
+      "decimals": 2,
+      "expected": 2.83
+    }
+  ],
+  "roundPrice": [
+    {
+      "value": 12.34,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.9,
+        "roundDirection": "up"
+      },
+      "currencyCode": "USD",
+      "expected": 12.9
+    },
+    {
+      "value": 12.34,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.9,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 11.9
+    },
+    {
+      "value": 12.34,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.9,
+        "roundDirection": "down"
+      },
+      "currencyCode": "USD",
+      "expected": 11.9
+    },
+    {
+      "value": 12.5,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.99,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 12.99
+    },
+    {
+      "value": 41234,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1000,
+        "roundEnding": 900,
+        "roundDirection": "up"
+      },
+      "currencyCode": "COP",
+      "expected": 41900
+    },
+    {
+      "value": 41234,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1000,
+        "roundEnding": 900,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "COP",
+      "expected": 40900
+    },
+    {
+      "value": 41500,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1000,
+        "roundEnding": 900,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "COP",
+      "expected": 41900
+    },
+    {
+      "value": 23,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 5,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 25
+    },
+    {
+      "value": 22.5,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 5,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 25
+    },
+    {
+      "value": 12.34,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 0.05,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 12.35
+    },
+    {
+      "value": 41234,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 100,
+        "roundEnding": 0,
+        "roundDirection": "up"
+      },
+      "currencyCode": "CLP",
+      "expected": 41300
+    },
+    {
+      "value": 9990.4,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "up"
+      },
+      "currencyCode": "CLP",
+      "expected": 9990
+    },
+    {
+      "value": 9990.5,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "down"
+      },
+      "currencyCode": "CLP",
+      "expected": 9991
+    },
+    {
+      "value": 1501.23,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "JPY",
+      "expected": 1501
+    },
+    {
+      "value": 12.345,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 12.35
+    },
+    {
+      "value": 1.2345,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "KWD",
+      "expected": 1.235
+    },
+    {
+      "value": 12.9,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.9,
+        "roundDirection": "up"
+      },
+      "currencyCode": "USD",
+      "expected": 12.9
+    },
+    {
+      "value": 0.30000000000000004,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 0.1,
+        "roundEnding": 0,
+        "roundDirection": "up"
+      },
+      "currencyCode": "USD",
+      "expected": 0.3
+    },
+    {
+      "value": 3.3000000000000003,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 1.1,
+        "roundEnding": 0,
+        "roundDirection": "up"
+      },
+      "currencyCode": "USD",
+      "expected": 3.3
+    },
+    {
+      "value": 0.3,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.9,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 0.9
+    },
+    {
+      "value": 205,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1000,
+        "roundEnding": 900,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "COP",
+      "expected": 900
+    },
+    {
+      "value": -2,
+      "rule": {
+        "roundMode": "multiple",
+        "roundStep": 5,
+        "roundEnding": 0,
+        "roundDirection": "down"
+      },
+      "currencyCode": "USD",
+      "expected": 0
+    },
+    {
+      "value": 2.8249999999999997,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 2.83
+    },
+    {
+      "value": 15.075000000000001,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 15.08
+    },
+    {
+      "value": 1.7249999999999999,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "USD",
+      "expected": 1.73
+    },
+    {
+      "value": 21.989,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1,
+        "roundEnding": 0.99,
+        "roundDirection": "up"
+      },
+      "currencyCode": "USD",
+      "expected": 21.99
+    },
+    {
+      "value": 44690,
+      "rule": {
+        "roundMode": "ending",
+        "roundStep": 1000,
+        "roundEnding": 900,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "COP",
+      "expected": 44900
+    },
+    {
+      "value": 14.995,
+      "rule": {
+        "roundMode": "none",
+        "roundStep": 1,
+        "roundEnding": 0,
+        "roundDirection": "nearest"
+      },
+      "currencyCode": "EUR",
+      "expected": 15
+    }
+  ],
+  "computeTargetPrice": [
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 10,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": null,
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "none",
+        "reason": "rule_disabled"
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": false,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "none",
+        "reason": "rule_disabled"
+      }
+    },
+    {
+      "input": {
+        "basePrice": null,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "none",
+        "reason": "no_base_price"
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": null,
+        "currencyCode": "USD",
+        "override": {
+          "price": 19.5,
+          "compareAtPrice": 25
+        }
+      },
+      "expected": {
+        "status": "ok",
+        "source": "override",
+        "price": 19.5,
+        "compareAtPrice": 25
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": {
+          "price": 20,
+          "compareAtPrice": 20
+        }
+      },
+      "expected": {
+        "status": "ok",
+        "source": "override",
+        "price": 20,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "CLP",
+        "override": {
+          "price": 9990.4,
+          "compareAtPrice": 12000.6
+        }
+      },
+      "expected": {
+        "status": "ok",
+        "source": "override",
+        "price": 9990,
+        "compareAtPrice": 12001
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 4100,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1.3,
+          "addAmount": 0,
+          "roundMode": "ending",
+          "roundStep": 1000,
+          "roundEnding": 900,
+          "roundDirection": "up",
+          "compareAtMode": "none",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "COP",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 53900,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 2.5,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 12.5,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 150.123,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "JPY",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 1501,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 1,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": -5,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 0,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 0.05,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 4100,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "ending",
+          "roundStep": 1000,
+          "roundEnding": 900,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "COP",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 900,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 12.34,
+        "baseCompareAtPrice": 15.67,
+        "exchangeRate": 950.5,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "multiple",
+          "roundStep": 10,
+          "roundEnding": 0,
+          "roundDirection": "up",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "CLP",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 11730,
+        "compareAtPrice": 14900
+      }
+    },
+    {
+      "input": {
+        "basePrice": 12345.67,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 4123.4567,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1.3,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "none",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "COP",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 66178886.38,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": 15,
+        "exchangeRate": 2,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "keep",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 20,
+        "compareAtPrice": "keep"
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": 15,
+        "exchangeRate": 2,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 20,
+        "compareAtPrice": 30
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": 8,
+        "exchangeRate": 2,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 20,
+        "compareAtPrice": null
+      }
+    },
+    {
+      "input": {
+        "basePrice": 10,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 2,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "none",
+          "roundStep": 1,
+          "roundEnding": 0,
+          "roundDirection": "nearest",
+          "compareAtMode": "markup",
+          "compareAtMarkup": 1.5
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 20,
+        "compareAtPrice": 30
+      }
+    },
+    {
+      "input": {
+        "basePrice": 12.34,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1,
+          "addAmount": 0,
+          "roundMode": "ending",
+          "roundStep": 1,
+          "roundEnding": 0.99,
+          "roundDirection": "up",
+          "compareAtMode": "markup",
+          "compareAtMarkup": 1.25
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 12.99,
+        "compareAtPrice": 16.99
+      }
+    },
+    {
+      "input": {
+        "basePrice": 24.99,
+        "baseCompareAtPrice": 34.99,
+        "exchangeRate": 1,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1.15,
+          "addAmount": 0,
+          "roundMode": "ending",
+          "roundStep": 1,
+          "roundEnding": 0.99,
+          "roundDirection": "nearest",
+          "compareAtMode": "from_base",
+          "compareAtMarkup": 1
+        },
+        "currencyCode": "USD",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 28.99,
+        "compareAtPrice": 39.99
+      }
+    },
+    {
+      "input": {
+        "basePrice": 19.99,
+        "baseCompareAtPrice": null,
+        "exchangeRate": 4100,
+        "rule": {
+          "enabled": true,
+          "multiplier": 1.1,
+          "addAmount": 0,
+          "roundMode": "ending",
+          "roundStep": 1000,
+          "roundEnding": 900,
+          "roundDirection": "nearest",
+          "compareAtMode": "markup",
+          "compareAtMarkup": 1.3
+        },
+        "currencyCode": "COP",
+        "override": null
+      },
+      "expected": {
+        "status": "ok",
+        "source": "rule",
+        "price": 89900,
+        "compareAtPrice": 116900
+      }
+    }
+  ]
+}

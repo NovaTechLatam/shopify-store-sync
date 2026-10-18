@@ -63,7 +63,10 @@ export type TargetPrice =
     }
   | { status: 'none'; reason: 'rule_disabled' | 'no_base_price' };
 
-type Rounding = Pick<PriceRule, 'roundMode' | 'roundStep' | 'roundEnding' | 'roundDirection'>;
+export type Rounding = Pick<
+  PriceRule,
+  'roundMode' | 'roundStep' | 'roundEnding' | 'roundDirection'
+>;
 
 const DIRECTIONS = { up: Math.ceil, nearest: Math.round, down: Math.floor } as const;
 
@@ -168,6 +171,77 @@ export function rowToPriceRule(row: PriceRuleRow): PriceRule {
     compareAtMode: row.compare_at_mode as PriceRule['compareAtMode'],
     compareAtMarkup: Number(row.compare_at_markup),
   };
+}
+
+/** What a store charges now (its currency), as read from Shopify. */
+export interface CurrentPrice {
+  price: number;
+  compareAtPrice: number | null;
+}
+
+/**
+ * Whether the store's price (and compare-at price, unless the target keeps it) is not what it
+ * should be. Amounts are compared at the currency's decimals; a compare-at price of 0 counts as
+ * none. Unknown prices and items without a target never differ: there is nothing to write.
+ */
+export function differsFromTarget(
+  current: CurrentPrice | null,
+  target: TargetPrice,
+  currencyCode: string,
+): boolean {
+  if (!current || target.status !== 'ok') return false;
+  const decimals = currencyDecimals(currencyCode);
+  if (roundMoney(current.price, decimals) !== target.price) return true;
+  if (target.compareAtPrice === 'keep') return false;
+  const compareAt =
+    current.compareAtPrice === null || current.compareAtPrice <= 0
+      ? null
+      : roundMoney(current.compareAtPrice, decimals);
+  return compareAt !== target.compareAtPrice;
+}
+
+/**
+ * Gross margin of selling at `price` (store currency) something that cost `cost` (base currency):
+ * (price − cost × rate) ÷ price. null without a cost or a price above 0.
+ */
+export function marginOf(
+  price: number | null,
+  cost: number | null,
+  exchangeRate: number,
+): number | null {
+  if (price === null || cost === null || !(price > 0)) return null;
+  return (price - cost * exchangeRate) / price;
+}
+
+const PLAIN: Rounding = {
+  roundMode: 'none',
+  roundStep: 1,
+  roundEnding: 0,
+  roundDirection: 'nearest',
+};
+
+/**
+ * A sale's price: regular × (1 − percentOff / 100), rounded with the store's rule when the rule is
+ * on (else to the currency's decimals). Rounding never leaves the sale price at or above the
+ * regular one: when rounding up would (12.90 with 5% off and prices ending in .90), it rounds down
+ * instead, then plainly to the decimals. null when no lower price above 0 exists (a regular
+ * price of 0, or 1 peso with 10% off).
+ */
+export function salePrice(
+  regular: number,
+  percentOff: number,
+  rule: PriceRule | null,
+  currencyCode: string,
+): number | null {
+  if (!(regular > 0)) return null;
+  const raw = regular * (1 - percentOff / 100);
+  const rounding: Rounding = rule?.enabled ? rule : PLAIN;
+  const candidates = [
+    roundPrice(raw, rounding, currencyCode),
+    roundPrice(raw, { ...rounding, roundDirection: 'down' }, currencyCode),
+    roundPrice(raw, PLAIN, currencyCode),
+  ];
+  return candidates.find((price) => price > 0 && price < regular) ?? null;
 }
 
 /** A compare-at price only makes sense above the price (Shopify shows no sale otherwise). */
