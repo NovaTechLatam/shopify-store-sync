@@ -147,6 +147,25 @@ export async function syncOrders(
       WHERE id = $1`,
     [storeId, from],
   );
+  // After a failed history import, the first pass that started at the history's start has now
+  // read every order the import would have: the history is complete, so the store stops saying
+  // its sales may be incomplete (and the alert goes).
+  const { rowCount: caughtUp } = await db.query(
+    `UPDATE stores SET sales_backfill_status = 'done', sales_backfill_error = NULL,
+                       sales_backfill_finished_at = now()
+      WHERE id = $1 AND sales_backfill_status = 'failed'
+        AND sales_history_from IS NOT NULL AND $2::timestamptz <= sales_history_from`,
+    [storeId, since],
+  );
+  if (caughtUp) {
+    await setAlert(db, {
+      open: false,
+      kind: 'sales_import_failed',
+      dedupeKey: `sales_import_failed:${storeId}`,
+      message: '',
+    });
+    logger.info({ storeId }, 'order history read page by page');
+  }
   logger.debug({ storeId, pages, ...totals }, 'orders synced');
 }
 

@@ -132,7 +132,12 @@ export interface IngestCounts {
 /** Orders per transaction when many are saved at once (a history import, a sync page). */
 const INGEST_BATCH = 100;
 
-/** Saves orders of one store, a batch per transaction. */
+/**
+ * Saves orders of one store, a batch per transaction. Within a batch the orders are written (and
+ * their rows locked) in order of id: two batches sharing orders, like the history import and a
+ * sync page (both sorted by updatedAt, but read at different moments), would otherwise each lock
+ * one of them and wait for the other, and Postgres aborts one of them as a deadlock.
+ */
 export async function ingestOrders(
   db: Db,
   storeId: number,
@@ -140,7 +145,10 @@ export async function ingestOrders(
 ): Promise<IngestCounts> {
   const counts: IngestCounts = { inserted: 0, updated: 0, skipped: 0 };
   for (let i = 0; i < orders.length; i += INGEST_BATCH) {
-    const batch = orders.slice(i, i + INGEST_BATCH);
+    // A stable sort: copies of one order keep their order (the last one wins).
+    const batch = orders
+      .slice(i, i + INGEST_BATCH)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     await withTransaction(db, async (client) => {
       for (const order of batch) {
         const outcome = await upsertOrder(client, storeId, order);

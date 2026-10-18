@@ -273,6 +273,31 @@ describe('order ingestion', () => {
     expect(rows[0]!.n).toBe(1);
   });
 
+  it('saves batches sharing orders at the same time without a deadlock', async () => {
+    h = await Harness.create(1);
+    const [store] = h.stores as [TestStore];
+    const orders = Array.from({ length: 40 }, () =>
+      store.shop.addOrder({ lines: [{ sku: 'A', quantity: 1, unitPrice: 1 }] }),
+    );
+    await ingestOrders(h.db, store.id, orders);
+    // The history import and a sync page can list the same orders in another order (an order
+    // updated between the two reads moves). Each round writes newer copies both ways round.
+    for (let round = 1; round <= 3; round++) {
+      const newer = orders.map((o) => ({
+        ...o,
+        updatedAt: new Date(Date.parse(o.updatedAt) + round * 1000).toISOString(),
+      }));
+      const results = await Promise.allSettled([
+        ingestOrders(h.db, store.id, newer),
+        ingestOrders(h.db, store.id, [...newer].reverse()),
+      ]);
+      expect(results.map((r) => (r.status === 'rejected' ? String(r.reason) : 'ok'))).toEqual([
+        'ok',
+        'ok',
+      ]);
+    }
+  });
+
   it('saves orders in batches and counts what it did', async () => {
     h = await Harness.create(1);
     const [store] = h.stores as [TestStore];

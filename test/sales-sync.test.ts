@@ -415,9 +415,41 @@ describe('sales_backfill (history import)', () => {
     // The queued sync reads the whole window instead; the import itself doesn't start again.
     await runTasksOnce(h.db, deps(), silentLogger);
     expect(await orderCount()).toBe(1);
+    // Once that pass has read everything since the history's start, the history is complete:
+    // the store no longer says its sales may be incomplete, and the alert goes.
+    const caughtUp = await storeRow(store.id);
+    expect(caughtUp.sales_backfill_status).toBe('done');
+    expect(caughtUp.sales_backfill_error).toBeNull();
+    expect(await openAlerts('sales_import_failed')).toEqual([]);
     await h.db.query('DELETE FROM tasks'); // the first check's leftover (it would do nothing)
     await queueSalesWork({ db: h.db, logger: silentLogger, now: Date.now() + 16 * 60_000 });
     expect((await tasks()).map((t) => t.kind)).toEqual(['sync_orders']);
+  });
+
+  it('keeps a failed import failed until a pass from the history’s start has finished', async () => {
+    await salesHarness();
+    const [store] = h.stores as [TestStore];
+    store.shop.orderPageSize = 2;
+    store.shop.bulkStartStatus = 'RUNNING';
+    for (let i = 0; i < 5; i++)
+      store.shop.addOrder({ updatedAt: daysAgo(20 - i), lines: [{ sku: 'A' }] });
+    await runSalesBackfill(deps(), store.id);
+    const op = (await storeRow(store.id)).sales_backfill_operation_id!;
+    store.shop.finishBulkOperation(op, 'EXPIRED');
+    await runSalesBackfill(deps(), store.id, { poll: true });
+
+    // The first run of the fallback runs out of time: not complete yet.
+    await syncOrders(deps(), store.id, { budgetMs: 0 });
+    expect((await storeRow(store.id)).sales_backfill_status).toBe('failed');
+    expect(await openAlerts('sales_import_failed')).toHaveLength(1);
+    // A sync that started later than the history's start (a 15-minute one) proves nothing.
+    await h.db.query(
+      `UPDATE stores SET orders_sync_since = NULL, orders_sync_cursor = NULL,
+                         orders_synced_at = now() - interval '1 hour' WHERE id = $1`,
+      [store.id],
+    );
+    await syncOrders(deps(), store.id);
+    expect((await storeRow(store.id)).sales_backfill_status).toBe('failed');
   });
 
   it('treats an export Shopify forgot, or an expired file, as failed', async () => {
