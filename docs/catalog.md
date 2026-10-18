@@ -34,8 +34,8 @@ A catalog product has:
 2. Fill in the basics. The description takes simple HTML (paragraphs, bold, italics, lists, links
    and headings); the preview next to it shows how it reads.
 3. Under **Options and variants**, add your options and their values, one per line (a value can
-   contain a comma, like `Red, matte`). Store Sync makes one variant per combination. Give each a SKU and a base price. If
-   you don't sell a combination, remove it; you can add it back later.
+   contain a comma, like `Red, matte`). Store Sync makes one variant per combination. Give each a
+   SKU and a base price. If you don't sell a combination, remove it; you can add it back later.
 4. Add images, with a short description of each (alt text): screen readers read it aloud.
 5. Under **Brands**, untick the brands that don't sell it, and change what you want for the others.
    An empty field uses the default ("Same as default").
@@ -50,8 +50,11 @@ published. Add stock with a purchase order (**Purchasing**): a delivery received
 publish is added then. A SKU a store already sells keeps its stock.
 
 If you create the SKU directly in a store before publishing it from the catalog, that store's
-number is kept: the product then starts like any other one (**Start syncing**), from the numbers
-your stores show.
+number is kept: the product doesn't start on its own (even with automatic start on in
+**Settings**), and you start it like any other one (**Start syncing**), from the numbers your
+stores show. The exception is a SKU you already received a delivery for: it starts at 0 plus that
+delivery as soon as a store has it, however it got there (see
+[Purchasing](purchasing.md#receiving-a-delivery)).
 
 Until a store has it, **Products** shows such a variant as **Not published yet**, with a link to
 its catalog product: it isn't counted as waiting to start, and it has no **Start syncing** button
@@ -126,8 +129,8 @@ Every variant needs its own SKU to be imported, and a product can have at most 2
   doesn't get an archived copy.
 - **Not selling in a brand any more**: untick **Sell in …**. Store Sync stops updating the product
   there, but leaves it in the store as it is: archive or delete it in Shopify if you want it gone.
-- **Remove from catalog** (at the bottom of the product's page) only removes it from Store Sync. Your
-  stores keep the product, and its stock keeps syncing.
+- **Remove from catalog** (at the bottom of the product's page) only removes it from Store Sync.
+  Your stores keep the product, and its stock keeps syncing.
 
 ## What to watch out for
 
@@ -141,7 +144,7 @@ Every variant needs its own SKU to be imported, and a product can have at most 2
   it, publishing to that brand fails and says so: give the brand its own address.
 - **Stock is never set by publishing**, except a brand-new variant, which starts at 0 and then
   follows the shared stock.
-- **Costs** go to each brand's "Cost per item" only with **Settings → Costs → Copy costs to
+- **Costs** go to each brand's "Cost per item" only with **Settings > Costs > Copy costs to
   Shopify** on, the same switch deliveries follow. Off, publishing leaves Shopify's costs alone.
 
 ## Permissions
@@ -166,6 +169,10 @@ Importing only reads products, which every store already allows.
 - An image Shopify couldn't process (a broken file or address) is sent again on the next publish.
 - The description preview shows simple formatting only; the full HTML is sent to Shopify as you
   wrote it.
+- Some of Shopify's behaviour was only tested against a stand-in for Shopify, not a real store:
+  how images and variant images are matched when a product is updated, the stock sent for
+  variants added to a product a brand already has, and videos being removed. Publish one product
+  to one brand and check it in Shopify before you publish many.
 
 ## Under the hood
 
@@ -195,16 +202,16 @@ Importing only reads products, which every store already allows.
   another product of the store blocks the publish.
 - **"Changed"** is computed, not stored: the sha256 of the brand's content (everything but prices
   and costs, with our own ids, stable key order, tags sorted) against the hash stored at the last
-  publish, and,
-  separately, the brand's current prices (`variants.price`) against what a publish would send.
-  Prices and costs are left out of the hash because rules, exchange rates and average costs change
-  on their own.
+  publish, and, separately, the brand's current prices (`variants.price`) against what a publish
+  would send. Prices and costs are left out of the hash because rules, exchange rates and average
+  costs change on their own.
 - **Failures** a merchant must fix (permissions, a paused store, SKU conflicts, what Shopify
   refuses) end the task with `failed`, the reason, and an alert (`catalog_publish_failed`). Network
   and Shopify outages are retried; the brand shows "waiting to retry". A missing permission never
   marks the store itself as being in error.
 - **Uploads** are checked by their first bytes (the declared type is ignored), kept once per
-  content, served with `nosniff`, and deleted a day after nothing uses them.
+  content, served with `nosniff`, and deleted when nothing uses them and they were uploaded (or
+  uploaded again) more than a day ago.
 - **Description preview** (`renderSimpleHtml`, `public/js/views/catalog-shared.js`): parsed into an
   inert document, rebuilt from an allow-list of tags with no attributes but an http(s) link address.
   Never `innerHTML`.

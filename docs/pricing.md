@@ -14,7 +14,7 @@ from the catalog.
 
 | Word             | Meaning                                                                                                                      |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Base currency    | The currency of your base prices and costs (Settings → Currency, for example USD).                                           |
+| Base currency    | The currency of your base prices and costs (Settings > Currency, for example USD).                                           |
 | Base price       | A product's price in the base currency, before any store's rule.                                                             |
 | Exchange rate    | How many units of a store's currency one unit of the base currency is worth ("1 USD = 4,100 COP"). Set on each store's page. |
 | Rule             | How a store turns base prices into its prices: multiply, add, round, and the compare-at price.                               |
@@ -28,7 +28,9 @@ For each product, in each store:
 1. If the product has a **fixed price** in that store, that's the price (and its compare-at price,
    if you gave one). This works even if the store's rule is off.
 2. Otherwise, if the store's **rule is off**, Store Sync has no price for it and never changes it.
-   You keep setting that store's prices in Shopify.
+   You keep setting that store's prices in Shopify. (A product the [catalog](catalog.md) creates
+   in that store needs some price: it starts at the base price times the exchange rate, rounded
+   to the currency's decimals.)
 3. Otherwise, if the product has **no base price**, it is left as it is.
 4. Otherwise: base price × exchange rate × multiplier + amount to add, then rounded.
 
@@ -67,10 +69,10 @@ The Rules tab shows live examples while you edit a rule, with a few of your own 
 1. **Check the permission.** Updating prices needs the `write_products` permission on each store's
    app (see [Setting up Shopify](setup-shopify.md#permissions-for-the-extra-features)). A store
    without it shows a warning on the Prices page and can't be chosen when updating.
-2. **Choose the base currency** in Settings → Currency, and set each store's **exchange rate** on its
-   page when its currency is different.
-3. **Enter base prices.** Type them in the list, or use **Set base prices from a store…** to copy the
-   prices one store charges now (divided by its exchange rate). Pick the store whose prices the
+2. **Choose the base currency** in Settings > Currency, and set each store's **exchange rate** on
+   its page when its currency is different.
+3. **Enter base prices.** Type them in the list, or use **Set base prices from a store…** to copy
+   the prices one store charges now (divided by its exchange rate). Pick the store whose prices the
    others follow. Leave "Only products without a base price" on to keep the ones you already set.
 4. **Set up each store's rule** on the Rules tab and turn it on.
 5. Go back to the Prices tab and choose **Will change** to see every price that would change: what
@@ -120,8 +122,10 @@ Good to know:
 - Only one update writes to a store at a time. If you start one while a sale is updating that
   store, it waits for it.
 - If Shopify can't be reached (or anything else goes wrong), Store Sync keeps trying for an hour,
-  then marks that store as failed. The other stores aren't affected. Paused stores and stores we can't connect to are skipped and
-  marked as failed with the reason.
+  then marks that store as failed. The other stores aren't affected. Paused stores and stores we
+  can't connect to are skipped and marked as failed with the reason.
+- **Pause all syncing** (Settings) doesn't stop price updates: it only stops stock syncing. To
+  keep prices away from one store, pause that store.
 - An access error from Shopify stops the update for that store with a message about the
   permission. It doesn't affect stock syncing.
 
@@ -154,6 +158,10 @@ stores…** for that store puts them back (the dialog counts them as "sale price
 **Changes you make during a sale are kept.** If you set or remove a fixed price for a product in the
 sale, that product leaves the sale in that store, and the end of the sale doesn't touch it. In a
 store whose rule is off, a price changed in Shopify during the sale stays as it is.
+
+**Taking a product out of a sale** (the edit button in its store's column, then **Take out of the
+sale…**) removes its sale price, and it follows its rule from the next update. A fixed price it had
+before the sale doesn't come back: set it again if you want it.
 
 - **Overlaps are refused**: two sales can't cover the same product in the same store at the same
   time. The message names the other sale.
@@ -209,8 +217,10 @@ sending prices to that store needs it.
   currency's decimals. Converted back without rounding in the rule, a price can come out a cent off.
   Give that store's rule a rounding, or copy from the store in the base currency.
 - **Publishing a product from the catalog** sends its prices too (the same prices as here).
-- **"Store prices are as we last read them."** The list and the preview use the prices read with the
-  regular catalog sync and the last update. The update itself always reads the store again first.
+- **"Store prices are as we last read them."** The list, the preview and **Set base prices from a
+  store…** use the prices read with the regular read of each store's products (every 6 hours by
+  default) and the last update. The update itself always reads the store again first. If you just
+  changed prices in Shopify, click **Re-read products** on the store's page before copying them.
 
 ## Limitations
 
@@ -223,3 +233,7 @@ sending prices to that store needs it.
   the next update tries them again.
 - The counts of an update reflect what Shopify confirmed. If an update was retried after a network
   error, prices Shopify had already applied the first time count as "already right".
+- Some of Shopify's answers were only tested against a stand-in for Shopify, not a real store:
+  removing a compare-at price, prices Shopify refuses (and its messages), and prices reading back
+  right after an update. Try your first update on a store with a few products, and check them in
+  Shopify.

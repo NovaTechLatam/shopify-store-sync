@@ -49,7 +49,7 @@ the sorting are kept in the page's address, so you can bookmark or share a repor
 colour everywhere on the page.
 
 **Totals.** Revenue, units sold, orders and margin for the period, in your base currency
-(Settings → Currency).
+(Settings > Currency).
 
 **Revenue chart.** Revenue per day, stacked by store. Periods longer than 3 months are shown by
 week, and periods longer than 2 years by month. Screen readers get the same numbers as a table.
@@ -89,13 +89,13 @@ per store, units per day, and days of stock left, with a link to the product in 
 | Units sold         | Units ordered, minus the ones refunded or removed from the order.                                                                             |
 | Orders             | Orders placed in the period. Test and cancelled orders are left out.                                                                          |
 | Margin             | (Revenue − cost) ÷ revenue, only over the sales that have a cost. The tile tells you how much revenue had no cost.                            |
-| Per day            | Units sold per day over the last 30 days (Settings → Reorder planning, sales pace), in **every** store, whatever period or stores you picked. |
+| Per day            | Units sold per day over the last 30 days (Settings > Reorder planning, sales pace), in **every** store, whatever period or stores you picked. |
 | Days of stock left | The shared stock now ÷ units per day. "Out of stock" when there is none left.                                                                 |
 | Sell-through       | Units sold in the period ÷ (units sold + stock now): how much of what you had sold. 80% means a fifth is left.                                |
 
 Some details:
 
-- **Days.** A sale counts on the day its order was placed, in the report time zone (Settings →
+- **Days.** A sale counts on the day its order was placed, in the report time zone (Settings >
   Sales history; by default your first store's time zone). An order placed at 11:30 pm in Bogotá
   counts on that day, even though it is already the next day in UTC. The same time zone decides
   "today" elsewhere too: when a purchase order is overdue, and the day stock runs out on the
@@ -109,27 +109,34 @@ Some details:
   take the first cost you give it.
 - **Left out:** test orders, cancelled orders and gift cards (they aren't products you stock).
 - **Per day** doesn't spread a new product's sales over days before it existed, nor over days
-  before your history starts.
+  before your history starts. It is shown with 2 decimals, so a product selling less than one unit
+  in 200 days shows "—".
+- **Days of stock left** use the shared stock as the sync has it. A delivery you just received
+  counts a few seconds later (or when syncing resumes, if it's paused), while the Reorder tab
+  counts it at once.
 
 ## How far back sales go
 
 Shopify only lets apps read the orders of the **last 60 days**, unless the app has the
-`read_all_orders` permission. Shopify must approve your app for that permission first (in the
-Partner Dashboard, under **API access requests**).
+`read_all_orders` permission. Shopify must approve your app for that permission first (under
+**API access requests** in your app's settings; see
+[Setting up Shopify](setup-shopify.md#permissions-for-the-extra-features)).
 
-- The history import reads as far back as **Settings → Sales history → Read sales from the last
+- The history import reads as far back as **Settings > Sales history > Read sales from the last
   (days)** says, but never more than 60 days without `read_all_orders`. Reports then says
   "Shopify gives the last 60 days of orders without the “read all orders” permission".
 - If you pick a period that starts before a store's history, Reports tells you that the first
   days of the period have no sales from that store.
-- After you get `read_all_orders`, open Reports and click **Import again…** for each store.
+- After you get `read_all_orders`, or raise **Read sales from the last (days)**, open Reports and
+  click **Import again…** for each store: changing the setting doesn't import anything by itself.
 - Without `read_all_orders`, a refund made today on an order older than 60 days doesn't reach
   Reports: Shopify won't show Store Sync that order any more.
 
 If the import from Shopify fails, Store Sync raises the alert "Order history not imported" and
 reads the orders page by page instead. That takes longer but gets there: once it has read the
 whole history, the store shows as complete in Reports and the alert goes away. You can also try
-the import again from Reports.
+the import again from Reports. [Operations](operations.md#order-history-import) says what to do if
+an import never starts.
 
 ## Things to know
 
@@ -160,12 +167,12 @@ stored.shopify_updated_at <= new.updatedAt`, so an older copy never overwrites a
 concurrent copies of one order are written one after the other (the row stays locked until
 commit). A batch of orders (`ingestOrders`, 100 per transaction) is written in order of order
 id, so two batches that share orders (the import and a sync page) lock them in the same order and
-can't deadlock. Lines no longer on the order are deleted. Each line maps to an item through the store's
-variant (as matched on the Matching page; a variant unlinked by hand stays unmapped), else through
-its normalised SKU. `unit_cost` is the item's cost when the line is first seen and is kept on
-updates (filled in later when it was NULL). A deleted order keeps its row with `deleted_at` and no
-lines, so a copy read before the deletion can't bring it back (both go through the same unique
-key).
+can't deadlock. Lines no longer on the order are deleted. Each line maps to an item through the
+store's variant (as matched on the Matching page; a variant unlinked by hand stays unmapped), else
+through its normalised SKU. `unit_cost` is the item's cost when the line is first seen and is
+kept on updates (filled in later when it was NULL). A deleted order keeps its row with `deleted_at`
+and no lines, so a copy read before the deletion can't bring it back (both go through the same
+unique key).
 
 **Tasks** (`src/sales/sync.ts`, `src/sales/tasks.ts`).
 
@@ -186,13 +193,14 @@ key).
   `EXPIRED`, an operation Shopify no longer knows, or an expired file (HTTP 4xx) → `failed`, alert
   `sales_import_failed:<store>`, and `sync_orders` reads the window page by page; the first sync
   pass that started at or before `sales_history_from` and reached the last page sets the status
-  to `done` and resolves the alert. A 0-object export
-  has no file: `done`. The `bulk_operations/finish` webhook runs a check right away. A task can't
-  push its own next run later (re-queuing its own key makes it run again at once), so delayed
-  checks alternate between the plain key and a `poll: true` one. Only one check per store runs at
-  a time (`pg_try_advisory_lock(LOCK_CLASSES.salesBackfill, storeId)` on a dedicated connection; every
-  lock id is listed in `src/db/locks.ts`), so the file is
-  downloaded once.
+  to `done` and resolves the alert. A 0-object export has no file: `done`. The
+  `bulk_operations/finish` webhook runs a check right away. A task can't push its own next run
+  later (re-queuing its own key makes it run again at once), so delayed checks alternate between
+  the plain key and a `poll: true` one. Only one check per store runs at a time
+  (`pg_try_advisory_lock(LOCK_CLASSES.salesBackfill, storeId)` on a dedicated connection; every
+  lock id is listed in `src/db/locks.ts`), so the file is downloaded once. A non-permission error
+  starting the export is thrown, so the task runner retries it with backoff; the status stays
+  `none` meanwhile, so `sync_orders` isn't queued for that store.
 - Permissions: without `read_orders` (as last read from Shopify) no task calls Shopify. An
   `ACCESS_DENIED` from Shopify records the problem on the store's sales columns
   (`sales_backfill_error`, `orders_sync_error`) and ends the task; it never marks the store as
@@ -210,12 +218,12 @@ costs.
 
 **Report queries** (`src/sales/reports.ts`). Days are bucketed by Postgres
 (`(processed_at AT TIME ZONE tz)::date`), so the setting is checked against `pg_timezone_names`
-when it is saved (a name only Node knows is refused with a 400); `reportTimezone` and
-`reportToday` (`src/settings.ts`) give every feature the same zone and "today"; the period's bounds are local midnights turned into
-instants, so the `(store_id, processed_at)` indexes of `sales_lines` and `sales_orders` are used.
-Orders are counted from `sales_orders` (counting distinct orders of the lines needs a big sort).
-Amounts are summed per store, then divided by the store's exchange rate. The products report sums
-lines per item and store, adds the stock (Σ started pool levels) and the pace (units over
-`reorderLookbackDays` in every store, divided by the days the window really covers), then sorts
-and pages. On 600,000 lines (3 stores, a year), the summary took about 0.1 s for 30 days and
-0.5 s for a year, and the products report 0.3 to 0.7 s.
+when it is saved (a name only Node knows is refused with a 400). `reportTimezone` and
+`reportToday` (`src/settings.ts`) give every feature the same zone and "today". The period's
+bounds are local midnights turned into instants, so the `(store_id, processed_at)` indexes of
+`sales_lines` and `sales_orders` are used. Orders are counted from `sales_orders` (counting
+distinct orders of the lines needs a big sort). Amounts are summed per store, then divided by the
+store's exchange rate. The products report sums lines per item and store, adds the stock (Σ
+started pool levels) and the pace (units over `reorderLookbackDays` in every store, divided by the
+days the window really covers), then sorts and pages. On 600,000 lines (3 stores, a year), the
+summary took about 0.1 s for 30 days and 0.5 s for a year, and the products report 0.3 to 0.7 s.

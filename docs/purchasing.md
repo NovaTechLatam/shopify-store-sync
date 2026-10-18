@@ -49,7 +49,7 @@ order gets a number (PO-0001, PO-0002...) and goes through these steps:
 | Cancelled       | Nothing arrived and nothing will.                           | Change its notes.                                                            |
 
 An ordered or partly received order is marked **Overdue** from the day after its expected date, by
-the calendar of your report time zone (Settings → Sales history), not the server's.
+the calendar of your report time zone (Settings > Sales history), not the server's.
 
 To create one, click **New purchase order**, choose the supplier, and click **Add products…** to
 search your products (the supplier's products come first, with their price). Prices are filled in
@@ -87,12 +87,15 @@ updates within seconds. The order becomes **Partly received** or **Received**.
 Some products can't get their units right away:
 
 - **A brand-new product that no store sells yet** starts at 0 plus what you received, as soon as
-  a store sells it. Publish it in your stores with 0 in stock: Store Sync then writes the received
-  quantity to every store.
+  a store sells it. Publish it from the [catalog](catalog.md) (or create it in your stores with 0
+  in stock): Store Sync then writes the received quantity to every store. A number you type into
+  a store for it is replaced.
 - **A product a store sells but that hasn't started syncing** (you left it out when you started)
   keeps its delivery waiting. Start it on the **Start syncing** page: the starting number is chosen
   as usual, and the delivery is added on top.
-- **A product whose syncing is paused** gets its units when you resume it.
+- **While a product's syncing is paused** (or all syncing is), its units are added when you resume.
+- **A warehouse no store sells from** (no store location is set to it): the units wait until a
+  store's location is set to that warehouse and the product is started there.
 
 The message after receiving tells you when this happens.
 
@@ -115,7 +118,7 @@ received**. A closed order stays closed. Undoing doesn't change product costs (s
 
 Each product has a **cost**: what one unit costs you, in your own currency. Reports use it for
 margins, and Prices for each brand's margin. Every delivery with a price updates it, in one of two
-ways (choose in **Settings → Costs**):
+ways (choose in **Settings > Costs**):
 
 - **Average cost** (the default): the stock you already have and the delivery are mixed. With 10
   units at $5.00 and a delivery of 30 at $7.00, the cost becomes $6.50.
@@ -131,7 +134,7 @@ Things to know:
 - Undoing a delivery doesn't change the cost back: once later deliveries are mixed in, the old
   average can't be worked out exactly. If it matters, set the cost on the Prices page.
 
-**Copying costs to Shopify.** With **Settings → Costs → Copy costs to Shopify** on, each new cost
+**Copying costs to Shopify.** With **Settings > Costs > Copy costs to Shopify** on, each new cost
 is written to every active store's "Cost per item", converted with the store's exchange rate. It
 only reaches stores where the product is linked. If a store refuses, you get an alert ("Costs not
 sent to Shopify") and nothing else stops. The same switch decides whether publishing a catalog
@@ -147,9 +150,9 @@ how many to order. It works from:
   the sales pace over"). A product that is newer than that is measured since it first appeared,
   so a product launched 5 days ago isn't diluted over 30 days. Test orders, gift cards and
   cancelled orders don't count; refunded units don't count either.
-- **The shared stock** you have now (a delivery counts as soon as you receive it, even while the
-  stores are still being updated or syncing is paused), and the units **on order** (ordered or
-  partly received orders; drafts don't count).
+- **The shared stock** you have now (a delivery counts as soon as you receive it, even before the
+  stores are updated, for example while all syncing is paused), and the units **on order**
+  (ordered or partly received orders; drafts don't count).
 - **The lead time**: the product's own (on its page), else its supplier's, else the "Usual
   delivery time" in Settings.
 
@@ -176,9 +179,10 @@ other alerts, for example "TEE-1 will run out in about 9 days at the current pac
 time is 14 days. Suggested order: 108 units from Acme." It goes away by itself once the product
 has enough stock or enough on order: a little more than just enough, so a product right at the
 line doesn't alert you again and again as sales come in. Once the alert is open, the product stays
-on the Reorder tab until its stock lasts the lead time plus the safety margin plus 2 more days (or
-10% of those days, if that's more). Turn these alerts off in Settings; the Reorder tab still
-works. Store Sync checks every hour, and right after a delivery or an order change.
+on the Reorder tab until its stock and what's on order last the lead time plus the safety margin
+plus 2 more days (or 10% of those days, if that's more). Turn these alerts off in Settings; the
+Reorder tab still works. Store Sync checks every hour, and right after a delivery or an order
+change.
 
 **Products left out**: products whose syncing is paused, products that haven't started syncing
 (their stock isn't known), and products where you turned off **Suggest reorders for this product**
@@ -206,6 +210,11 @@ works. Store Sync checks every hour, and right after a delivery or an order chan
   delivery or catalog publish (with "Copy costs to Shopify" on) overwrites them.
 - **The sales pace is an average**: seasonal peaks, promotions and stock-outs (no sales because
   nothing was in stock) make it less accurate. Check the suggestion before you order.
+- **Changing a draft's currency or supplier** doesn't change the prices of the products already on
+  it: check them before you send it.
+- **A closed order can't be opened again.** Make a new order for what's still coming.
+- **Copying costs to Shopify** was only tested against a stand-in for Shopify, not a real store:
+  check "Cost per item" on one product after your first delivery with it on.
 
 ## Under the hood
 
@@ -222,8 +231,8 @@ For developers. Code in `src/purchasing/`, routes in `src/http/api/purchasing.ts
   inserted; the sync engine applies it like any adjustment and logs the event with those details.
   A pool level that hasn't started, of an item no store sells, without a pending start, first
   gets an `initialize` (strategy `value`, 0), under the catalog lock (`startUnsoldAtZero` in
-  `src/catalog/catalog.ts`, the same rule as a catalog product's first publish). The pool levels are enqueued
-  last, in the same transaction; `push_item_costs` tasks too (dedupe key
+  `src/catalog/catalog.ts`, the same rule as a catalog product's first publish). The pool levels
+  are enqueued last, in the same transaction; `push_item_costs` tasks too (dedupe key
   `push_item_costs:<storeId>:<receiptId>`).
 - **Supplier currency.** `PATCH /suppliers/:id` with a new `currencyCode` answers 409 (with
   `currencyChange: { pricedItems }`) when the supplier has prices, unless the body has

@@ -1,8 +1,8 @@
 # Roadmap
 
-You asked which other features are worth adding. This page lists what is in this version (✅) and
-what we suggest building next, in order, with the reason each one matters for brands that sell
-**the same product with a different brand, price and images**.
+You asked which other features are worth adding. This page lists what is in this version (✅),
+what it doesn't do yet, and what we suggest building next, in order, with the reason each one
+matters for brands that sell **the same product with a different brand, price and images**.
 
 It is based on a review of the Shopify stock sync apps on the market (Syncio, Multi-Store Sync
 Power, Trunk, Hydra, DeltaSync and others), heavier inventory systems (Linnworks, Cin7, Katana,
@@ -26,6 +26,8 @@ Reviews of these apps keep reporting the same failures. Version 1 was designed a
 
 ## In this version
 
+### Stock sync (version 1)
+
 | Feature                                                                                                            | Status |
 | ------------------------------------------------------------------------------------------------------------------ | ------ |
 | One shared stock, with every store as an equal                                                                     | ✅     |
@@ -43,123 +45,216 @@ Reviews of these apps keep reporting the same failures. Version 1 was designed a
 | New products start syncing on their own                                                                            | ✅     |
 | Two ways to connect a store: Dev Dashboard app, or an existing custom app                                          | ✅     |
 
+### Catalog, prices, reports and purchasing (version 2)
+
+These were the first five recommendations of the previous roadmap. Each is optional and works
+without the others. The catalog and prices need the `write_products` permission in Shopify, reports
+and reorder suggestions `read_orders`, and purchasing nothing more (see
+[Setting up Shopify](setup-shopify.md#permissions-for-the-extra-features)).
+
+**✅ Create a product once, publish it to every brand** ([the catalog](catalog.md))
+
+- A default version, and per brand its own title, description, images, search listing, tags,
+  status and Online Store visibility. Options, variants, SKUs, barcodes and weights are shared.
+- Import the products your stores already sell; the other brands' products with the same SKUs are
+  linked, keeping their own texts and images.
+- A preview per brand before publishing, including what would be deleted. New SKUs start at 0 and
+  then follow the shared stock. Archive in every brand by archiving once and publishing.
+- Not yet: collections, metafields, product categories, sales channels other than the Online
+  Store, and Markets. Option names and values are the same in every brand. At most 3 options and
+  250 variants. Publishing removes videos and 3D models from a brand's product.
+
+**✅ Price rules per brand** ([prices](pricing.md))
+
+- A base price per product, and a rule per store: exchange rate, multiplier, amount to add,
+  rounding ("ending in .90", "multiple of 1,000") and compare-at price. Fixed prices per store,
+  bulk edits, sales and base price changes planned ahead, a preview with big drops flagged, and a
+  history of every update.
+- Not yet: exchange rates are typed by hand. One price per product per store: no Markets, B2B
+  catalogs or quantity breaks. Sales take a percentage off.
+
+**✅ Reports across all brands** ([reports](reports.md))
+
+- Revenue, units, orders and margin for every brand and combined, in each store's currency and
+  your base currency; per product with sell-through and days of stock left; a CSV download. The
+  order history is imported when a store is connected, then kept up to date live and every 15
+  minutes.
+- Not yet: 60 days of history unless Shopify approves `read_all_orders`. Past sales are converted
+  with today's exchange rate. No breakdown by sales channel, discount code or customer.
+
+**✅ Reorder alerts based on days of stock left** ([purchasing](purchasing.md#reorder-suggestions))
+
+- The sales pace in every store, the stock you have and what's on order, the lead time and a
+  safety margin; a suggested quantity rounded to the supplier's minimum and pack size; alerts that
+  don't repeat for a product right at the line; draft orders per supplier in one click.
+- Not yet: the pace is a plain average, so seasons, promotions and stock-outs make it less
+  accurate. Alerts reach WhatsApp or email only through Zapier or Make.
+
+**✅ Purchase orders and receiving** ([purchasing](purchasing.md))
+
+- Suppliers with their currency, lead time, prices, minimum order and pack size. Purchase orders
+  from draft to received; partial deliveries; more than ordered only after you confirm; a delivery
+  sent twice is counted once; undo. Average or last cost, optionally copied to Shopify. Print and
+  CSV.
+- Not yet: one warehouse per order. A closed order can't be reopened. No transfers between
+  warehouses. Orders aren't sent to suppliers from Store Sync: print or download them.
+
+### Known gaps in this version
+
+Smaller things we know about. Each is a small fix (S), except the last, which is a check to make on
+a real store:
+
+- **Taking a product out of a sale** drops the fixed price it had before the sale: set it again.
+- **"Set base prices from a store…"** uses the prices from the last read of the store's products
+  (up to 6 hours old), not fresh ones.
+- **Changing a draft order's currency or supplier** keeps the prices of the lines already on it:
+  check them.
+- **A delivery to a warehouse no store location is set to** waits until one is, and the product
+  is started there.
+- **A catalog SKU you create by hand in a store before publishing it** waits for **Start
+  syncing**, even with automatic start on.
+- **Days of stock left in Reports** count a delivery once it's in the shared stock (seconds later,
+  or when syncing resumes); the Reorder tab counts it at once, so the two can differ meanwhile.
+- **"Import again…"** keeps retrying when Shopify won't start the export for a reason other than a
+  permission, and the 15-minute order check stays off for that store meanwhile. The import also
+  holds the whole export in memory (about 100 MB per 100,000 orders).
+- **A product selling less than one unit in 200 days** shows "—" per day in Reports.
+- **The page of a product not published yet** still says to fix its problems in Shopify.
+- **Removing a SKU that was never in a store from a catalog product** removes it from Store Sync
+  even when a planned sale lists it; the sale then skips it.
+- **Shopify behaviour tested only against a stand-in store.** Check these on one product before
+  relying on them: how images and variant images are matched when publishing, stock sent for
+  variants added to an existing product, removing a compare-at price, prices Shopify refuses,
+  "Cost per item" updates, live sales updates (protected customer data), and revenue on stores
+  whose prices include tax. Each feature's page says which applies.
+
 ## Next: the features we recommend
 
-### 1. Create a product once, publish it to every brand (L)
-
-Write a product once and push it to every store. Each brand gets its own title, description,
-images, SEO and tags, while shared details stay identical: SKU, barcode, weight, options and
-variants.
-
-**Why for you:** your brands differ only in brand, price and images, so today every product is
-created several times by hand. This removes most of that work. It also guarantees the same SKU
-everywhere, which is what makes stock sync work. Other apps only copy fields with on/off switches;
-real per-brand versions are a gap in the market.
-
-### 2. Price rules per brand (M)
-
-For example: "Brand B = Brand A's price × 1.3, rounded to end in .90", compare-at prices, scheduled
-price changes and bulk edits.
-
-**Why for you:** price is one of the three things that differ between your brands. Keeping several
-price lists consistent by hand is slow and error-prone.
-
-### 3. Reports across all brands (M-L)
-
-Units and revenue per product per brand, sell-through, days of stock left and margin per brand, in
-each store's currency and combined.
-
-**Why for you:** each Shopify store only sees its own sales. Deciding what to reorder, or which
-brand deserves the stock, needs all of them side by side. This needs one more permission
-(`read_orders`).
-
-### 4. Reorder alerts based on days of stock left (S-M)
-
-"At the current pace you will run out of SKU X in 9 days", sent to WhatsApp, Slack or email, in
-place of a fixed low-stock number.
-
-**Why for you:** this is your stated goal: never sell out. A fixed threshold is too late for
-bestsellers and too noisy for slow products. It builds on the reports in 3.
-
-### 5. Purchase orders and receiving (M)
-
-Create a purchase order, then receive the delivery once (in full or in parts), and every brand is
-updated. See what is on its way.
-
-**Why for you:** a delivery is one physical event, but today staff are tempted to type it into
-every store, which counts it several times. Version 1 already has **Add units** and warns about
-deliveries entered twice; this adds suppliers, expected dates and partial deliveries. Shopify's own
-Stocky app shut down on August 31, 2026, so many merchants are looking for this.
-
-### 6. Stock allocation per brand (M)
+### 1. Stock allocation per brand (M)
 
 Rules such as "Brand B shows at most 20", "keep 50 for Brand A's launch" or "when fewer than 10 are
 left, only sell in the premium brand".
 
-**Why for you:** when stock is scarce, you choose which brand and which price point gets it, and
-protect your margin.
+**Why for you:** today every brand sells the same last units. Reports now show which brand sells
+each product, and at what margin: allocation lets you act on it, so scarce stock goes to the brand
+and price point you choose.
 
-### 7. Safety buffers per product (S)
+### 2. Returns policy: check before restocking (M)
 
-A buffer per product, or a percentage, on top of the per-store buffer.
+Returned units wait as "to inspect" before they rejoin the shared stock, with a rule per brand
+("Brand A's returns go straight back, Brand B's are checked first"). Store Sync now reads orders
+and refunds, which makes this possible.
 
-**Why for you:** a bestseller that sells several units a minute needs a bigger buffer than a slow
-product.
+**Why for you:** with one shared stock, a damaged return in one brand is sold again by every
+brand. Each brand may also promise different return terms.
 
-### 8. Pack sizes (M)
+### 3. Automatic exchange rates (S)
 
-A brand sells a 2-pack of the same physical product: it shows half the shared stock, and each sale
-removes 2 units.
+Each store's exchange rate updated every day from a public source, optionally with a margin, with
+an alert when a rate moves more than you allow, and a history of rates so reports convert each
+sale at the rate of its day.
 
-**Why for you:** brands often package the same product differently.
+**Why for you:** when your brands sell in different currencies, rates like USD to COP move every
+week. Today a rate is typed by hand, so prices and margins drift until someone updates it, and
+past reports change when it does.
 
-### 9. Smaller additions (S each)
+### 4. Team roles and personal logins (S-M)
 
-- **Discontinue or archive a product in every brand at once,** so no brand keeps a forgotten
-  listing.
-- **Returns inspection:** put returned units back into the shared stock only after they are
-  checked, so one brand's damaged return isn't sold again by every brand.
+Owner, operations, brand manager (prices and content of their own brand only) and read-only, each
+with their own login, and their name in the activity log.
+
+**Why for you:** Store Sync now changes products and prices, not only stock, and everyone shares
+one password. A brand manager shouldn't be able to change another brand's prices or the shared
+stock.
+
+### 5. Bundles, kits and pack sizes (M-L)
+
+A bundle's stock worked out from the shared stock of its parts, for bundles each brand builds
+differently; a brand's 2-pack shows half the stock and each sale removes 2 units. Built into the
+catalog too.
+
+**Why for you:** brands often package the same product differently (gift sets, multi-packs).
+Today Store Sync syncs a bundle's parts and leaves the bundle itself to Shopify.
+
+### 6. Demand forecasting (L)
+
+Reorder suggestions that see seasons, promotions and growth, ignore days when the product was out
+of stock, and plan orders month by month.
+
+**Why for you:** a plain average orders too little before your peaks (Black Friday, Christmas) and
+too much after them. It needs 6-12 months of combined sales: with `read_all_orders`, or once Store
+Sync has collected them.
+
+### 7. Collections per brand (M)
+
+The catalog puts each product in each brand's collections when it publishes.
+
+**Why for you:** each brand organises its store its own way. Collections based on tags already
+work, because each brand has its own tags; collections you fill by hand still need every new
+product added in every store.
+
+### 8. Option names and values per brand (M)
+
+"Talla / Color" in one brand and "Size / Colour" in another, or a brand in another language, while
+the variants and SKUs stay the same.
+
+**Why for you:** options are shared today because they define the variants. Brands with their own
+voice, or in another language, need their own words for them.
+
+### 9. Transfers between warehouses (M)
+
+Move units from one warehouse to another, with the units in transit counted in neither until they
+arrive; split a delivery across warehouses.
+
+**Why for you:** with a warehouse and a shop, moving stock today takes two manual changes, and a
+purchase order delivers to one warehouse only.
+
+### 10. Central fulfilment and 3PLs (L)
+
+One pick list for all brands with branded packing slips, or a 3PL's warehouse system as the source
+of the shared stock.
+
+**Why for you:** once one warehouse ships every brand's orders, picking store by store is slow,
+and a 3PL's numbers become the real stock.
+
+### 11. More sales channels on the same stock (L each)
+
+Mercado Libre, Amazon, and wholesale (Shopify B2B), on the same shared stock and catalog.
+
+**Why for you:** more places to sell the same units without overselling. Mercado Libre leads in
+Latin America.
+
+### 12. Smaller additions (S each)
+
+- **Safety buffers per product,** or a percentage, on top of the per-store buffer: a bestseller
+  needs a bigger buffer than a slow product.
+- **Show which order caused each stock change,** in the activity log. Cheap now that Store Sync
+  reads orders.
+- **Send purchase orders to suppliers by email** from Store Sync.
 - **"Read every store again" button**, to start fresh from the stores' current numbers after
   restoring an old backup (today this takes a few database commands, see
   [operations](operations.md#restoring)).
 - **Approval queue** for suspicious changes, such as a large increase typed into a store, held
   until you confirm it.
-
-### 10. Team roles (S-M)
-
-Owner, operations, brand manager (prices and content of their own brand only) and read-only.
-
-**Why for you:** brands are often run by different people. A brand manager shouldn't be able to
-change the shared stock.
-
-### 11. Bundles and kits (M-L)
-
-Bundle availability calculated from the shared stock of its parts, for bundles each brand builds
-differently.
-
-### 12. Barcode matching and stock counts with a phone (M)
-
-Match products by barcode when SKUs differ, and count shelves by scanning barcodes with a phone.
+- **Weekly summary** (top sellers, products at risk, price gaps between brands) and **WhatsApp and
+  email alerts built in** (S-M): both easy now that reports exist; today alerts reach them through
+  Zapier or Make.
 
 ## Later
 
-| Feature                                                                               | Why later                                                                         | Effort |
-| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ------ |
-| Demand forecasting and suggested purchase orders                                      | Needs 6-12 months of combined sales history from the reports (3).                 | L      |
-| One pick list for all brands, with branded packing slips                              | Worth it once one warehouse ships a lot for every brand.                          | L      |
-| Connecting a 3PL or warehouse system as the stock source                              | Only if you outsource fulfillment.                                                | L      |
-| More sales channels on the same stock: Mercado Libre, Amazon, wholesale (Shopify B2B) | Same shared stock, more places to sell. Mercado Libre leads in Latin America.     | L each |
-| Country prices and availability per brand (Shopify Markets)                           | Only if your brands sell abroad.                                                  | M      |
-| Lot, expiry date or serial number tracking                                            | Only for perishable or regulated products.                                        | L      |
-| WhatsApp and email alerts built in                                                    | Version 1 reaches them through Zapier or Make.                                    | S-M    |
-| Weekly summary (top sellers, products at risk, price gaps between brands)             | Easy once reports (3) exist.                                                      | S-M    |
-| Show which order caused each stock change                                             | Needs order data (`read_orders`). The stock numbers are already right without it. | S-M    |
-| Shopify's newer notification system (Events)                                          | Richer notifications, but brand new. Classic notifications work well today.       | M      |
-| Selling Store Sync to other merchants as a public app                                 | Needs Shopify's OAuth flow, billing and App Store review.                         | L      |
+| Feature                                                     | Why later                                                                       | Effort |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------- | ------ |
+| Barcode matching and stock counts with a phone              | Matching by SKU works well when SKUs are kept the same, which the catalog does. | M      |
+| Country prices and availability per brand (Shopify Markets) | Only if your brands sell abroad.                                                | M      |
+| Lot, expiry date or serial number tracking                  | Only for perishable or regulated products.                                      | L      |
+| Shopify's newer notification system (Events)                | Richer notifications, but brand new. Classic notifications work well today.     | M      |
+| Selling Store Sync to other merchants as a public app       | Needs Shopify's OAuth flow, billing and App Store review.                       | L      |
 
 ## Our recommendation
 
-If you build only a few things next, build **1 (create once, publish to every brand)**, **2 (price
-rules per brand)**, **3 and 4 (reports with reorder alerts)** and **5 (receiving deliveries)**.
-They follow directly from "the only difference is the brand, the price and the images", and the
-low-cost sync apps don't do them well.
+Version 2 built the five features we recommended first. Next, fix the known gaps above, then build
+**1 (allocation per brand)** and **2 (returns checked before restocking)**: they protect the shared
+stock now that every brand sells from it. Then **3 (automatic exchange rates)**, which keeps your
+prices and reports right across currencies, and **4 (team roles)** before more people use Store
+Sync. Bundles (5) when you start selling packs, and forecasting (6) once you have 6-12 months of
+combined sales.
