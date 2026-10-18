@@ -1167,6 +1167,7 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
           order: view,
           waiting: [],
           duplicate: true,
+          syncPaused: state.settings.syncPaused,
         };
       }
       if (!UNFINISHED.includes(order.status)) {
@@ -1227,6 +1228,7 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
         order: view,
         waiting,
         duplicate: false,
+        syncPaused: state.settings.syncPaused,
       });
     }
     case 'POST /purchasing/orders/:id/receipts/:id/reverse': {
@@ -1252,7 +1254,11 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
         if (order.status !== 'closed') order.status = statusAfterReceiving(order);
         touch(order);
       }
-      return { ...orderView(state, order), alreadyReversed: already };
+      return {
+        ...orderView(state, order),
+        alreadyReversed: already,
+        syncPaused: state.settings.syncPaused,
+      };
     }
 
     // ---- reorder

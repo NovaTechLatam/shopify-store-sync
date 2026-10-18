@@ -354,6 +354,8 @@ export async function registerPurchasingRoutes(app: FastifyInstance, deps: AppDe
       order,
       waiting: await waitingItems(db, result.receiptId),
       duplicate: result.duplicate,
+      // Syncing is paused for everything: the stores only get the units when it resumes.
+      syncPaused: settings.syncPaused,
     });
   });
 
@@ -365,7 +367,11 @@ export async function registerPurchasingRoutes(app: FastifyInstance, deps: AppDe
       deps.onWork?.();
       await recheckReorder();
     }
-    return { ...(await orderView(id)), alreadyReversed: result.alreadyReversed };
+    return {
+      ...(await orderView(id)),
+      alreadyReversed: result.alreadyReversed,
+      syncPaused: (await getSettings(db)).syncPaused,
+    };
   });
 
   // ---- reorder ----------------------------------------------------------------------------------

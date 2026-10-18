@@ -376,13 +376,16 @@ async function receiveDialog(order, page) {
       ? ` ${waiting.map((w) => w.sku).join(', ')} ${waiting.length === 1 ? 'isn’t' : 'aren’t'} syncing yet: ${waiting.length === 1 ? 'its' : 'their'} units are added when ${waiting.length === 1 ? 'it starts' : 'they start'}.`
       : '';
     toast(
-      `Received ${plural(units, 'unit')} on ${order.number}. Every store updates in a few seconds.${waitingNote}`,
+      result.syncPaused
+        ? `Received ${plural(units, 'unit')} on ${order.number}. Syncing is paused, so the stores get them when you resume it.${waitingNote}`
+        : `Received ${plural(units, 'unit')} on ${order.number}. Every store updates in a few seconds.${waitingNote}`,
     );
   }
   page.reload();
 }
 
 async function undoReceipt(order, receipt, page) {
+  let syncPaused = false;
   const done = await confirmDialog({
     title: 'Undo this delivery?',
     message: [
@@ -399,15 +402,18 @@ async function undoReceipt(order, receipt, page) {
     ],
     confirmLabel: 'Undo delivery',
     tone: 'critical',
-    onConfirm: () =>
-      api(`/api/purchasing/orders/${order.id}/receipts/${receipt.id}/reverse`, {
-        method: 'POST',
-        toastErrors: false,
-      }),
+    onConfirm: async () => {
+      const result = await api(
+        `/api/purchasing/orders/${order.id}/receipts/${receipt.id}/reverse`,
+        { method: 'POST', toastErrors: false },
+      );
+      syncPaused = Boolean(result?.syncPaused);
+      return result;
+    },
   });
   if (done) {
     toast(
-      `Delivery undone: ${plural(receipt.units, 'unit')} taken out again. Stores update in a few seconds.`,
+      `Delivery undone: ${plural(receipt.units, 'unit')} taken out again. ${syncPaused ? 'Syncing is paused, so the stores change when you resume it.' : 'Stores update in a few seconds.'}`,
     );
     page.reload();
   }
@@ -1067,7 +1073,7 @@ function orderEditor(data, page) {
         title: 'Products',
         description:
           mode === 'open'
-            ? 'You can change quantities and prices, and add products. Quantities can’t go below what was received.'
+            ? 'You can change quantities and prices, and add products. Quantities can’t go below what was received, and products with a delivery stay on the order.'
             : null,
         actions: addButton,
       },

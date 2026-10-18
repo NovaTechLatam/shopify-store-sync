@@ -374,7 +374,7 @@ describe('purchase orders API', () => {
     const acme = await newSupplier();
     const po = await api('POST', '/api/purchasing/orders', {
       supplierId: acme.id,
-      lines: [{ itemId: rows[0]!.id, quantityOrdered: 3 }],
+      lines: [{ itemId: rows[0]!.id, quantityOrdered: 4 }],
     });
     const received = await api('POST', `/api/purchasing/orders/${po.body.id}/receive`, {
       requestId: randomUUID(),
@@ -385,6 +385,21 @@ describe('purchase orders API', () => {
       { itemId: rows[0]!.id, sku: 'NEW-1', reason: 'not_started' },
     ]);
     expect(received.body.order.lines[0].syncing).toBe(false);
+    expect(received.body.syncPaused).toBe(false);
+
+    // With syncing paused for every product, the stores only get the units on resume: say so.
+    await api('POST', '/api/settings/pause', {});
+    const paused = await api('POST', `/api/purchasing/orders/${po.body.id}/receive`, {
+      requestId: randomUUID(),
+      lines: [{ lineId: po.body.lines[0].id, quantity: 1 }],
+    });
+    expect(paused.status).toBe(201);
+    expect(paused.body.syncPaused).toBe(true);
+    const undone = await api(
+      'POST',
+      `/api/purchasing/orders/${po.body.id}/receipts/${paused.body.receipt.id}/reverse`,
+    );
+    expect(undone.body).toMatchObject({ alreadyReversed: false, syncPaused: true });
   });
 
   it('downloads an order as a CSV that is safe to open in a spreadsheet', async () => {
