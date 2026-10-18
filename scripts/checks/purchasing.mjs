@@ -147,10 +147,14 @@ export async function flows(ctx) {
       await confirm.waitFor();
       await shoot(page, 'dialog-po-over-receipt-1280-light', { fullPage: false });
       await confirm.getByRole('button', { name: 'Receive them all' }).click();
-      await page.locator('.toast', { hasText: 'Received' }).waitFor();
+      await page.locator('.toast', { hasText: 'Received 64 units on PO-0005' }).waitFor();
       await settle(page);
+      await waitUntil(
+        page,
+        `[...document.querySelectorAll('.stat')].some((s) => s.textContent.includes('136 of 120'))`,
+      );
       expect(
-        (await page.locator('.stat', { hasText: 'Received' }).textContent()).includes('112 of 120'),
+        (await page.locator('.stat', { hasText: 'Received' }).textContent()).includes('136 of 120'),
         'the over-delivery is counted',
       );
 
