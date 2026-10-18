@@ -507,11 +507,8 @@ async function flows(browser, baseUrl, server) {
       current.length === 1 && current[0].includes('Reports'),
       `Reports is highlighted (${current.join(', ')}, ${page.url()})`,
     );
-    await go('#/purchasing/orders/12');
-    expect(
-      (await page.locator('main h1').textContent()) === 'Purchase order',
-      'purchase order page',
-    );
+    await go('#/purchasing/orders/5');
+    expect((await page.locator('main h1').textContent()) === 'PO-0005', 'purchase order page');
     expect(
       (await page.locator('#sidebar a[aria-current="page"]').textContent()).includes('Purchasing'),
       'a purchase order highlights Purchasing',
