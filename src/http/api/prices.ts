@@ -485,7 +485,7 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
 
   // ---- rules --------------------------------------------------------------------------------
 
-  /** A few items with base prices, for the rules' examples. */
+  /** A few items with different base prices (cheap, middle, dear), for the rules' examples. */
   const samples = async () => {
     const { rows } = await db.query<{
       id: number;
@@ -494,10 +494,14 @@ export async function registerPriceRoutes(app: FastifyInstance, deps: AppDeps): 
       base_price: number;
       base_compare_at_price: number | null;
     }>(
-      `SELECT id, sku, title, base_price, base_compare_at_price FROM items
-        WHERE base_price IS NOT NULL ORDER BY sku LIMIT 3`,
+      `SELECT DISTINCT ON (base_price) id, sku, title, base_price, base_compare_at_price
+         FROM items WHERE base_price IS NOT NULL ORDER BY base_price, sku LIMIT 50`,
     );
-    return rows.map((r) => ({
+    if (rows.length === 0) return [];
+    const picked = [...new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1])]
+      .filter((i) => i >= 0)
+      .map((i) => rows[i]!);
+    return picked.map((r) => ({
       itemId: r.id,
       sku: r.sku,
       title: r.title,
