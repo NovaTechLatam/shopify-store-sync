@@ -57,7 +57,9 @@ const FILTERS: Record<z.infer<typeof ListQuery>['filter'], string> = {
                  AND v.link_source = 'auto')
    OR EXISTS (SELECT 1 FROM stores s WHERE s.status = 'active'
                AND NOT EXISTS (SELECT 1 FROM variants v
-                                WHERE v.store_id = s.id AND v.item_id = i.id AND v.deleted_at IS NULL)))`,
+                                WHERE v.store_id = s.id AND v.item_id = i.id AND v.deleted_at IS NULL)
+               -- A catalog product reaches the stores when it's published: not a problem.
+               AND NOT EXISTS (SELECT 1 FROM master_variants mv WHERE mv.item_id = i.id)))`,
 };
 
 export interface ItemSummary {
@@ -172,6 +174,14 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
       [itemIds],
     ),
   ]);
+  // Items of catalog products (src/products): the brands each is meant to be sold in.
+  const catalog = await db.query<{ item_id: number; store_id: number; enabled: boolean }>(
+    `SELECT mv.item_id, mps.store_id, mps.enabled FROM master_variants mv
+       JOIN master_product_stores mps ON mps.master_product_id = mv.master_product_id
+      WHERE mv.item_id = ANY($1::bigint[])`,
+    [itemIds],
+  );
+  const inCatalog = new Set(catalog.rows.map((c) => c.item_id));
 
   const byId = new Map(items.rows.map((i) => [i.id, i]));
   return itemIds.flatMap((itemId) => {
@@ -183,8 +193,14 @@ export async function loadItemSummaries(db: Queryable, itemIds: number[]): Promi
     for (const d of duplicates.rows)
       if (d.sku === item.sku) issues.push(`Duplicate SKU in ${d.store_name}`);
     for (const s of stores.rows) {
-      if (s.status === 'active' && !itemVariants.some((v) => v.store_id === s.id))
+      if (s.status !== 'active' || itemVariants.some((v) => v.store_id === s.id)) continue;
+      if (!inCatalog.has(itemId)) {
         issues.push(`Missing in ${s.name}`);
+        continue;
+      }
+      // A catalog product is only missing where it's meant to be sold and not published yet.
+      const brand = catalog.rows.find((c) => c.item_id === itemId && c.store_id === s.id);
+      if (brand?.enabled) issues.push(`Not published in ${s.name} yet`);
     }
 
     const itemLevels = levels.rows
