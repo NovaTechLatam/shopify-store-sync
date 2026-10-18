@@ -68,6 +68,8 @@ interface LineRow {
   quantity_ordered: number;
   quantity_received: number;
   unit_cost: number;
+  /** A delivery was booked on the line (maybe undone since). */
+  has_deliveries: boolean;
 }
 
 const STATUS_WORDS: Record<OrderStatus, string> = {
@@ -95,7 +97,8 @@ async function lockOrder(client: Queryable, orderId: number): Promise<OrderRow> 
 
 async function lockLines(client: Queryable, orderId: number): Promise<LineRow[]> {
   const { rows } = await client.query<LineRow>(
-    `SELECT l.id, l.item_id, i.sku, l.quantity_ordered, l.quantity_received, l.unit_cost
+    `SELECT l.id, l.item_id, i.sku, l.quantity_ordered, l.quantity_received, l.unit_cost,
+            EXISTS (SELECT 1 FROM po_receipt_lines rl WHERE rl.line_id = l.id) AS has_deliveries
        FROM purchase_order_lines l JOIN items i ON i.id = l.item_id
       WHERE l.purchase_order_id = $1
       ORDER BY l.id
@@ -229,8 +232,9 @@ async function assertItems(db: Queryable, itemIds: number[]): Promise<Map<number
 
 /**
  * Replaces the order's lines with `input` (in that order). Existing lines are matched by id, else
- * by item; lines left out are removed. Lines with received units can't go below what was received,
- * nor be removed.
+ * by item; lines left out are removed. Lines with received units can't go below what was received.
+ * Lines that had a delivery, even one undone since, can't be removed: deleting the line would
+ * delete its part of the delivery, and the order's history would lose it.
  */
 async function replaceLines(
   client: Queryable,
@@ -292,6 +296,11 @@ async function replaceLines(
     if (kept.has(line.id)) continue;
     if (line.quantity_received > 0) {
       throw badRequest(`${line.sku} can’t be removed: units of it were already received.`);
+    }
+    if (line.has_deliveries) {
+      throw badRequest(
+        `${line.sku} can’t be removed: a delivery of it was recorded on this order (and undone). Lower its quantity instead, or close the order when the rest isn’t coming.`,
+      );
     }
     await client.query('DELETE FROM purchase_order_lines WHERE id = $1', [line.id]);
   }
@@ -675,9 +684,17 @@ async function receiveLocked(
   if (notStarted.length) await lockCatalog(client);
 
   const items = await lockItems(client, itemIds);
+  // The stock the average mixes the delivery with: the started levels plus units added but not
+  // applied yet (earlier deliveries of a product no store sells yet, or while syncing is paused).
+  // Without them, two deliveries before a launch would leave the cost at the last price.
   const { rows: stock } = await client.query<{ item_id: number; stock: number }>(
-    `SELECT item_id, sum(quantity)::int AS stock FROM pool_levels
-      WHERE item_id = ANY($1::bigint[]) AND quantity IS NOT NULL GROUP BY item_id`,
+    `SELECT pl.item_id, (COALESCE(sum(pl.quantity), 0) + COALESCE(sum(p.value), 0))::int AS stock
+       FROM pool_levels pl
+       LEFT JOIN LATERAL (
+         SELECT sum(pa.value) AS value FROM pool_adjustments pa
+          WHERE pa.pool_level_id = pl.id AND pa.kind = 'adjust' AND pa.applied_at IS NULL) p ON true
+      WHERE pl.item_id = ANY($1::bigint[])
+      GROUP BY pl.item_id`,
     [itemIds],
   );
   const stockBefore = new Map(stock.map((s) => [s.item_id, s.stock]));
@@ -917,6 +934,8 @@ export interface OrderLineView {
   lineTotal: number;
   /** The item's stock in the order's warehouse has started syncing. */
   syncing: boolean;
+  /** A delivery was recorded on the line (maybe undone since): it can't be removed. */
+  hasDeliveries: boolean;
 }
 
 export interface OrderView {
@@ -1028,11 +1047,13 @@ export async function loadOrder(
       quantity_received: number;
       unit_cost: number;
       syncing: boolean;
+      has_deliveries: boolean;
     }>(
       `SELECT l.id, l.item_id, i.sku, i.title, si.supplier_sku, l.quantity_ordered,
               l.quantity_received, l.unit_cost,
               COALESCE((SELECT pl.quantity IS NOT NULL FROM pool_levels pl
-                         WHERE pl.item_id = l.item_id AND pl.warehouse_id = $2), false) AS syncing
+                         WHERE pl.item_id = l.item_id AND pl.warehouse_id = $2), false) AS syncing,
+              EXISTS (SELECT 1 FROM po_receipt_lines rl WHERE rl.line_id = l.id) AS has_deliveries
          FROM purchase_order_lines l
          JOIN items i ON i.id = l.item_id
          LEFT JOIN supplier_items si ON si.supplier_id = $3 AND si.item_id = l.item_id
@@ -1073,6 +1094,7 @@ export async function loadOrder(
     unitCost: l.unit_cost,
     lineTotal: roundMoney(l.quantity_ordered * l.unit_cost, 4),
     syncing: l.syncing,
+    hasDeliveries: l.has_deliveries,
   }));
   const sum = (f: (l: OrderLineView) => number) => lineViews.reduce((a, l) => a + f(l), 0);
   const quantityOrdered = sum((l) => l.quantityOrdered);
@@ -1303,13 +1325,16 @@ export function orderCsv(order: OrderView): string {
 /**
  * One draft order per preferred supplier for the given items and quantities. Items without a
  * supplier are refused (listed), so nothing is created half way. Orders are in the supplier's
- * currency, at the suggested exchange rate (1 when none is known yet: check it on the order).
+ * currency, at the rate given in `exchangeRates` (units of that currency per 1 base currency),
+ * else the suggested one. A currency without either is refused (listed in `exchangeRatesNeeded`,
+ * for the dashboard to ask): a made-up rate of 1 would turn every price in it into a wrong cost.
  */
 export async function createDraftOrders(
   db: Db,
   lines: { itemId: number; quantity: number }[],
   settings: Settings,
-): Promise<{ orderIds: number[]; rateUnknown: string[] }> {
+  exchangeRates: Record<string, number> = {},
+): Promise<{ orderIds: number[] }> {
   return withTransaction(db, async (client) => {
     const itemIds = [...new Set(lines.map((l) => l.itemId))];
     if (itemIds.length !== lines.length) throw badRequest('A product is listed twice');
@@ -1339,19 +1364,36 @@ export async function createDraftOrders(
       group.lines.push({ itemId: r.id, quantityOrdered: quantityOf.get(r.id)! });
       groups.set(r.supplier_id!, group);
     }
+    const rates = new Map<string, number>();
+    const needed: string[] = [];
+    for (const currency of [...new Set([...groups.values()].map((g) => g.currency))].sort()) {
+      const rate =
+        currency === settings.baseCurrency
+          ? 1
+          : (exchangeRates[currency] ??
+            (await suggestedExchangeRate(client, currency, settings.baseCurrency)));
+      if (rate === null) needed.push(currency);
+      else rates.set(currency, rate);
+    }
+    if (needed.length) {
+      const base = settings.baseCurrency;
+      throw badRequest(
+        needed.length === 1
+          ? `Enter the exchange rate for the ${needed[0]} order: how many ${needed[0]} make 1 ${base}.`
+          : `Enter the exchange rates for the ${needed.join(' and ')} orders: how many of each make 1 ${base}.`,
+        { exchangeRatesNeeded: needed, baseCurrency: base },
+      );
+    }
     const orderIds: number[] = [];
-    const rateUnknown: string[] = [];
     for (const [supplierId, group] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
-      const rate = await suggestedExchangeRate(client, group.currency, settings.baseCurrency);
-      if (rate === null) rateUnknown.push(group.currency);
       orderIds.push(
         await insertOrder(
           client,
-          { supplierId, exchangeRate: rate ?? 1, lines: group.lines },
+          { supplierId, exchangeRate: rates.get(group.currency)!, lines: group.lines },
           settings,
         ),
       );
     }
-    return { orderIds, rateUnknown };
+    return { orderIds };
   });
 }

@@ -19,7 +19,18 @@ const orderIdFromUrl = (url) => Number(/#\/purchasing\/orders\/(\d+)/.exec(url)?
  * createMockState, setAllowHttpErrors } (see check-dashboard.mjs for each).
  */
 export async function flows(ctx) {
-  const { page, go, step, expect, shoot, toastText, waitUntil, settle, server } = ctx;
+  const {
+    page,
+    go,
+    step,
+    expect,
+    shoot,
+    toastText,
+    waitUntil,
+    settle,
+    server,
+    setAllowHttpErrors,
+  } = ctx;
   let createdId = null;
 
   await step(
@@ -273,7 +284,7 @@ export async function flows(ctx) {
 
   await step('suppliers: add one (with validation) and a product it sells', async () => {
     await go('#/purchasing?tab=suppliers');
-    await page.getByRole('button', { name: 'Add supplier' }).click();
+    await page.getByRole('button', { name: 'Add supplier…' }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('Name').fill('Linen House');
     await dialog.getByLabel('Currency').fill('EU');
@@ -303,6 +314,42 @@ export async function flows(ctx) {
     expect(
       server.state.purchasing.suppliers.find((s) => s.id === 5)?.currencyCode === 'EUR',
       'currency upper-cased',
+    );
+  });
+
+  await step('reorder: a supplier in a new currency asks for its exchange rate', async () => {
+    await go('#/purchasing?tab=reorder');
+    const row = page
+      .locator('.po-reorder-table tbody tr', {
+        has: page.getByRole('button', { name: /^Choose a supplier for/ }),
+      })
+      .first();
+    const sku = await row.locator('.mono').first().textContent();
+    await row.getByRole('button', { name: /^Choose a supplier for/ }).click();
+    let dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Supplier').selectOption({ label: 'Linen House' });
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await dialog.waitFor({ state: 'detached' });
+    await settle(page);
+    const chosen = page.locator('.po-reorder-table tbody tr', { hasText: sku }).first();
+    await chosen.getByLabel(`Select ${sku}`).check();
+    // The first try is refused (400) on purpose: no EUR rate is known yet.
+    setAllowHttpErrors(true);
+    await page.getByRole('button', { name: 'Create a draft order' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByRole('heading', { name: 'Exchange rate for EUR' }).waitFor();
+    setAllowHttpErrors(false);
+    await dialog.getByRole('button', { name: 'Create draft orders' }).click();
+    await dialog.locator('.form-error', { hasText: 'make 1 USD' }).waitFor();
+    await dialog.getByLabel('EUR per 1 USD').fill('0,92');
+    await shoot(page, 'dialog-po-exchange-rate-1280-light', { fullPage: false });
+    await dialog.getByRole('button', { name: 'Create draft orders' }).click();
+    await waitUntil(page, `/#\\/purchasing\\/orders\\/\\d+$/.test(location.hash)`);
+    await settle(page);
+    const created = server.state.purchasing.orders.find((o) => o.id === orderIdFromUrl(page.url()));
+    expect(
+      created?.currencyCode === 'EUR' && created.exchangeRate === 0.92,
+      `the draft uses the rate entered (${created?.currencyCode} ${created?.exchangeRate})`,
     );
   });
 

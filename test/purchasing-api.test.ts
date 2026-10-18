@@ -475,6 +475,31 @@ describe('reorder API', () => {
     expect((await api('POST', '/api/purchasing/reorder/draft-orders', { lines: [] })).status).toBe(
       400,
     );
+
+    // A supplier in a currency without a known rate: the rate is asked for, then used.
+    const euro = await api('POST', '/api/purchasing/suppliers', {
+      name: 'Euro Caps',
+      currencyCode: 'EUR',
+    });
+    await api('PUT', `/api/purchasing/suppliers/${euro.body.id}/items/${cap.itemId}`, {
+      unitCost: 2,
+    });
+    const capLines = { lines: [{ itemId: cap.itemId, quantity: 10 }] };
+    const ask = await api('POST', '/api/purchasing/reorder/draft-orders', capLines);
+    expect(ask.status).toBe(400);
+    expect(ask.body).toMatchObject({ exchangeRatesNeeded: ['EUR'], baseCurrency: 'USD' });
+    const badRate = await api('POST', '/api/purchasing/reorder/draft-orders', {
+      ...capLines,
+      exchangeRates: { EUR: 0 },
+    });
+    expect(badRate.status).toBe(400);
+    const eur = await api('POST', '/api/purchasing/reorder/draft-orders', {
+      ...capLines,
+      exchangeRates: { EUR: 0.92 },
+    });
+    expect(eur.status).toBe(201);
+    const eurOrder = await api('GET', `/api/purchasing/orders/${eur.body.orderIds[0]}`);
+    expect(eurOrder.body).toMatchObject({ currencyCode: 'EUR', exchangeRate: 0.92 });
   });
 
   it('finds products for the order editor, the supplier’s first', async () => {

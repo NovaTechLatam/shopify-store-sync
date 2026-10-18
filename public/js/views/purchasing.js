@@ -1,4 +1,4 @@
-import { api, isAbort, latestOnly, qs } from '../api.js';
+import { ApiError, api, isAbort, latestOnly, qs } from '../api.js';
 import { confirmDialog, formDialog } from '../dialog.js';
 import { debounce, h, icon, replace, uid } from '../dom.js';
 import { dateOnly, days, money, num, percent, plural } from '../format.js';
@@ -451,25 +451,32 @@ async function reorderTab({ panel, state, signal, sync, refreshReorderCount }) {
         }
         lines.push({ itemId: row.itemId, quantity: value });
       }
-      const result = await api('/api/purchasing/reorder/draft-orders', {
-        method: 'POST',
-        body: { lines },
-      });
+      const send = (exchangeRates) =>
+        api('/api/purchasing/reorder/draft-orders', {
+          method: 'POST',
+          body: { lines, exchangeRates },
+          toastErrors: false,
+        });
+      let result;
+      try {
+        result = await send();
+      } catch (err) {
+        // A supplier invoices in a currency we have no rate for yet: ask for it, then retry.
+        const needed = err instanceof ApiError ? err.body?.exchangeRatesNeeded : null;
+        if (!Array.isArray(needed) || needed.length === 0) throw err;
+        result = await exchangeRatesDialog(needed, err.body.baseCurrency, send);
+        if (!result) return;
+      }
       const n = result.orderIds.length;
-      const rateNote = result.rateUnknown.length
-        ? ` Check the exchange rate of the ${result.rateUnknown.join(', ')} order.`
-        : '';
       if (n === 1) {
-        toast(
-          `Draft order created. Check it, then mark it as ordered when you send it.${rateNote}`,
-        );
+        toast('Draft order created. Check it, then mark it as ordered when you send it.');
         location.hash = `#/purchasing/orders/${result.orderIds[0]}`;
       } else {
-        toast(`${n} draft orders created, one per supplier.${rateNote}`);
+        toast(`${n} draft orders created, one per supplier.`);
         location.hash = '#/purchasing?status=draft';
       }
     }).catch((err) => {
-      if (err && !err.status) toast(err.message, { tone: 'error' });
+      if (err) toast(err.message, { tone: 'error' });
     });
 
   const update = latestOnly(signal, async (reqSignal) => {
@@ -667,7 +674,13 @@ function reorderTable(data, { isSelected, onSelect, onChooseSupplier, showNeeded
 function stockCell(row) {
   if (!row.stockKnown) return badge('Not started', 'neutral');
   const lasts =
-    row.daysLeft === null ? null : row.daysLeft < 1 ? 'out now' : `lasts ${days(row.daysLeft)}`;
+    row.daysLeft === null
+      ? null
+      : row.available <= 0
+        ? 'out now'
+        : row.daysLeft < 1
+          ? 'lasts less than a day'
+          : `lasts ${days(row.daysLeft)}`;
   return h(
     'div',
     { class: 'po-stack-end' },
@@ -770,6 +783,46 @@ function suggestedCell(row) {
   );
 }
 
+/**
+ * Asks for the exchange rate of each currency (units of it per 1 of the base currency), then
+ * calls `send(rates)`. Resolves with what `send` returned, or null when cancelled.
+ */
+function exchangeRatesDialog(currencies, baseCurrency, send) {
+  const controls = currencies.map((code) => ({
+    code,
+    control: moneyInput({ name: `rate-${code}` }),
+  }));
+  return formDialog({
+    title: currencies.length === 1 ? `Exchange rate for ${currencies[0]}` : 'Exchange rates needed',
+    intro: h(
+      'p',
+      {},
+      `${currencies.length === 1 ? 'A supplier invoices' : 'Suppliers invoice'} in ${currencies.join(' and ')}, and Store Sync doesn’t know ${currencies.length === 1 ? 'that rate' : 'those rates'} yet. ${currencies.length === 1 ? 'It turns' : 'They turn'} the order’s prices into product costs in ${baseCurrency}.`,
+    ),
+    content: controls.map(({ code, control }) =>
+      field({
+        label: `${code} per 1 ${baseCurrency}`,
+        control,
+        hint: `How many ${code} make 1 ${baseCurrency}.`,
+      }),
+    ),
+    submitLabel: 'Create draft orders',
+    initialFocus: () => controls[0]?.control,
+    onSubmit: () => {
+      const rates = {};
+      for (const { code, control } of controls) {
+        const value = parseDecimal(control.value);
+        if (!(value > 0)) {
+          control.focus();
+          throw new Error(`Enter how many ${code} make 1 ${baseCurrency}: a number above 0.`);
+        }
+        rates[code] = value;
+      }
+      return send(rates);
+    },
+  });
+}
+
 async function chooseSupplier(row, suppliers, done) {
   if (suppliers.length === 0) {
     toast('Add a supplier on the Suppliers tab first.', { tone: 'info' });
@@ -805,7 +858,7 @@ async function suppliersTab(ctx) {
   const results = h('div', { class: 'results' });
   const settings = await api('/api/settings', { signal });
   const archived = h('input', { type: 'checkbox', checked: state.archived, id: uid('archived') });
-  const add = button('Add supplier', {
+  const add = button('Add supplier…', {
     variant: 'primary',
     iconName: 'plus',
     onClick: async () => {
@@ -1232,6 +1285,13 @@ async function supplierItemDialog(supplier, existing, reload) {
                     value: String(item.itemId),
                     disabled: item.soldBySupplier,
                     dataset: { sku: item.sku },
+                    // A product already ordered from someone else keeps that supplier unless
+                    // the box is ticked on purpose.
+                    onchange: () => {
+                      preferred.checked =
+                        item.preferredSupplierId === null ||
+                        item.preferredSupplierId === supplier.id;
+                    },
                   }),
                   h(
                     'span',

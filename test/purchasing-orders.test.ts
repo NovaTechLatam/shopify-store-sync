@@ -355,6 +355,38 @@ describe('costs', () => {
     expect(rows[0]!.cost_updated_at).not.toBeNull();
   });
 
+  it('counts deliveries that haven’t reached the stock yet in the average', async () => {
+    // A new product no store sells yet: its deliveries wait (pending) until it is published.
+    const { rows } = await h.db.query<{ id: number }>(
+      `INSERT INTO items (sku, title) VALUES ('NEW-1', 'New product') RETURNING id`,
+    );
+    const itemId = rows[0]!.id;
+    await h.db.query('INSERT INTO pool_levels (item_id, warehouse_id) VALUES ($1, $2)', [
+      itemId,
+      h.warehouseId,
+    ]);
+    const supplierId = await supplier();
+    for (const unitCost of [10, 20]) {
+      const orderId = await order(supplierId, [{ itemId, quantityOrdered: 100, unitCost }]);
+      await receive(orderId, [{ lineId: (await lineIds(orderId))[0]!, quantity: 100 }]);
+    }
+    expect(await itemCost(itemId)).toBe(15); // (100 × 10 + 100 × 20) / 200
+
+    // A started item whose last delivery the engine hasn't applied yet (e.g. syncing paused).
+    const item = await startedItem('TEE-1', 10);
+    await h.db.query('UPDATE items SET cost = 5, sync_enabled = false WHERE id = $1', [
+      item.itemId,
+    ]);
+    for (const unitCost of [8, 11]) {
+      const orderId = await order(supplierId, [
+        { itemId: item.itemId, quantityOrdered: 10, unitCost },
+      ]);
+      await receive(orderId, [{ lineId: (await lineIds(orderId))[0]!, quantity: 10 }]);
+    }
+    // 10 × 5 + 10 × 8 = 130 over 20 → 6.5; then (20 × 6.5 + 10 × 11) / 30 = 8.
+    expect(await itemCost(item.itemId)).toBe(8);
+  });
+
   it('takes the last price with the "last" method, and ignores lines without a price', async () => {
     settings = await updateSettings(h.db, { costMethod: 'last' });
     const item = await startedItem('TEE-1', 10);
@@ -627,6 +659,51 @@ describe('editing an order', () => {
     expect(po.lines).toHaveLength(1);
     expect(po.lines[0]).toMatchObject({ id: lineA, unitCost: 1.5 });
   });
+
+  it('keeps a line whose delivery was undone, so the order’s history stays complete', async () => {
+    const a = await startedItem('A-1', 0);
+    const c = await startedItem('C-1', 0);
+    const orderId = await order(await supplier(), [
+      { itemId: a.itemId, quantityOrdered: 10 },
+      { itemId: c.itemId, quantityOrdered: 3 },
+    ]);
+    const [lineA, lineC] = await lineIds(orderId);
+    expect((await loadOrder(h.db, orderId, settings)).lines[1]!.hasDeliveries).toBe(false);
+    const wrong = await receive(orderId, [{ lineId: lineC!, quantity: 3 }]);
+    await reverseReceipt(h.db, orderId, wrong.receiptId);
+    expect((await loadOrder(h.db, orderId, settings)).lines[1]).toMatchObject({
+      quantityReceived: 0,
+      hasDeliveries: true,
+    });
+    await expect(
+      updateOrder(
+        h.db,
+        orderId,
+        { lines: [{ id: lineA, itemId: a.itemId, quantityOrdered: 10 }] },
+        settings,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining('C-1 can’t be removed'),
+    });
+    const po = await loadOrder(h.db, orderId, settings);
+    expect(po.lines).toHaveLength(2);
+    expect(po.receipts).toHaveLength(1);
+    expect(po.receipts[0]!.lines).toMatchObject([{ sku: 'C-1', quantity: 3 }]);
+    // Its quantity can still go down.
+    await updateOrder(
+      h.db,
+      orderId,
+      {
+        lines: [
+          { id: lineA, itemId: a.itemId, quantityOrdered: 10 },
+          { id: lineC, itemId: c.itemId, quantityOrdered: 1 },
+        ],
+      },
+      settings,
+    );
+    expect((await loadOrder(h.db, orderId, settings)).lines[1]!.quantityOrdered).toBe(1);
+  });
 });
 
 describe('draft orders from reorder suggestions', () => {
@@ -655,21 +732,29 @@ describe('draft orders from reorder suggestions', () => {
     const { rows: before } = await h.db.query('SELECT 1 FROM purchase_orders');
     expect(before).toHaveLength(0);
 
-    const result = await createDraftOrders(
-      h.db,
-      [
-        { itemId: a.itemId, quantity: 10 },
-        { itemId: b.itemId, quantity: 4 },
-      ],
-      settings,
-    );
+    // No rate known for COP yet: it is asked for, never made up (1 COP = 1 USD would turn
+    // 9,000 COP into a $9,000 cost), and nothing is created half way.
+    const both = [
+      { itemId: a.itemId, quantity: 10 },
+      { itemId: b.itemId, quantity: 4 },
+    ];
+    await expect(createDraftOrders(h.db, both, settings)).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Enter the exchange rate for the COP order: how many COP make 1 USD.',
+      details: { exchangeRatesNeeded: ['COP'], baseCurrency: 'USD' },
+    });
+    expect((await h.db.query('SELECT 1 FROM purchase_orders')).rows).toHaveLength(0);
+
+    const result = await createDraftOrders(h.db, both, settings, { COP: 4000 });
     expect(result.orderIds).toHaveLength(2);
-    expect(result.rateUnknown).toEqual(['COP']);
     const orders = await Promise.all(result.orderIds.map((id) => loadOrder(h.db, id, settings)));
-    expect(orders.map((o) => [o.supplier.name, o.status, o.currencyCode])).toEqual([
-      ['Acme', 'draft', 'USD'],
-      ['Bogotá Knits', 'draft', 'COP'],
+    expect(orders.map((o) => [o.supplier.name, o.status, o.currencyCode, o.exchangeRate])).toEqual([
+      ['Acme', 'draft', 'USD', 1],
+      ['Bogotá Knits', 'draft', 'COP', 4000],
     ]);
+    // Next time the rate entered is suggested, so it isn't asked again.
+    const again = await createDraftOrders(h.db, [{ itemId: b.itemId, quantity: 2 }], settings);
+    expect((await loadOrder(h.db, again.orderIds[0]!, settings)).exchangeRate).toBe(4000);
     expect(orders[0]!.lines.map((l) => [l.sku, l.quantityOrdered, l.unitCost])).toEqual([
       ['A-1', 10, 2],
     ]);

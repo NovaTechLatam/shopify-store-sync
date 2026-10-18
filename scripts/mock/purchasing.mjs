@@ -430,6 +430,7 @@ function orderView(state, o) {
       unitCost: l.unitCost,
       lineTotal: round4(l.quantityOrdered * l.unitCost),
       syncing: item.quantity !== null,
+      hasDeliveries: o.receipts.some((r) => r.lines.some((rl) => rl.lineId === l.id)),
     };
   });
   const sum = (f) => lines.reduce((a, l) => a + f(l), 0);
@@ -735,9 +736,16 @@ function replaceLines(state, order, input, HttpError) {
     }
   }
   for (const old of order.lines) {
-    if (!next.some((l) => l.id === old.id) && old.quantityReceived > 0) {
-      const sku = state.items.find((i) => i.id === old.itemId).sku;
+    if (next.some((l) => l.id === old.id)) continue;
+    const sku = state.items.find((i) => i.id === old.itemId).sku;
+    if (old.quantityReceived > 0) {
       throw new HttpError(400, `${sku} can’t be removed: units of it were already received.`);
+    }
+    if (order.receipts?.some((r) => r.lines.some((rl) => rl.lineId === old.id))) {
+      throw new HttpError(
+        400,
+        `${sku} can’t be removed: a delivery of it was recorded on this order (and undone). Lower its quantity instead, or close the order when the rest isn’t coming.`,
+      );
     }
   }
   order.lines = next;
@@ -1306,24 +1314,41 @@ export function handle(req, { reply, HttpError, paginate, matches, findOr404 }) 
         const supplierId = p.itemInfo[l.itemId].supplierId;
         groups.set(supplierId, [...(groups.get(supplierId) ?? []), l]);
       }
+      // A currency without a known rate is asked for (never made up), before creating anything.
+      const given = body.exchangeRates ?? {};
+      const currencies = [
+        ...new Set([...groups.keys()].map((supplierId) => findSupplier(supplierId).currencyCode)),
+      ].sort();
+      const needed = currencies.filter((c) => !(given[c] > 0) && suggestedRate(state, c) === null);
+      if (Object.values(given).some((rate) => !(rate > 0))) {
+        throw new HttpError(400, 'exchangeRates: Too small: expected number to be >=1e-8');
+      }
+      if (needed.length) {
+        const base = state.settings.baseCurrency;
+        throw new HttpError(
+          400,
+          needed.length === 1
+            ? `Enter the exchange rate for the ${needed[0]} order: how many ${needed[0]} make 1 ${base}.`
+            : `Enter the exchange rates for the ${needed.join(' and ')} orders: how many of each make 1 ${base}.`,
+          { exchangeRatesNeeded: needed, baseCurrency: base },
+        );
+      }
       const orderIds = [];
-      const rateUnknown = [];
       for (const [supplierId, group] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
         const supplier = findSupplier(supplierId);
-        const rate = suggestedRate(state, supplier.currencyCode);
-        if (rate === null) rateUnknown.push(supplier.currencyCode);
         const created = createOrder(
           state,
           {
             supplierId,
-            exchangeRate: rate ?? 1,
+            exchangeRate:
+              given[supplier.currencyCode] ?? suggestedRate(state, supplier.currencyCode),
             lines: group.map((l) => ({ itemId: l.itemId, quantityOrdered: l.quantity })),
           },
           HttpError,
         );
         orderIds.push(created.id);
       }
-      return reply(201, { orderIds, rateUnknown });
+      return reply(201, { orderIds });
     }
     default:
       return undefined;

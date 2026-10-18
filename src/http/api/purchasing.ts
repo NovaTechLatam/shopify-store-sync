@@ -163,6 +163,8 @@ const DraftOrdersBody = z
       .array(z.object({ itemId: Id, quantity: Quantity }).strict())
       .min(1)
       .max(500),
+    /** Rates the merchant entered for currencies without a known one ({ EUR: 0.92 }). */
+    exchangeRates: z.record(CURRENCY_CODE, Rate).optional(),
   })
   .strict();
 
@@ -421,7 +423,12 @@ export async function registerPurchasingRoutes(app: FastifyInstance, deps: AppDe
 
   app.post('/api/purchasing/reorder/draft-orders', async (request, reply) => {
     const body = DraftOrdersBody.parse(request.body);
-    const result = await createDraftOrders(db, body.lines, await getSettings(db));
+    const result = await createDraftOrders(
+      db,
+      body.lines,
+      await getSettings(db),
+      body.exchangeRates,
+    );
     return reply.code(201).send(result);
   });
 }

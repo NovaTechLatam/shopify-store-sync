@@ -233,7 +233,10 @@
   .po-page .save-bar,
   .po-page .card-actions,
   .po-page .col-actions,
-  .po-page .form-error {
+  .po-page .form-error,
+  /* Editing instructions ("You can change quantities…") mean nothing on paper. */
+  .po-page .card-description,
+  .po-page .field-hint {
     display: none !important;
   }
 

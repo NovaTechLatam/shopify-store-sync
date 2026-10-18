@@ -56,7 +56,9 @@ rate of a store that sells in it. The rate is used to work out what products cos
 
 **Once an order is sent**, its supplier, warehouse and currency stay as they are. You can still
 change the expected date, the notes, quantities and prices, and add products. A quantity can't go
-below what already arrived, and a product that already had units delivered can't be removed.
+below what already arrived, and a product that had a delivery on the order (even one you undid)
+can't be removed, so the order's list of deliveries stays complete: lower its quantity instead, or
+close the order when the rest isn't coming.
 
 **Printing and spreadsheets.** **Print** prints just the order (the menu and buttons are left
 out). **Download CSV** gives you the order's products as a spreadsheet.
@@ -117,6 +119,8 @@ Things to know:
 - Prices in another currency are converted with the order's exchange rate.
 - A product line with no price (0) doesn't change the cost: we don't know what it cost.
 - Oversold stock (below 0) counts as none in the average.
+- Deliveries that haven't reached the shared stock yet count too: for example two orders of a new
+  product received before any store sells it are averaged, not just the last one.
 - Undoing a delivery doesn't change the cost back: once later deliveries are mixed in, the old
   average can't be worked out exactly. If it matters, set the cost on the Prices page.
 
@@ -152,8 +156,10 @@ what is on order. It is then raised to the supplier's minimum order and rounded 
 
 To order, tick products (or **Select every product that needs reordering**), adjust the numbers,
 and click **Create draft orders**: you get one draft per supplier, ready to check and send. Products
-without a supplier can't be added that way: click **Choose…** next to them first. The **Order**
-link next to a product opens a new order with just that product.
+without a supplier can't be added that way: click **Choose…** next to them first. When a supplier
+invoices in a currency Store Sync has no exchange rate for yet (no earlier order in it, and no store
+selling in it), you are asked for the rate first. The **Order** link next to a product opens a
+new order with just that product.
 
 **Alerts.** When a product needs reordering, you also get an alert ("Time to reorder") like the
 other alerts, for example "TEE-1 will run out in about 9 days at the current pace (3 a day). Lead
@@ -207,11 +213,16 @@ For developers. Code in `src/purchasing/`, routes in `src/http/api/purchasing.ts
 - **Undo** adds the opposite adjustments (`event_kind 'po_receipt_reversed'`) in one transaction;
   a second undo is a no-op.
 - **Status changes** are checked on the locked order row. Orders on order are `ordered` and
-  `partial`.
+  `partial`. A line with a `po_receipt_lines` row is never deleted (that would cascade into the
+  delivery's history).
+- **Draft orders from suggestions** (`createDraftOrders`) take `exchangeRates` (like
+  `{ "EUR": 0.92 }`); a currency with neither a given nor a suggested rate is refused with a 400
+  listing it in `exchangeRatesNeeded` (with `baseCurrency`), before anything is created.
 - **Reorder** (`src/purchasing/reorder.ts`): `computeReorder` is the pure maths;
   `loadReorderRows` reads every input with one query; `runReorderCheck` opens or resolves alerts
   `reorder:<itemId>` (kind `reorder`). The `reorder_check` task (a singleton) runs it; the hourly
   job and every change that affects it enqueue the task.
-- **Costs** (`src/purchasing/costs.ts`): `nextItemCost` (pure) and the `push_item_costs` task
-  (`inventoryItemUpdate`, absolute values, so retries are harmless; a permission error raises
-  `cost_push_failed:<storeId>` and stops instead of retrying).
+- **Costs** (`src/purchasing/costs.ts`): `nextItemCost` (pure; the receipt passes it the started
+  pool levels plus the item's pending `adjust` adjustments as the stock before) and the
+  `push_item_costs` task (`inventoryItemUpdate`, absolute values, so retries are harmless; a
+  permission error raises `cost_push_failed:<storeId>` and stops instead of retrying).

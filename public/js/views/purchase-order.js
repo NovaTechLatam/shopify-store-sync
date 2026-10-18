@@ -990,7 +990,8 @@ function orderEditor(data, page) {
         label: 'Remove',
         className: 'col-actions',
         render: (l) =>
-          (l.quantityReceived ?? 0) > 0
+          // Lines with a delivery (even one undone) stay: the order's history refers to them.
+          (l.quantityReceived ?? 0) > 0 || l.hasDeliveries
             ? null
             : button('Remove', {
                 size: 'small',
