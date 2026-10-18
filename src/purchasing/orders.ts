@@ -649,8 +649,7 @@ async function receiveLocked(
     }
   }
 
-  const itemIds = wanted.map((w) => w.line.item_id);
-  const items = await lockItems(client, itemIds);
+  const itemIds = wanted.map((w) => w.line.item_id).sort((a, b) => a - b);
 
   // The item's stock level in the order's warehouse (every item has one per warehouse; created if
   // a warehouse was somehow added without it).
@@ -669,6 +668,13 @@ async function receiveLocked(
     [itemIds, order.warehouse_id],
   );
   const levelOf = new Map(levels.map((l) => [l.item_id, l]));
+  // Catalog matching links variants under the catalog lock: hold it while deciding "no store
+  // sells it", so a store linking the item right now can't slip in between. Taken before the
+  // item rows, in the same order as the catalog's own transactions take them.
+  const notStarted = levels.filter((l) => l.quantity === null).map((l) => l.id);
+  if (notStarted.length) await lockCatalog(client);
+
+  const items = await lockItems(client, itemIds);
   const { rows: stock } = await client.query<{ item_id: number; stock: number }>(
     `SELECT item_id, sum(quantity)::int AS stock FROM pool_levels
       WHERE item_id = ANY($1::bigint[]) AND quantity IS NOT NULL GROUP BY item_id`,
@@ -676,11 +682,7 @@ async function receiveLocked(
   );
   const stockBefore = new Map(stock.map((s) => [s.item_id, s.stock]));
 
-  const notStarted = levels.filter((l) => l.quantity === null).map((l) => l.id);
   if (notStarted.length) {
-    // Catalog matching links variants under this lock: hold it while deciding "no store sells
-    // it", so a store linking the item right now can't slip in between.
-    await lockCatalog(client);
     await client.query(
       `INSERT INTO pool_adjustments (pool_level_id, kind, strategy, value, note)
        SELECT pl.id, 'initialize', 'value', 0, 'New product: starts at 0 plus deliveries'

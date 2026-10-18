@@ -233,6 +233,11 @@ describe('reorder_check', () => {
 
   it('runs as a task, enqueued every hour by the scheduler (once, however many ask)', async () => {
     const low = await startedItem('LOW-1', 0);
+    const job = PURCHASING_JOBS[0]!;
+    // No sales recorded yet: nothing to check.
+    await job.run({ db: h.db, logger: silentLogger, now: Date.now() });
+    const { rows: none } = await h.db.query(`SELECT 1 FROM tasks WHERE kind = 'reorder_check'`);
+    expect(none).toHaveLength(0);
     await sale(h.stores[0]!.id, low.itemId, 10, 1);
     const scheduler = new Scheduler({
       db: h.db,
